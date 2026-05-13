@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>CodexAuth Switch</title>
+    <link rel="icon" href="./assets/codex-color.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="./assets/codex-color.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Windows 本地</p>
+          <h1>Codex App 账号切换</h1>
+        </div>
+        <div class="top-actions">
+          <div class="page-tabs" role="tablist" aria-label="Main pages">
+            <button id="accountsTab" class="page-tab active" type="button" role="tab" aria-selected="true">
+              账号
+            </button>
+            <button id="usageTab" class="page-tab" type="button" role="tab" aria-selected="false">
+              用量
+            </button>
+          </div>
+          <button id="refreshBtn" class="icon-btn" title="刷新">↻</button>
+          <button id="widgetBtn" class="ghost-btn">浮窗</button>
+          <button id="restartBtn" class="ghost-btn">重启 Codex App</button>
+        </div>
+      </section>
+
+      <section id="accountsPage" class="page active">
+        <section class="status-grid">
+          <article class="status-panel">
+            <p class="label">当前登录</p>
+            <h2 id="currentIdentity">读取中</h2>
+            <p id="currentPath" class="muted"></p>
+          </article>
+          <article class="status-panel compact">
+            <p class="label">本地保险箱</p>
+            <h2 id="accountCount">0 个账号</h2>
+            <p id="storePath" class="muted link-like"></p>
+          </article>
+        </section>
+
+        <section class="import-row">
+          <input
+            id="displayNameInput"
+            class="name-input"
+            placeholder="账号备注，例如 work / personal"
+            autocomplete="off"
+          />
+          <button id="importBtn" class="primary-btn">导入当前 Codex 登录</button>
+        </section>
+
+        <section class="content-layout">
+          <div class="account-list" id="accountList"></div>
+          <aside class="side-panel">
+            <p class="label">切换策略</p>
+            <label class="toggle-row">
+              <input id="restartAfterSwitch" type="checkbox" checked />
+              <span>切换后重启 Codex App</span>
+            </label>
+            <div class="divider"></div>
+            <p class="small-copy">
+              凭证使用 Windows 当前用户 DPAPI 加密保存。切换前会备份并保存当前
+              <code>auth.json</code>，减少刷新令牌丢失。
+            </p>
+            <p class="small-copy">
+              如果 Codex 提示 refresh token 已被使用，需要在 Codex App 重新登录该账号，
+              然后回到这里重新导入当前登录。
+            </p>
+          </aside>
+        </section>
+      </section>
+
+      <section id="usagePage" class="page">
+        <section class="dashboard-panel">
+          <div class="section-head">
+            <div>
+              <p class="label">额度与用量</p>
+              <h2>当前账号概览</h2>
+            </div>
+            <button id="statsRefreshBtn" class="ghost-btn">刷新额度</button>
+          </div>
+
+          <div class="quota-grid">
+            <article class="quota-card">
+              <div class="quota-title">
+                <span id="sessionWindowTitle">5 小时额度</span>
+                <strong id="sessionPercent">--</strong>
+              </div>
+              <div class="meter"><span id="sessionMeter"></span></div>
+              <p id="sessionReset" class="muted">--</p>
+            </article>
+            <article class="quota-card">
+              <div class="quota-title">
+                <span id="weeklyWindowTitle">周额度</span>
+                <strong id="weeklyPercent">--</strong>
+              </div>
+              <div class="meter"><span id="weeklyMeter"></span></div>
+              <p id="weeklyReset" class="muted">--</p>
+            </article>
+            <article class="quota-card">
+              <div class="quota-title">
+                <span>套餐</span>
+                <strong id="planType">--</strong>
+              </div>
+              <p id="quotaSource" class="muted">--</p>
+              <p id="creditsInfo" class="muted">--</p>
+            </article>
+          </div>
+
+          <div class="usage-grid">
+            <article class="metric-card">
+              <span>Total Tokens</span>
+              <strong id="totalTokens">--</strong>
+            </article>
+            <article class="metric-card">
+              <span>Input Tokens</span>
+              <strong id="inputTokens">--</strong>
+            </article>
+            <article class="metric-card">
+              <span>Output Tokens</span>
+              <strong id="outputTokens">--</strong>
+            </article>
+            <article class="metric-card">
+              <span>会话数</span>
+              <strong id="sessionCount">--</strong>
+            </article>
+          </div>
+          <p class="usage-note">
+            Tokens 是本机日志里的原始用量，不按高速版或模型倍率折算；5 小时和周额度以 Codex 写入的额度快照为准。
+          </p>
+
+          <div class="usage-detail">
+            <div class="daily-bars" id="dailyBars"></div>
+            <div class="recent-sessions" id="recentSessions"></div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <dialog id="renameDialog" class="confirm-dialog rename-dialog">
+      <form method="dialog">
+        <h3>重命名账号</h3>
+        <input id="renameInput" class="name-input dialog-input" autocomplete="off" />
+        <div class="dialog-actions">
+          <button value="cancel" class="ghost-btn">取消</button>
+          <button id="renameOk" value="ok" class="primary-btn">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="confirmDialog" class="confirm-dialog">
+      <form method="dialog">
+        <h3 id="confirmTitle">确认操作</h3>
+        <p id="confirmBody"></p>
+        <div class="dialog-actions">
+          <button value="cancel" class="ghost-btn">取消</button>
+          <button id="confirmOk" value="ok" class="danger-btn">删除</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="./app.js"></script>
+  </body>
+</html>

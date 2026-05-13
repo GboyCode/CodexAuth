@@ -1,0 +1,61 @@
+{
+  "name": "codexauth-switch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Windows desktop account switcher for Codex App.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "npm run icon:win && electron .",
+    "dev": "npm run icon:win && electron .",
+    "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/ui/app.js && node --check src/ui/widget.js",
+    "icon:win": "electron scripts\\generate-icon.js",
+    "sidebar:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\generate-installer-sidebar.ps1",
+    "pack:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:win && npm run sidebar:win && node scripts\\prepare-builder.js && electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^39.8.10",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "local.codexauth.switch",
+    "productName": "CodexAuth Switch",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "toolsets": {
+      "winCodeSign": "1.0.0"
+    },
+    "afterPack": "scripts/after-pack.js",
+    "files": [
+      "src/**/*",
+      "README.md",
+      "package.json",
+      "!scripts/**/*",
+      "!debug.log"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "src/ui/assets/codex-color.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "warningsAsErrors": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CodexAuth Switch",
+      "installerIcon": "src/ui/assets/codex-color.ico",
+      "uninstallerIcon": "src/ui/assets/codex-color.ico",
+      "installerSidebar": "build/installer-sidebar.bmp",
+      "uninstallerSidebar": "build/installer-sidebar.bmp",
+      "artifactName": "CodexAuthSwitch-Setup-${version}.exe"
+    }
+  }
+}

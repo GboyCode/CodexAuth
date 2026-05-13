@@ -1,0 +1,11 @@
+node_modules/
+release/
+dist/
+out/
+*.log
+.env
+.env.*
+!.env.example
+build/installer-sidebar.bmp
+Thumbs.db
+.DS_Store
