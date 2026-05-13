@@ -1903,24 +1903,49 @@ function collectQuotaCalibration(events, planType) {
 
   for (const sessionEvents of bySession.values()) {
     sessionEvents.sort((a, b) => a.ms - b.ms);
-    let previous = null;
+    // Track the last event where rate_limits changed (or the first event).
+    // When rate_limits changes again, the token delta between the two change
+    // points represents the tokens that caused the quota percentage increase.
+    let lastChangeEvent = null;
+    let maxTokensSinceChange = null;
     for (const event of sessionEvents) {
       if (!event.rateLimits || !rateLimitsMatchPlan(event.rateLimits, planType)) continue;
-      if (previous) {
-        const deltaUsage = subtractTokenUsage(event.tokenUsage, previous.tokenUsage);
-        const weightedTokens = weightedTokenUsage(deltaUsage, event.model || previous.model);
-        const currentSessionPercent = rawUsedPercent(event.rateLimits, "session");
-        const previousSessionPercent = rawUsedPercent(previous.rateLimits, "session");
-        const currentWeeklyPercent = rawUsedPercent(event.rateLimits, "weekly");
-        const previousWeeklyPercent = rawUsedPercent(previous.rateLimits, "weekly");
-        if (Number.isFinite(currentSessionPercent) && Number.isFinite(previousSessionPercent)) {
+      const currentSessionPercent = rawUsedPercent(event.rateLimits, "session");
+      const currentWeeklyPercent = rawUsedPercent(event.rateLimits, "weekly");
+
+      if (!lastChangeEvent) {
+        lastChangeEvent = event;
+        maxTokensSinceChange = event;
+        continue;
+      }
+
+      const previousSessionPercent = rawUsedPercent(lastChangeEvent.rateLimits, "session");
+      const previousWeeklyPercent = rawUsedPercent(lastChangeEvent.rateLimits, "weekly");
+      const sessionChanged = Number.isFinite(currentSessionPercent) && Number.isFinite(previousSessionPercent)
+        && currentSessionPercent !== previousSessionPercent;
+      const weeklyChanged = Number.isFinite(currentWeeklyPercent) && Number.isFinite(previousWeeklyPercent)
+        && currentWeeklyPercent !== previousWeeklyPercent;
+
+      if (sessionChanged || weeklyChanged) {
+        // Use the highest token count seen between the two change points as the
+        // delta (Codex may report the same token count on the change event itself).
+        const referenceEvent = maxTokensSinceChange || lastChangeEvent;
+        const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, lastChangeEvent.tokenUsage);
+        const weightedTokens = weightedTokenUsage(deltaUsage, referenceEvent.model || lastChangeEvent.model);
+        if (sessionChanged) {
           addCalibrationSample(sessionSamples, currentSessionPercent - previousSessionPercent, weightedTokens);
         }
-        if (Number.isFinite(currentWeeklyPercent) && Number.isFinite(previousWeeklyPercent)) {
+        if (weeklyChanged) {
           addCalibrationSample(weeklySamples, currentWeeklyPercent - previousWeeklyPercent, weightedTokens);
         }
+        lastChangeEvent = event;
+        maxTokensSinceChange = event;
+      } else {
+        // Track the event with the highest token count between changes
+        if (tokenUsageTotal(event.tokenUsage) > tokenUsageTotal(maxTokensSinceChange.tokenUsage)) {
+          maxTokensSinceChange = event;
+        }
       }
-      previous = event;
     }
   }
 
@@ -1948,13 +1973,35 @@ function tokenDeltaSinceBase(events, baseMs) {
 
   for (const sessionEvents of bySession.values()) {
     sessionEvents.sort((a, b) => a.ms - b.ms);
-    const after = sessionEvents.filter((event) => event.ms > baseMs);
+    let after = sessionEvents.filter((event) => event.ms > baseMs);
+
+    // When Codex repeats the same rate_limits on every token_count event within
+    // a single turn, all events share the same (or very close) timestamp as the
+    // base quota. In that case there are no events "after" the base even though
+    // tokens have been consumed. Detect this by checking if the session has
+    // multiple events at or after baseMs with unchanged rate_limits — if so,
+    // treat the first such event as the effective base and measure delta from it.
+    if (!after.length) {
+      const atOrAfter = sessionEvents.filter((event) => event.ms >= baseMs);
+      if (atOrAfter.length >= 2) {
+        const first = atOrAfter[0];
+        const last = atOrAfter[atOrAfter.length - 1];
+        // Only apply this fallback when rate_limits didn't change (static snapshot)
+        const firstPrimary = first.rateLimits?.primary?.used_percent;
+        const lastPrimary = last.rateLimits?.primary?.used_percent;
+        if (firstPrimary !== undefined && firstPrimary === lastPrimary) {
+          after = atOrAfter.slice(1);
+        }
+      }
+    }
+
     if (!after.length) continue;
     const latestAfter = after[after.length - 1];
-    const before = [...sessionEvents].reverse().find((event) => event.ms <= baseMs);
+    const before = [...sessionEvents].reverse().find((event) => event.ms <= baseMs)
+      ?? (after.length < sessionEvents.length ? null : sessionEvents[0]);
 
     let deltaUsage = null;
-    if (before) {
+    if (before && before !== latestAfter) {
       deltaUsage = subtractTokenUsage(latestAfter.tokenUsage, before.tokenUsage);
     } else if (Number.isFinite(latestAfter.startedAtMs) && latestAfter.startedAtMs >= baseMs) {
       deltaUsage = latestAfter.tokenUsage;
@@ -1964,7 +2011,7 @@ function tokenDeltaSinceBase(events, baseMs) {
     addTokenUsage(tokenUsage, deltaUsage);
     weightedTokens += weightedTokenUsage(deltaUsage, latestAfter.model);
     sessions += 1;
-    if (latestAfter.ms > latestMs) {
+    if (latestAfter.ms >= latestMs) {
       latestMs = latestAfter.ms;
       latestAt = latestAfter.timestamp;
     }
@@ -1989,13 +2036,15 @@ function buildWindowEstimate(baseWindow, coefficient, weightedTokens, sampleCoun
 }
 
 function fallbackQuotaCoefficient(planType, kind) {
+  // Fallback coefficients derived from observed Codex Plus plan behavior:
+  // ~250K–300K weighted tokens per 1% session quota, ~500K per 1% weekly quota.
   const plan = String(planType || "").toLowerCase();
   if (kind === "weekly") {
-    if (plan === "team" || plan === "business") return 1 / 50000;
-    return 1 / 50000;
+    if (plan === "team" || plan === "business") return 1 / 500000;
+    return 1 / 500000;
   }
-  if (plan === "team" || plan === "business") return 1 / 10000;
-  return 1 / 10000;
+  if (plan === "team" || plan === "business") return 1 / 250000;
+  return 1 / 250000;
 }
 
 function newerTokenDelta(left, right) {
