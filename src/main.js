@@ -46,6 +46,9 @@ let localLogWatcher;
 let localLogRefreshTimer;
 let localLogRefreshInFlight = false;
 let localLogRefreshPending = false;
+let sessionsWatcher;
+let sessionsPollingInterval;
+let lastKnownLogsMtimeMs = 0;
 let indexMutationQueue = Promise.resolve();
 const sessionParseCache = new Map();
 const quotaEventParseCache = new Map();
@@ -756,7 +759,10 @@ async function refreshQuotaSnapshotFromLocalLog() {
       const scope = await dashboardScope();
       if (!scope.hasCurrentAuth || !scope.accountId) continue;
       const latestQuota = newerQuota(
-        await readLatestSqliteRateLimitQuota({ since: scope.since }),
+        newerQuota(
+          await readLatestLocalQuota({ since: scope.since }),
+          await readLatestSqliteRateLimitQuota({ since: scope.since })
+        ),
         await readLatestUsageLimitQuota({ since: scope.since })
       );
       const changed = await saveAccountQuotaSnapshot(scope.accountId, latestQuota);
@@ -779,6 +785,55 @@ async function startLocalLogWatcher() {
   } catch {
     localLogWatcher = null;
   }
+}
+
+// Watch the sessions directory for new/updated rollout-*.jsonl files.
+// Codex writes rate_limits into these files during conversations, so watching
+// them lets us pick up quota changes without needing a separate API call.
+async function startSessionsWatcher() {
+  if (sessionsWatcher) return;
+  const dir = sessionsDir();
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    sessionsWatcher = fsSync.watch(dir, { persistent: false, recursive: true }, (_event, filename) => {
+      const name = String(filename || "").toLowerCase();
+      if (name.endsWith(".jsonl")) scheduleLocalLogRefresh();
+    });
+  } catch {
+    sessionsWatcher = null;
+  }
+}
+
+// Periodic polling fallback: checks if the sqlite log file has been updated
+// since the last check. This catches writes that the filesystem watcher may
+// miss (e.g. WAL checkpoints, or when Codex flushes records in the background
+// without triggering a visible fs event on the parent directory).
+// Runs every 15 seconds — low enough frequency to avoid any risk of triggering
+// rate-limiting or appearing as automated API access.
+async function startSessionsPolling() {
+  if (sessionsPollingInterval) return;
+  sessionsPollingInterval = setInterval(async () => {
+    try {
+      const dbPath = logsDbPath();
+      const walPath = logsDbWalPath();
+      let latestMtime = 0;
+      for (const p of [dbPath, walPath]) {
+        try {
+          const stat = await fs.stat(p);
+          if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
+        } catch {
+          // File may not exist yet.
+        }
+      }
+      if (latestMtime > lastKnownLogsMtimeMs) {
+        lastKnownLogsMtimeMs = latestMtime;
+        scheduleLocalLogRefresh();
+      }
+    } catch {
+      // Best-effort polling; errors are non-fatal.
+    }
+  }, 15000);
+  sessionsPollingInterval.unref?.();
 }
 
 async function switchAccount(accountId, options = {}) {
@@ -1579,7 +1634,7 @@ async function parseLatestRateLimitFile(file, sinceMs) {
 }
 
 async function parseQuotaEventFile(file) {
-  const sessionEvents = [];
+  const events = [];
   let sessionId = null;
   let startedAtMs = null;
   let model = null;
@@ -2572,6 +2627,8 @@ if (hasSingleInstanceLock) {
     createTray();
     await startAuthWatcher();
     await startLocalLogWatcher();
+    await startSessionsWatcher();
+    await startSessionsPolling();
 
     app.on("activate", () => {
       showMainWindow();
@@ -2590,6 +2647,8 @@ app.on("before-quit", () => {
   if (authWatcher) authWatcher.close();
   if (localLogRefreshTimer) clearTimeout(localLogRefreshTimer);
   if (localLogWatcher) localLogWatcher.close();
+  if (sessionsWatcher) sessionsWatcher.close();
+  if (sessionsPollingInterval) clearInterval(sessionsPollingInterval);
   for (const timer of reauthCheckTimers.values()) clearTimeout(timer);
   reauthCheckTimers.clear();
 });
