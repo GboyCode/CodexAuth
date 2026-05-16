@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local Windows desktop account switcher for Codex App.",
+  "license": "MIT",
   "main": "src/main.js",
   "scripts": {
     "start": "npm run icon:win && electron .",

@@ -1,49 +1,264 @@
 # CodexAuth Switch
 
-Windows local desktop app for switching the active Codex App account.
+CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
 
-## Run
+它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。项目只操作本机文件，不调用 OpenAI 官方接口，不访问 `chatgpt.com`，也不会上传 Codex 会话历史。
+
+> 这是非官方项目，与 OpenAI 无官方关联。
+
+## 功能
+
+- 导入当前 Codex App 登录状态。
+- 保存多个本地账号快照。
+- 通过替换 `%USERPROFILE%\.codex\auth.json` 切换当前 Codex 登录。
+- 使用 Windows DPAPI 加密保存账号凭据，仅当前 Windows 用户可解密。
+- 切换、重新登录、删除当前账号前自动备份原始 `auth.json`。
+- 提供主窗口、系统托盘菜单和悬浮快捷窗。
+- 从本地 Codex 日志读取额度和 token 使用情况。
+- 在应用内禁用网络请求，保持本地运行。
+
+## 安全边界
+
+CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和本应用自己的存储目录内。
+
+### 会写入的文件
+
+- `%USERPROFILE%\.codex\auth.json`
+  - Codex App 当前使用的本地登录文件。
+  - 切换账号时，应用会用已保存的账号快照替换这个文件。
+- `%APPDATA%\codex-auth-switcher\accounts.json`
+  - 本应用的账号元数据。
+- `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`
+  - 使用 DPAPI 加密后的账号凭据快照。
+- `%APPDATA%\codex-auth-switcher\backups\*.dpapi`
+  - 切换、重新登录、删除当前账号前生成的加密备份。
+
+### 只读取的文件
+
+- `%USERPROFILE%\.codex\auth.json`
+  - 用于导入当前登录、识别账号身份。
+- `%USERPROFILE%\.codex\sessions\**\rollout-*.jsonl`
+  - 用于本地统计用量和额度快照。
+- `%USERPROFILE%\.codex\session_index.jsonl`
+  - 存在时用于补充本地会话元数据。
+- `%USERPROFILE%\.codex\logs_2.sqlite`
+  - 以只读方式打开，用于读取 Codex 本地写入的额度事件。
+
+### 不会做的事
+
+- 不修改 Codex 会话历史。
+- 不删除 `%USERPROFILE%\.codex\sessions`。
+- 不写入 `logs_2.sqlite`。
+- 不上传 token、账号信息、会话日志或用量记录。
+- 不自行刷新 OpenAI token。
+- 不调用 OpenAI 官方 API。
+
+会影响 Codex App 当前运行状态的功能只有：切换账号、重新登录、删除当前账号、重启 Codex App。这些操作可能会替换或移除当前 `auth.json`，并重启 Codex App，让新的本地登录状态生效。
+
+## 实现方法
+
+### 账号识别
+
+导入当前登录时，应用会读取 `%USERPROFILE%\.codex\auth.json`，并验证它是否是 Codex App 的 ChatGPT 登录格式。
+
+应用会在本地解析 JWT payload，提取邮箱、用户 ID、workspace/account ID 等字段。账号匹配不会只依赖单个字段，而是尽量组合个人身份和工作区身份，因为同一个人可能加入多个工作区，同一个工作区也可能包含多个成员。
+
+### 凭据保存
+
+保存账号时，应用不会明文存储 `auth.json`。它会调用 Windows DPAPI：
+
+```text
+DataProtectionScope.CurrentUser
+```
+
+这表示加密后的账号快照绑定到当前 Windows 用户。其他 Windows 用户或其他机器不能直接解密。
+
+账号快照存储在：
+
+```text
+%APPDATA%\codex-auth-switcher\accounts
+```
+
+操作当前登录前的备份存储在：
+
+```text
+%APPDATA%\codex-auth-switcher\backups
+```
+
+### 账号切换流程
+
+切换账号时，应用会执行以下步骤：
+
+1. 读取当前 `%USERPROFILE%\.codex\auth.json`。
+2. 如果当前登录存在，先生成 DPAPI 加密备份。
+3. 解密目标账号的本地快照。
+4. 校验目标快照是否是有效的 Codex 登录文件。
+5. 先写入临时文件。
+6. 再通过原子重命名替换 `%USERPROFILE%\.codex\auth.json`。
+7. 根据用户选择重启 Codex App。
+
+使用临时文件加原子替换，是为了避免 Codex App 读到写入一半的 `auth.json`。
+
+### 重新登录流程
+
+如果某个已保存账号的 refresh token 失效，应用可以发起重新登录流程：
+
+1. 备份当前 `auth.json`。
+2. 删除当前本地 `auth.json`。
+3. 重启 Codex App。
+4. 用户在 Codex App 里走官方登录流程。
+5. Codex App 写入新的 `auth.json` 后，CodexAuth Switch 自动监听并保存到对应账号。
+
+这个过程不绕过官方登录，也不代替官方登录。真正的登录仍然发生在 Codex App 内。
+
+### 本地额度和用量统计
+
+额度和用量面板只读取 Codex App 已经写到本机的日志：
+
+- session JSONL 文件里的 `codex.rate_limits`。
+- `logs_2.sqlite` 里的 `codex.rate_limits` 和 usage-limit 记录。
+- session 文件里的 `token_count` 事件。
+
+应用会监听本地日志文件变化，并用短延迟防抖刷新显示；同时用低频轮询检查 SQLite 文件更新时间，避免文件监听漏事件。
+
+额度快照只保存到本应用自己的账号元数据中，不会写回 Codex 的日志文件。
+
+### 网络隔离
+
+Electron 窗口启用了以下安全配置：
+
+```js
+contextIsolation: true
+nodeIntegration: false
+sandbox: true
+webSecurity: true
+```
+
+页面 CSP 禁止网络连接：
+
+```html
+connect-src 'none'
+```
+
+主进程还通过 Electron `webRequest.onBeforeRequest` 拦截并取消以下出站请求：
+
+```text
+http://
+https://
+ws://
+wss://
+```
+
+这些限制用于确保应用保持本地工具属性，避免账号信息或本地历史被上传。
+
+## 使用方法
+
+### 安装依赖
 
 ```powershell
 npm install
+```
+
+### 启动应用
+
+```powershell
 npm start
 ```
 
-## Workflow
+本地隐藏调试启动：
 
-1. Open Codex App and sign in to one account.
-2. Open this app and click `导入当前 Codex App 登录`.
-3. In Codex App, sign out / sign in to another account.
-4. Import that account too.
-5. Use `切换` in this app to swap the active account.
+```powershell
+npm run dev:hidden
+```
 
-## Storage
+### 导入账号
 
-- Reads and writes `%USERPROFILE%\.codex\auth.json`.
-- Saved account credentials are encrypted with Windows DPAPI for the current Windows user.
-- Metadata and app cache are stored under `%APPDATA%\codex-auth-switcher`.
-- Before each switch, the current `auth.json` is backed up as a DPAPI-encrypted snapshot under `%APPDATA%\codex-auth-switcher\backups`.
-- Account matching uses a composite of person-level claims and the Business/workspace account id, because one Business workspace can contain multiple people and one person can belong to multiple workspaces.
+1. 打开 Codex App，并登录第一个账号。
+2. 打开 CodexAuth Switch。
+3. 点击导入当前 Codex 登录。
+4. 回到 Codex App，退出并登录另一个账号。
+5. 再回到 CodexAuth Switch，继续导入当前登录。
+6. 重复以上步骤，保存所有需要切换的账号。
 
-## Notes
+### 切换账号
 
-- This is for Codex App account switching. It does not depend on Codex CLI commands.
-- Closing the main window hides the app to the Windows tray. Use the tray menu to reopen it or quit.
-- The tray menu can open the main window, show/hide the floating quick-view card, switch saved accounts, and restart Codex App.
-- The floating card shows the current account, local quota snapshot, restart action, and quick account switching.
-- If Codex App has already loaded the old login, restart Codex App after switching.
-- The optional restart button closes running `Codex` processes and relaunches the installed Codex App.
-- While this app is running, it watches `%USERPROFILE%\.codex\auth.json` and also runs a low-frequency fallback sync to save fresh Codex-written credentials back into the matching saved account after official sign-in. If official sign-in returns a new identity that is not saved yet, it is imported locally as a new saved account.
-- If Codex reports `Your access token could not be refreshed because your refresh token was already used`, that saved credential is already stale. Sign in again in Codex App and import the current login again.
-- After switching, the app watches for Codex to write back a fresh login snapshot. If no refresh is observed, the account is marked as possibly needing reauth; the `重新登录` action encrypts a backup, clears the current local `auth.json`, and restarts Codex App so the official login flow opens.
-- The quota and token usage panels only read local `%USERPROFILE%\.codex\sessions` logs and do not upload session data.
-- After switching accounts, the quota panel prefers local Codex log entries generated after that switch. If none exist yet, it can show that same account's last captured local quota snapshot, but it will not reuse another account's latest snapshot. Token usage remains a local-history aggregate because Codex session logs do not currently include a stable account identifier.
-- Saved quota snapshots are matched against the account plan type, so a Business quota snapshot is not shown as a Plus account snapshot.
-- Codex local logs expose quota as `used_percent`; the UI labels it as used percentage and separately shows the remaining percentage.
-- Token totals are raw local token counts and are not weighted by high-speed mode or model-specific quota multipliers. Use the quota snapshot cards for actual 5-hour and weekly quota percentage.
-- The usage page refreshes from local logs periodically while the `用量` tab is open.
-- Quota cards update from local Codex log writes with a short debounce, and only refresh the UI when the saved local quota snapshot changes.
-- Continuous conversations may keep the quota snapshot unchanged until Codex writes the next local `rate_limits` record; the UI shows the snapshot time so stale local data is visible.
-- When a later local `token_count` record exists but Codex has not written a new `rate_limits` record yet, the UI may show a separate estimated remaining percentage. The estimate is calibrated from local historical quota snapshots, is never saved as an official quota snapshot, and is only a local approximation.
-- This app does not call `chatgpt.com` usage endpoints and does not refresh OpenAI tokens.
-- Use only your own OpenAI accounts. Do not share saved account credentials with other people.
+1. 在 CodexAuth Switch 中选择一个已保存账号。
+2. 点击切换。
+3. 如果 Codex App 仍显示旧账号，重启 Codex App。
+
+如果 Codex App 已经把旧登录加载进内存，通常需要重启 Codex App 后，新账号才会生效。
+
+### 重新登录已保存账号
+
+当 Codex 提示 refresh token 无法刷新，或某个保存账号已经失效时，使用重新登录功能。
+
+应用会清理当前本地登录并重启 Codex App。你只需要在 Codex App 里正常完成官方登录，新的 `auth.json` 写入后会被 CodexAuth Switch 捕获并保存。
+
+## 开发
+
+### 语法检查
+
+```powershell
+npm run lint
+```
+
+### 校验额度逻辑
+
+```powershell
+npm run quota:validate
+```
+
+这个命令会回放本机 `.codex` session 日志，检查额度估算逻辑。它只读取本地会话文件，不会写入这些文件。
+
+### 打包 Windows 安装器
+
+```powershell
+npm run pack:win
+```
+
+安装包输出到：
+
+```text
+release\
+```
+
+`release` 目录是本地构建产物，默认不提交到 Git。
+
+## 项目结构
+
+```text
+src/main.js                         Electron 主进程，本地文件访问、账号切换、额度逻辑
+src/preload.js                      安全 IPC bridge
+src/ui/index.html                   主窗口页面
+src/ui/app.js                       主窗口渲染逻辑
+src/ui/widget.html                  悬浮快捷窗页面
+src/ui/widget.js                    悬浮快捷窗渲染逻辑
+scripts/generate-icon.js            本地图标生成
+scripts/start-dev-hidden.ps1        隐藏调试启动脚本
+scripts/validate-quota-estimate.js  额度逻辑回放校验脚本
+QUOTA-LOGIC.md                      额度估算逻辑说明
+```
+
+## 限制
+
+- 目前只支持 Windows。
+- 凭据加密依赖 Windows DPAPI。
+- 目标是 Codex App 本地登录切换，不是 Codex CLI-only 工作流。
+- 额度和用量展示来自本地日志解析，属于本地近似展示。
+- Codex 没有写入新的本地 rate-limit 记录时，额度快照可能暂时不更新。
+- 不要跨机器或跨 Windows 用户共享已保存的凭据快照。
+
+## 开源前建议
+
+正式公开仓库前，建议补充：
+
+- Release 说明：解释安装包来源、版本号和校验方式。
+- 截图：展示主窗口、悬浮窗和托盘菜单。
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+## 使用提醒
+
+请只保存和切换你自己拥有或被授权使用的账号。不要把 `auth.json`、加密快照、备份文件分享给其他人。
