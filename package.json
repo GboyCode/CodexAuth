@@ -14,7 +14,7 @@
     "quota:validate": "node scripts\\validate-quota-estimate.js",
     "icon:win": "electron scripts\\generate-icon.js",
     "sidebar:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\generate-installer-sidebar.ps1",
-    "pack:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:win && npm run sidebar:win && node scripts\\prepare-builder.js && electron-builder --win nsis --x64"
+    "pack:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:win && npm run sidebar:win && node scripts\\prepare-builder.js && electron-builder --win nsis --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^39.8.10",
