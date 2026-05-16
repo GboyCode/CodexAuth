@@ -21,6 +21,12 @@ CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex Ap
 - 从本地 Codex 日志读取额度和 token 使用情况。
 - 在应用内禁用网络请求，保持本地运行。
 
+## 界面截图
+
+| 主窗口 | 悬浮快捷窗 |
+| --- | --- |
+| ![CodexAuth Switch 主窗口截图](docs/assets/screenshot-dashboard.png) | ![CodexAuth Switch 悬浮快捷窗截图](docs/assets/screenshot-widget.png) |
+
 ## 安全边界
 
 CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和本应用自己的存储目录内。

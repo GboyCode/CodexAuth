@@ -21,6 +21,12 @@ It is designed for people who use more than one OpenAI / Codex App account. You 
 - Read quota and token usage from local Codex logs.
 - Disable network requests inside the app to keep it local-only.
 
+## Screenshots
+
+| Main Window | Floating Quick View |
+| --- | --- |
+| ![CodexAuth Switch main window screenshot](docs/assets/screenshot-dashboard.png) | ![CodexAuth Switch floating widget screenshot](docs/assets/screenshot-widget.png) |
+
 ## Safety Boundary
 
 CodexAuth Switch is intentionally scoped to the local Codex login file and the app's own storage directory.
