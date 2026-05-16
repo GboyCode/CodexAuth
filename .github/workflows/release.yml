@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check source
+        run: npm run lint
+
+      - name: Build installer
+        run: npm run pack:win
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CodexAuth Switch ${{ github.ref_name }}
+          body: |
+            Initial open-source release.
+
+            - Windows local Codex App account switcher
+            - DPAPI-encrypted local account snapshots
+            - No OpenAI official API calls
+            - No Codex conversation history upload
+            - The installer is not commercially code-signed, so Windows may show a security warning.
+          files: |
+            release/CodexAuthSwitch-Setup-*.exe
+            release/CodexAuthSwitch-Setup-*.exe.blockmap
