@@ -1,5 +1,9 @@
 # CodexAuth Switch
 
+![CodexAuth Switch 横版海报](docs/assets/readme-poster.png)
+
+[English README](README.en.md) | 中文说明
+
 CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
 
 它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。项目只操作本机文件，不调用 OpenAI 官方接口，不访问 `chatgpt.com`，也不会上传 Codex 会话历史。
