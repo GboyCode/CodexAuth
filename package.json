@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local Windows desktop account switcher for Codex App.",
+  "author": "GboyCode",
   "license": "MIT",
   "main": "src/main.js",
   "scripts": {
