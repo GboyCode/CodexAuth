@@ -5,6 +5,28 @@
   "description": "Local Windows desktop account switcher for Codex App.",
   "author": "GboyCode",
   "license": "MIT",
+  "keywords": [
+    "codex",
+    "codex-app",
+    "openai-codex",
+    "account-switcher",
+    "multi-account",
+    "auth-json",
+    "windows",
+    "electron",
+    "dpapi",
+    "quota",
+    "token-usage",
+    "local-first"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GboyCode/CodexAuth.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GboyCode/CodexAuth/issues"
+  },
+  "homepage": "https://github.com/GboyCode/CodexAuth#readme",
   "main": "src/main.js",
   "scripts": {
     "start": "npm run icon:win && electron .",

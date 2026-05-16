@@ -8,7 +8,21 @@ CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex Ap
 
 它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。项目只操作本机文件，不调用 OpenAI 官方接口，不访问 `chatgpt.com`，也不会上传 Codex 会话历史。
 
+一句话定位：**CodexAuth Switch 是一个本地优先的 Codex App 多账号切换工具，支持 `auth.json` 快照管理、Windows DPAPI 加密、额度查看和 token 用量统计。**
+
 > 这是非官方项目，与 OpenAI 无官方关联。
+
+## 适合谁
+
+- 想在 Windows 上管理多个 Codex App 登录账号。
+- 想快速切换 OpenAI Codex / Codex App 当前账号。
+- 想安全保存和恢复本地 `%USERPROFILE%\.codex\auth.json` 登录快照。
+- 想查看 Codex 本地额度、5 小时额度、周额度、token 用量和最近会话。
+- 想确认工具不会调用 OpenAI 官方 API、不会上传本地 Codex 会话历史。
+
+## 常见搜索词
+
+Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows 桌面工具、Codex DPAPI 加密、Codex 不调用官方 API、Codex 本地历史只读。
 
 ## 功能
 

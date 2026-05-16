@@ -8,7 +8,21 @@ CodexAuth Switch is a local Windows desktop utility for quickly switching betwee
 
 It is designed for people who use more than one OpenAI / Codex App account. You can save each account's local login state, then switch the active Codex login through this tool. The project only operates on local files. It does not call OpenAI official APIs, does not access `chatgpt.com`, and does not upload Codex conversation history.
 
+One-line positioning: **CodexAuth Switch is a local-first Codex App multi-account switcher with `auth.json` snapshot management, Windows DPAPI encryption, quota display, and token usage statistics.**
+
 > This is an unofficial project and is not affiliated with OpenAI.
+
+## Who It Is For
+
+- Users who manage multiple Codex App login accounts on Windows.
+- Users who want to switch the active OpenAI Codex / Codex App account quickly.
+- Users who want to safely save and restore local `%USERPROFILE%\.codex\auth.json` login snapshots.
+- Users who want to view local Codex quota, 5-hour quota, weekly quota, token usage, and recent sessions.
+- Users who want a local-only tool that does not call OpenAI official APIs or upload Codex conversation history.
+
+## Search Keywords
+
+Codex account switcher, Codex multi account, Codex App account manager, OpenAI Codex account switcher, Codex auth.json switcher, Codex local login manager, Codex quota viewer, Codex token usage dashboard, Codex Windows desktop app, Codex DPAPI encryption, Codex no official API calls, Codex local history read-only.
 
 ## Features
 
