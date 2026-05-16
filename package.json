@@ -34,6 +34,8 @@
     "files": [
       "src/**/*",
       "README.md",
+      "README.en.md",
+      "docs/assets/**/*",
       "package.json",
       "!scripts/**/*",
       "!debug.log"
