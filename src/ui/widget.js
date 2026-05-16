@@ -4,6 +4,7 @@ const OPACITY_KEY = "codex-auth-widget-opacity";
 
 const els = {
   currentIdentity: document.querySelector("#currentIdentity"),
+  sessionWindowTitle: document.querySelector("#sessionWindowTitle"),
   sessionPercent: document.querySelector("#sessionPercent"),
   sessionMeter: document.querySelector("#sessionMeter"),
   sessionReset: document.querySelector("#sessionReset"),
@@ -51,16 +52,23 @@ function formatPlanType(planType) {
 
 function relativeReset(value) {
   if (!value) return "暂无重置时间";
-  const diffMs = Number(value) * 1000 - Date.now();
-  if (!Number.isFinite(diffMs)) return "暂无重置时间";
-  if (diffMs <= 0) return "已到重置时间";
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 60) return `${mins} 分钟后重置`;
-  const hours = Math.floor(mins / 60);
-  const leftMins = mins % 60;
-  if (hours < 48) return `${hours} 小时 ${leftMins} 分钟后重置`;
-  const days = Math.floor(hours / 24);
-  return `${days} 天后重置`;
+  const date = new Date(Number(value) * 1000);
+  if (Number.isNaN(date.getTime())) return "暂无重置时间";
+  if (date.getTime() <= Date.now()) return "已到重置时间";
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const time = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+  if (date.toDateString() === now.toDateString()) return `${time} 重置`;
+  if (date.toDateString() === tomorrow.toDateString()) return `明天 ${time} 重置`;
+  const day = new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  }).format(date);
+  return `${day} ${time} 重置`;
 }
 
 function quotaFreshnessLabel(quota) {
@@ -201,6 +209,9 @@ function renderWindow(kind, quotaWindow) {
   const percentEl = kind === "session" ? els.sessionPercent : els.weeklyPercent;
   const meterEl = kind === "session" ? els.sessionMeter : els.weeklyMeter;
   const resetEl = kind === "session" ? els.sessionReset : els.weeklyReset;
+  if (kind === "session") {
+    els.sessionWindowTitle.textContent = quotaWindowLabel(kind, quotaWindow);
+  }
   if (!quotaWindow) {
     percentEl.textContent = "--";
     meterEl.style.width = "0%";

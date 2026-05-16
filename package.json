@@ -9,6 +9,7 @@
     "dev": "npm run icon:win && electron .",
     "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",
     "lint": "node --check src/main.js && node --check src/preload.js && node --check src/ui/app.js && node --check src/ui/widget.js",
+    "quota:validate": "node scripts\\validate-quota-estimate.js",
     "icon:win": "electron scripts\\generate-icon.js",
     "sidebar:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\generate-installer-sidebar.ps1",
     "pack:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:win && npm run sidebar:win && node scripts\\prepare-builder.js && electron-builder --win nsis --x64"

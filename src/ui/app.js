@@ -93,18 +93,23 @@ function compactNumber(value) {
 
 function relativeReset(value) {
   if (!value) return "重置时间不可用";
-  const resetMs = Number(value) * 1000;
-  const diffMs = resetMs - Date.now();
-  if (!Number.isFinite(diffMs)) return "重置时间不可用";
-  if (diffMs <= 0) return "已到重置时间";
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 60) return `${mins} 分钟后重置`;
-  const hours = Math.floor(mins / 60);
-  const leftMins = mins % 60;
-  if (hours < 48) return `${hours} 小时 ${leftMins} 分钟后重置`;
-  const days = Math.floor(hours / 24);
-  const leftHours = hours % 24;
-  return `${days} 天 ${leftHours} 小时后重置`;
+  const date = new Date(Number(value) * 1000);
+  if (Number.isNaN(date.getTime())) return "重置时间不可用";
+  if (date.getTime() <= Date.now()) return "已到重置时间";
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const time = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+  if (date.toDateString() === now.toDateString()) return `${time} 重置`;
+  if (date.toDateString() === tomorrow.toDateString()) return `明天 ${time} 重置`;
+  const day = new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  }).format(date);
+  return `${day} ${time} 重置`;
 }
 
 function windowTitle(kind, quotaWindow) {

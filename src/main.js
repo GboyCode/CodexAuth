@@ -1132,7 +1132,7 @@ function hardenWindowNavigation(win) {
   });
 }
 
-function normalizeRateWindow(window) {
+function normalizeRateWindow(window, checkedAt = null) {
   if (!window) return null;
   const seconds = Number(window.limit_window_seconds ?? window.window_minutes * 60);
   const resetRaw = window.reset_at ?? window.resets_at;
@@ -1141,6 +1141,7 @@ function normalizeRateWindow(window) {
     usedPercent: Math.max(0, Math.min(100, Math.round(Number(window.used_percent ?? 0)))),
     windowMinutes: Number.isFinite(seconds) ? Math.round(seconds / 60) : null,
     resetsAt,
+    checkedAt,
   };
 }
 
@@ -1411,14 +1412,14 @@ async function parseSessionFileCached(file, indexMap, options = {}) {
   return parsed;
 }
 
-function quotaFromLocalRateLimits(rateLimits, checkedAt) {
+function quotaFromLocalRateLimits(rateLimits, checkedAt, windowCheckedAt = {}) {
   if (!rateLimits) return null;
   return {
     source: "local",
     checkedAt,
     planType: rateLimits.plan_type ?? null,
-    session: normalizeRateWindow(rateLimits.primary),
-    weekly: normalizeRateWindow(rateLimits.secondary),
+    session: normalizeRateWindow(rateLimits.primary, windowCheckedAt.session ?? checkedAt),
+    weekly: normalizeRateWindow(rateLimits.secondary, windowCheckedAt.weekly ?? checkedAt),
     credits: normalizeCredits(rateLimits.credits),
     error: null,
   };
@@ -1471,11 +1472,13 @@ function quotaFromUsageLimitMessage(message, timestampSeconds) {
       usedPercent: Math.max(100, numberHeader(headers, "x-codex-primary-used-percent") ?? 100),
       windowMinutes: numberHeader(headers, "x-codex-primary-window-minutes"),
       resetsAt: primaryResetAt ?? message.error?.resets_at ?? null,
+      checkedAt,
     },
     weekly: {
       usedPercent: Math.max(0, Math.min(100, numberHeader(headers, "x-codex-secondary-used-percent") ?? 0)),
       windowMinutes: numberHeader(headers, "x-codex-secondary-window-minutes"),
       resetsAt: secondaryResetAt,
+      checkedAt,
     },
     credits: {
       hasCredits: boolHeader(headers, "x-codex-credits-has-credits"),
@@ -1493,8 +1496,8 @@ function quotaFromCodexRateLimitsMessage(message, timestampSeconds) {
     source: "local",
     checkedAt,
     planType: message.plan_type ?? message.rate_limits?.plan_type ?? null,
-    session: normalizeRateWindow(message.rate_limits.primary),
-    weekly: normalizeRateWindow(message.rate_limits.secondary),
+    session: normalizeRateWindow(message.rate_limits.primary, checkedAt),
+    weekly: normalizeRateWindow(message.rate_limits.secondary, checkedAt),
     credits: normalizeCredits(message.credits),
     error: null,
   };
@@ -1592,27 +1595,34 @@ function newerQuota(left, right) {
   return rightMs > leftMs ? right : left;
 }
 
+function newerTimestamp(left, right) {
+  const leftMs = dateMs(left);
+  const rightMs = dateMs(right);
+  if (!Number.isFinite(leftMs)) return right ?? null;
+  if (!Number.isFinite(rightMs)) return left ?? null;
+  return rightMs > leftMs ? right : left;
+}
+
+function rateWindowSignature(window) {
+  if (!window) return "null";
+  return JSON.stringify({
+    usedPercent: window.used_percent ?? null,
+    windowMinutes: window.window_minutes ?? null,
+    limitWindowSeconds: window.limit_window_seconds ?? null,
+    resetAt: window.reset_at ?? window.resets_at ?? null,
+  });
+}
+
 async function parseLatestRateLimitFile(file, sinceMs) {
   let latest = null;
-  const maxTailBytes = 512 * 1024;
-  const handle = await fs.open(file.path, "r");
-  let text = "";
-  try {
-    const stat = await handle.stat();
-    const length = Math.min(stat.size, maxTailBytes);
-    const start = Math.max(0, stat.size - length);
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, start);
-    text = buffer.toString("utf8");
-    if (start > 0) {
-      const firstBreak = text.indexOf("\n");
-      text = firstBreak >= 0 ? text.slice(firstBreak + 1) : "";
-    }
-  } finally {
-    await handle.close();
-  }
+  let previousSessionSignature = null;
+  let previousWeeklySignature = null;
+  let latestSessionChangeTimestamp = null;
+  let latestWeeklyChangeTimestamp = null;
 
-  for (const line of text.split(/\r?\n/)) {
+  const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
     if (!line.trim()) continue;
     let entry;
     try {
@@ -1624,10 +1634,26 @@ async function parseLatestRateLimitFile(file, sinceMs) {
     if (!entry.payload?.rate_limits) continue;
     const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
     const eventMs = new Date(timestamp).getTime();
+    const sessionSignature = rateWindowSignature(entry.payload.rate_limits.primary);
+    const weeklySignature = rateWindowSignature(entry.payload.rate_limits.secondary);
+    const sessionChanged = previousSessionSignature === null || sessionSignature !== previousSessionSignature;
+    const weeklyChanged = previousWeeklySignature === null || weeklySignature !== previousWeeklySignature;
+    previousSessionSignature = sessionSignature;
+    previousWeeklySignature = weeklySignature;
     if (sinceMs && Number.isFinite(eventMs) && eventMs < sinceMs) continue;
+    if (sessionChanged) {
+      latestSessionChangeTimestamp = timestamp;
+    }
+    if (weeklyChanged) {
+      latestWeeklyChangeTimestamp = timestamp;
+    }
     latest = {
       rateLimits: entry.payload.rate_limits,
-      timestamp,
+      timestamp: newerTimestamp(latestSessionChangeTimestamp, latestWeeklyChangeTimestamp) ?? timestamp,
+      windowTimestamps: {
+        session: latestSessionChangeTimestamp ?? timestamp,
+        weekly: latestWeeklyChangeTimestamp ?? timestamp,
+      },
     };
   }
   return latest;
@@ -1901,63 +1927,76 @@ function collectQuotaCalibration(events, planType) {
     bySession.get(key).push(event);
   }
 
+  const nowMs = Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
   for (const sessionEvents of bySession.values()) {
     sessionEvents.sort((a, b) => a.ms - b.ms);
-    // Track the last event where rate_limits changed (or the first event).
-    // When rate_limits changes again, the token delta between the two change
-    // points represents the tokens that caused the quota percentage increase.
-    let lastChangeEvent = null;
-    let maxTokensSinceChange = null;
+    const trackers = {
+      session: { samples: sessionSamples, lastChangeEvent: null, maxTokensSinceChange: null },
+      weekly: { samples: weeklySamples, lastChangeEvent: null, maxTokensSinceChange: null },
+    };
     for (const event of sessionEvents) {
       if (!event.rateLimits || !rateLimitsMatchPlan(event.rateLimits, planType)) continue;
-      const currentSessionPercent = rawUsedPercent(event.rateLimits, "session");
-      const currentWeeklyPercent = rawUsedPercent(event.rateLimits, "weekly");
+      for (const kind of ["session", "weekly"]) {
+        const tracker = trackers[kind];
+        const currentPercent = rawUsedPercent(event.rateLimits, kind);
+        if (!Number.isFinite(currentPercent)) continue;
 
-      if (!lastChangeEvent) {
-        lastChangeEvent = event;
-        maxTokensSinceChange = event;
-        continue;
-      }
-
-      const previousSessionPercent = rawUsedPercent(lastChangeEvent.rateLimits, "session");
-      const previousWeeklyPercent = rawUsedPercent(lastChangeEvent.rateLimits, "weekly");
-      const sessionChanged = Number.isFinite(currentSessionPercent) && Number.isFinite(previousSessionPercent)
-        && currentSessionPercent !== previousSessionPercent;
-      const weeklyChanged = Number.isFinite(currentWeeklyPercent) && Number.isFinite(previousWeeklyPercent)
-        && currentWeeklyPercent !== previousWeeklyPercent;
-
-      if (sessionChanged || weeklyChanged) {
-        // Use the highest token count seen between the two change points as the
-        // delta (Codex may report the same token count on the change event itself).
-        const referenceEvent = maxTokensSinceChange || lastChangeEvent;
-        const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, lastChangeEvent.tokenUsage);
-        const weightedTokens = weightedTokenUsage(deltaUsage, referenceEvent.model || lastChangeEvent.model);
-        if (sessionChanged) {
-          addCalibrationSample(sessionSamples, currentSessionPercent - previousSessionPercent, weightedTokens);
+        if (!tracker.lastChangeEvent) {
+          tracker.lastChangeEvent = event;
+          tracker.maxTokensSinceChange = event;
+          continue;
         }
-        if (weeklyChanged) {
-          addCalibrationSample(weeklySamples, currentWeeklyPercent - previousWeeklyPercent, weightedTokens);
-        }
-        lastChangeEvent = event;
-        maxTokensSinceChange = event;
-      } else {
-        // Track the event with the highest token count between changes
-        if (tokenUsageTotal(event.tokenUsage) > tokenUsageTotal(maxTokensSinceChange.tokenUsage)) {
-          maxTokensSinceChange = event;
+
+        const previousPercent = rawUsedPercent(tracker.lastChangeEvent.rateLimits, kind);
+        const changed = Number.isFinite(previousPercent) && currentPercent !== previousPercent;
+        if (changed) {
+          const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
+          const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
+          const weightedTokens = weightedTokenUsage(deltaUsage, referenceEvent.model || tracker.lastChangeEvent.model);
+          const sampleMs = event.ms ?? nowMs;
+          const isRecent = nowMs - sampleMs <= sevenDaysMs;
+          addTaggedCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens, isRecent);
+          tracker.lastChangeEvent = event;
+          tracker.maxTokensSinceChange = event;
+        } else if (
+          tokenUsageTotal(event.tokenUsage) > tokenUsageTotal(tracker.maxTokensSinceChange.tokenUsage)
+        ) {
+          tracker.maxTokensSinceChange = event;
         }
       }
     }
   }
 
+  // Prefer recent samples (last 7 days) when we have enough of them.
+  // Otherwise fall back to all samples for stability.
+  const sessionRecent = sessionSamples.filter((s) => s.recent).map((s) => s.coeff);
+  const sessionAll = sessionSamples.map((s) => s.coeff);
+  const weeklyRecent = weeklySamples.filter((s) => s.recent).map((s) => s.coeff);
+  const weeklyAll = weeklySamples.map((s) => s.coeff);
+
+  const sessionPool = sessionRecent.length >= 5 ? sessionRecent : sessionAll;
+  const weeklyPool = weeklyRecent.length >= 5 ? weeklyRecent : weeklyAll;
+
   return {
-    sessionCoefficient: median(sessionSamples),
-    weeklyCoefficient: median(weeklySamples),
-    sessionSamples: sessionSamples.length,
-    weeklySamples: weeklySamples.length,
+    sessionCoefficient: median(sessionPool),
+    weeklyCoefficient: median(weeklyPool),
+    sessionSamples: sessionPool.length,
+    weeklySamples: weeklyPool.length,
+    sessionRecentCount: sessionRecent.length,
+    weeklyRecentCount: weeklyRecent.length,
   };
 }
 
-function tokenDeltaSinceBase(events, baseMs) {
+function addTaggedCalibrationSample(samples, percentDelta, weightedTokens, isRecent) {
+  if (!Number.isFinite(percentDelta) || !Number.isFinite(weightedTokens)) return;
+  if (percentDelta <= 0 || percentDelta > 40 || weightedTokens < 1000) return;
+  const coefficient = percentDelta / weightedTokens;
+  if (coefficient > 0 && coefficient < 0.01) samples.push({ coeff: coefficient, recent: !!isRecent });
+}
+
+function tokenDeltaSinceBase(events, baseMs, kind = "session") {
   const bySession = new Map();
   for (const event of events) {
     const key = event.sessionId || event.filePath;
@@ -1973,37 +2012,33 @@ function tokenDeltaSinceBase(events, baseMs) {
 
   for (const sessionEvents of bySession.values()) {
     sessionEvents.sort((a, b) => a.ms - b.ms);
-    let after = sessionEvents.filter((event) => event.ms > baseMs);
 
-    // When Codex repeats the same rate_limits on every token_count event within
-    // a single turn, all events share the same (or very close) timestamp as the
-    // base quota. In that case there are no events "after" the base even though
-    // tokens have been consumed. Detect this by checking if the session has
-    // multiple events at or after baseMs with unchanged rate_limits — if so,
-    // treat the first such event as the effective base and measure delta from it.
-    if (!after.length) {
-      const atOrAfter = sessionEvents.filter((event) => event.ms >= baseMs);
-      if (atOrAfter.length >= 2) {
-        const first = atOrAfter[0];
-        const last = atOrAfter[atOrAfter.length - 1];
-        // Only apply this fallback when rate_limits didn't change (static snapshot)
-        const firstPrimary = first.rateLimits?.primary?.used_percent;
-        const lastPrimary = last.rateLimits?.primary?.used_percent;
-        if (firstPrimary !== undefined && firstPrimary === lastPrimary) {
-          after = atOrAfter.slice(1);
-        }
-      }
+    // Detect if rate_limits stayed constant throughout this session.
+    // If so, the base quota snapshot is stale for the entire session and we
+    // should measure token delta from the session's first event to the latest.
+    const firstRL = rawUsedPercent(sessionEvents.find((e) => e.rateLimits)?.rateLimits, kind);
+    const lastRL = rawUsedPercent([...sessionEvents].reverse().find((e) => e.rateLimits)?.rateLimits, kind);
+    const rateLimitsStatic = firstRL !== null && firstRL === lastRL;
+
+    let effectiveBaseMs = baseMs;
+    if (rateLimitsStatic && sessionEvents.length >= 2) {
+      // Use the first event's timestamp as the effective base so that all
+      // subsequent token growth in this session counts as delta.
+      effectiveBaseMs = Math.min(baseMs, sessionEvents[0].ms);
     }
 
+    const after = sessionEvents.filter((event) => event.ms > effectiveBaseMs);
     if (!after.length) continue;
     const latestAfter = after[after.length - 1];
-    const before = [...sessionEvents].reverse().find((event) => event.ms <= baseMs)
-      ?? (after.length < sessionEvents.length ? null : sessionEvents[0]);
+    const before = [...sessionEvents].reverse().find((event) => event.ms <= effectiveBaseMs);
 
     let deltaUsage = null;
-    if (before && before !== latestAfter) {
+    if (before) {
       deltaUsage = subtractTokenUsage(latestAfter.tokenUsage, before.tokenUsage);
-    } else if (Number.isFinite(latestAfter.startedAtMs) && latestAfter.startedAtMs >= baseMs) {
+    } else if (after.length >= 2) {
+      // No event before the base; use first event in after as the reference
+      deltaUsage = subtractTokenUsage(latestAfter.tokenUsage, after[0].tokenUsage);
+    } else if (Number.isFinite(latestAfter.startedAtMs) && latestAfter.startedAtMs >= effectiveBaseMs) {
       deltaUsage = latestAfter.tokenUsage;
     }
 
@@ -2025,14 +2060,21 @@ function buildWindowEstimate(baseWindow, coefficient, weightedTokens, sampleCoun
   const baseUsed = Math.max(0, Math.min(100, Number(baseWindow.usedPercent || 0)));
   if (baseUsed >= 100) return null;
   const deltaPercent = coefficient * weightedTokens;
-  if (!Number.isFinite(deltaPercent) || deltaPercent < 0.5) return null;
+  if (!Number.isFinite(deltaPercent) || deltaPercent < 0.25) return null;
   const estimatedUsed = Math.max(baseUsed, Math.min(100, baseUsed + deltaPercent));
   return {
-    estimatedUsedPercent: Math.round(estimatedUsed),
-    estimatedRemainingPercent: Math.round(Math.max(0, 100 - estimatedUsed)),
+    estimatedUsedPercent: Math.ceil(estimatedUsed),
+    estimatedRemainingPercent: Math.floor(Math.max(0, 100 - estimatedUsed)),
     estimatedDeltaPercent: Math.round((estimatedUsed - baseUsed) * 10) / 10,
+    estimatedWeightedTokens: Math.round(weightedTokens),
+    estimateCoefficient: coefficient,
     estimateSamples: sampleCount,
   };
+}
+
+function coefficientFromCalibration(calibration, kind) {
+  const value = Number(calibration?.[kind]?.coefficient);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function fallbackQuotaCoefficient(planType, kind) {
@@ -2045,6 +2087,40 @@ function fallbackQuotaCoefficient(planType, kind) {
   }
   if (plan === "team" || plan === "business") return 1 / 250000;
   return 1 / 250000;
+}
+
+function selectQuotaCoefficient(kind, planType, historicalCoefficient, historicalSamples, activeCoefficient, activeSamples) {
+  const fallback = fallbackQuotaCoefficient(planType, kind);
+  const hasHistorical = Number.isFinite(historicalCoefficient) && Number(historicalSamples || 0) >= 3;
+  const hasActive = Number.isFinite(activeCoefficient) && Number(activeSamples || 0) >= 1;
+  if (hasActive && hasHistorical) {
+    const min = historicalCoefficient * 0.5;
+    const max = historicalCoefficient * 2;
+    if (activeCoefficient >= min && activeCoefficient <= max) {
+      return {
+        coefficient: activeSamples >= 2 ? activeCoefficient : activeCoefficient * 0.65 + historicalCoefficient * 0.35,
+        source: activeSamples >= 2 ? "active-session" : "active-session-blended",
+      };
+    }
+    return { coefficient: historicalCoefficient, source: "calibrated" };
+  }
+  if (hasHistorical) return { coefficient: historicalCoefficient, source: "calibrated" };
+  if (hasActive && activeSamples >= 2) return { coefficient: activeCoefficient, source: "active-session" };
+  if (Number.isFinite(historicalCoefficient)) return { coefficient: historicalCoefficient, source: "low-sample" };
+  return { coefficient: fallback, source: "fallback" };
+}
+
+function blendLearnedCoefficient(kind, selected, learnedCoefficient) {
+  if (!Number.isFinite(learnedCoefficient) || learnedCoefficient <= 0) return selected;
+  const base = Number(selected?.coefficient);
+  if (!Number.isFinite(base) || base <= 0) return { coefficient: learnedCoefficient, source: "learned" };
+  const min = base * 0.25;
+  const max = base * 4;
+  const bounded = Math.max(min, Math.min(max, learnedCoefficient));
+  return {
+    coefficient: bounded * 0.7 + base * 0.3,
+    source: selected?.source ? `learned-${selected.source}` : "learned",
+  };
 }
 
 function newerTokenDelta(left, right) {
@@ -2072,8 +2148,11 @@ async function readQuotaEstimate(options = {}) {
   if (!baseQuota || baseQuota.source !== "local") {
     return quotaEstimateUnavailable("\u7b49\u5f85\u672c\u5730\u989d\u5ea6\u5feb\u7167");
   }
-  const baseMs = dateMs(baseQuota.checkedAt);
-  if (!Number.isFinite(baseMs)) return quotaEstimateUnavailable("\u5feb\u7167\u65f6\u95f4\u4e0d\u53ef\u7528");
+  const sessionBaseMs = dateMs(baseQuota.session?.checkedAt ?? baseQuota.checkedAt);
+  const weeklyBaseMs = dateMs(baseQuota.weekly?.checkedAt ?? baseQuota.checkedAt);
+  const baseTimes = [sessionBaseMs, weeklyBaseMs].filter(Number.isFinite);
+  if (!baseTimes.length) return quotaEstimateUnavailable("\u5feb\u7167\u65f6\u95f4\u4e0d\u53ef\u7528");
+  const earliestBaseMs = Math.min(...baseTimes);
 
   const sinceMs = options.since ? dateMs(options.since) : null;
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
@@ -2090,7 +2169,7 @@ async function readQuotaEstimate(options = {}) {
   }
 
   const sqliteSinceMs =
-    effectiveSinceMs && Number.isFinite(effectiveSinceMs) ? Math.min(effectiveSinceMs, baseMs) : baseMs;
+    effectiveSinceMs && Number.isFinite(effectiveSinceMs) ? Math.min(effectiveSinceMs, earliestBaseMs) : earliestBaseMs;
   const sqliteEvents = await readSqliteResponseCompletedEvents({ sinceMs: sqliteSinceMs });
   const events = [...sessionEvents, ...sqliteEvents];
   if (!events.length) return quotaEstimateUnavailable("\u672a\u627e\u5230\u672c\u5730 token \u8bb0\u5f55");
@@ -2100,52 +2179,167 @@ async function readQuotaEstimate(options = {}) {
 
   const scopedSessionEvents = effectiveSinceMs ? sessionEvents.filter((event) => event.ms >= effectiveSinceMs) : sessionEvents;
   const scopedSqliteEvents = effectiveSinceMs ? sqliteEvents.filter((event) => event.ms >= effectiveSinceMs) : sqliteEvents;
-  const delta = newerTokenDelta(
-    tokenDeltaSinceBase(scopedSessionEvents, baseMs),
-    tokenDeltaSinceBase(scopedSqliteEvents, baseMs)
-  );
-  if (!delta.latestAt) {
-    const baseAgeMs = Date.now() - baseMs;
+  const sessionDelta = Number.isFinite(sessionBaseMs)
+    ? newerTokenDelta(
+        tokenDeltaSinceBase(scopedSessionEvents, sessionBaseMs, "session"),
+        tokenDeltaSinceBase(scopedSqliteEvents, sessionBaseMs, "session")
+      )
+    : null;
+  const weeklyDelta = Number.isFinite(weeklyBaseMs)
+    ? newerTokenDelta(
+        tokenDeltaSinceBase(scopedSessionEvents, weeklyBaseMs, "weekly"),
+        tokenDeltaSinceBase(scopedSqliteEvents, weeklyBaseMs, "weekly")
+      )
+    : null;
+  const freshestDelta = newerTokenDelta(sessionDelta, weeklyDelta);
+  if (!sessionDelta?.latestAt && !weeklyDelta?.latestAt) {
+    const baseAgeMs = Date.now() - earliestBaseMs;
     if (Number.isFinite(baseAgeMs) && baseAgeMs < 5 * 60 * 1000) return null;
     return quotaEstimateUnavailable("\u7b49\u5f85\u5feb\u7167\u540e\u7684 token \u8bb0\u5f55");
   }
-  if (delta.weightedTokens < 100) return quotaEstimateUnavailable("\u5feb\u7167\u540e\u589e\u91cf\u592a\u5c0f");
 
   const calibration = collectQuotaCalibration(sessionEvents, baseQuota.planType);
-  const sessionCoefficient =
-    calibration.sessionCoefficient ?? fallbackQuotaCoefficient(baseQuota.planType, "session");
-  const weeklyCoefficient = calibration.weeklyCoefficient ?? fallbackQuotaCoefficient(baseQuota.planType, "weekly");
-  const usedFallbackCoefficient =
-    !Number.isFinite(calibration.sessionCoefficient) || !Number.isFinite(calibration.weeklyCoefficient);
-  const sessionEstimate = buildWindowEstimate(
-    baseQuota.session,
+
+  // Active-session calibration: if rate_limits changed within the most recent
+  // active session, use that change as a high-confidence calibration sample
+  // for predicting further consumption in the same session. This adapts to
+  // the current task's actual token-to-quota ratio (which can vary 2-3x by
+  // task type even within the same plan).
+  const activeSessionCalibration = computeActiveSessionCalibration(scopedSessionEvents, baseQuota.planType);
+
+  const sessionCoefficient = selectQuotaCoefficient(
+    "session",
+    baseQuota.planType,
+    calibration.sessionCoefficient,
+    calibration.sessionSamples,
+    activeSessionCalibration.sessionCoefficient,
+    activeSessionCalibration.sessionSamples
+  );
+  const weeklyCoefficient = selectQuotaCoefficient(
+    "weekly",
+    baseQuota.planType,
+    calibration.weeklyCoefficient,
+    calibration.weeklySamples,
+    activeSessionCalibration.weeklyCoefficient,
+    activeSessionCalibration.weeklySamples
+  );
+  const learned = options.calibration;
+  const tunedSessionCoefficient = blendLearnedCoefficient(
+    "session",
     sessionCoefficient,
-    delta.weightedTokens,
-    calibration.sessionSamples
+    coefficientFromCalibration(learned, "session")
   );
-  const weeklyEstimate = buildWindowEstimate(
-    baseQuota.weekly,
+  const tunedWeeklyCoefficient = blendLearnedCoefficient(
+    "weekly",
     weeklyCoefficient,
-    delta.weightedTokens,
-    calibration.weeklySamples
+    coefficientFromCalibration(learned, "weekly")
   );
+  const sessionEstimate = sessionDelta?.weightedTokens >= 100
+    ? buildWindowEstimate(baseQuota.session, tunedSessionCoefficient.coefficient, sessionDelta.weightedTokens, calibration.sessionSamples)
+    : null;
+  // Weekly quota moves slowly and local Codex logs normally include the latest
+  // weekly rate_limit snapshot. Estimating between snapshots tends to be more
+  // confusing than useful, so keep weekly display pinned to the observed value.
+  const weeklyEstimate = null;
 
   if (!sessionEstimate && !weeklyEstimate) return quotaEstimateUnavailable("\u7b49\u5f85\u5386\u53f2\u6821\u51c6\u6837\u672c");
   return {
     source: "local-estimate",
     available: true,
-    checkedAt: delta.latestAt,
+    checkedAt: freshestDelta?.latestAt,
     baseCheckedAt: baseQuota.checkedAt,
-    weightedTokens: Math.round(delta.weightedTokens),
-    tokenUsage: delta.tokenUsage,
-    sessions: delta.sessions,
-    confidence: Math.max(calibration.sessionSamples, calibration.weeklySamples) >= 3
-      ? "calibrated"
-      : usedFallbackCoefficient
-        ? "fallback"
-        : "low-sample",
+    weightedTokens: Math.round(Math.max(sessionDelta?.weightedTokens ?? 0, weeklyDelta?.weightedTokens ?? 0)),
+    tokenUsage: freshestDelta?.tokenUsage ?? sessionDelta?.tokenUsage ?? weeklyDelta?.tokenUsage,
+    sessions: Math.max(sessionDelta?.sessions ?? 0, weeklyDelta?.sessions ?? 0),
+    confidence: [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("active-session")
+      ? "active-session"
+      : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("active-session-blended")
+        ? "active-session-blended"
+        : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].some((source) => String(source).startsWith("learned"))
+          ? "learned"
+          : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("calibrated")
+          ? "calibrated"
+          : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("low-sample")
+            ? "low-sample"
+            : "fallback",
     session: sessionEstimate,
     weekly: weeklyEstimate,
+  };
+}
+
+// Compute calibration coefficient from rate_limits changes that happened
+// within the current (most recent) session. This captures the actual token
+// consumption pattern of the running task, which is far more accurate than
+// historical averages for long-running agentic work.
+function computeActiveSessionCalibration(events, planType) {
+  if (!events.length) return { sessionCoefficient: null, weeklyCoefficient: null };
+
+  // Find the most recent session
+  const bySession = new Map();
+  for (const event of events) {
+    const key = event.sessionId || event.filePath;
+    if (!bySession.has(key)) bySession.set(key, []);
+    bySession.get(key).push(event);
+  }
+
+  let mostRecentSessionEvents = null;
+  let mostRecentMs = 0;
+  for (const sessionEvts of bySession.values()) {
+    const lastMs = Math.max(...sessionEvts.map((e) => e.ms));
+    if (lastMs > mostRecentMs) {
+      mostRecentMs = lastMs;
+      mostRecentSessionEvents = sessionEvts;
+    }
+  }
+  if (!mostRecentSessionEvents) return { sessionCoefficient: null, weeklyCoefficient: null };
+
+  mostRecentSessionEvents.sort((a, b) => a.ms - b.ms);
+
+  // Collect calibration samples within this session only
+  const sessionSamples = [];
+  const weeklySamples = [];
+  const trackers = {
+    session: { samples: sessionSamples, lastChangeEvent: null, maxTokensSinceChange: null },
+    weekly: { samples: weeklySamples, lastChangeEvent: null, maxTokensSinceChange: null },
+  };
+
+  for (const event of mostRecentSessionEvents) {
+    if (!event.rateLimits || !rateLimitsMatchPlan(event.rateLimits, planType)) continue;
+    for (const kind of ["session", "weekly"]) {
+      const tracker = trackers[kind];
+      const currentPercent = rawUsedPercent(event.rateLimits, kind);
+      if (!Number.isFinite(currentPercent)) continue;
+
+      if (!tracker.lastChangeEvent) {
+        tracker.lastChangeEvent = event;
+        tracker.maxTokensSinceChange = event;
+        continue;
+      }
+
+      const previousPercent = rawUsedPercent(tracker.lastChangeEvent.rateLimits, kind);
+      const changed = Number.isFinite(previousPercent) && currentPercent !== previousPercent;
+      if (changed) {
+        const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
+        const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
+        const weightedTokens = weightedTokenUsage(deltaUsage, referenceEvent.model || tracker.lastChangeEvent.model);
+        addCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens);
+        tracker.lastChangeEvent = event;
+        tracker.maxTokensSinceChange = event;
+      } else if (
+        tokenUsageTotal(event.tokenUsage) > tokenUsageTotal(tracker.maxTokensSinceChange.tokenUsage)
+      ) {
+        tracker.maxTokensSinceChange = event;
+      }
+    }
+  }
+
+  // Need at least 1 in-session sample to use this; we trust it since it
+  // comes from the actual running task.
+  return {
+    sessionCoefficient: sessionSamples.length >= 1 ? median(sessionSamples) : null,
+    weeklyCoefficient: weeklySamples.length >= 1 ? median(weeklySamples) : null,
+    sessionSamples: sessionSamples.length,
+    weeklySamples: weeklySamples.length,
   };
 }
 
@@ -2191,7 +2385,7 @@ async function readLatestLocalQuota(options = {}) {
       continue;
     }
     if (latest?.rateLimits) {
-      return quotaFromLocalRateLimits(latest.rateLimits, latest.timestamp);
+      return quotaFromLocalRateLimits(latest.rateLimits, latest.timestamp, latest.windowTimestamps);
     }
   }
   return null;
@@ -2296,6 +2490,7 @@ async function dashboardScope() {
     hasCurrentAuth: !!currentIdentityKey,
     accountPlanType: account?.identity?.planType ?? null,
     accountQuotaSnapshot: account?.quotaSnapshot ?? null,
+    accountQuotaCalibration: account?.quotaCalibration ?? null,
     since: account?.lastSwitchedAt ?? null,
     mode: account?.lastSwitchedAt ? "since-account-switch" : "all-local",
   };
@@ -2311,14 +2506,16 @@ async function saveAccountQuotaSnapshot(accountId, quota) {
     weekly: quota.weekly,
     credits: quota.credits,
     error: quota.error ?? null,
+    estimate: quota.estimate ?? null,
   };
   return mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) return { value: false, write: false };
     if (!quotaMatchesAccount(account, quota)) return { value: false, write: false };
+    const learned = updateQuotaLearning(account, quota);
     const previous = JSON.stringify(account.quotaSnapshot ?? null);
     const next = JSON.stringify(nextSnapshot);
-    if (previous === next) return { value: false, write: false };
+    if (previous === next && !learned) return { value: false, write: false };
     account.quotaSnapshot = nextSnapshot;
     account.quotaSnapshotUpdatedAt = new Date().toISOString();
     return { value: true };
@@ -2329,6 +2526,65 @@ function quotaMatchesAccount(account, quota) {
   const accountPlan = account?.identity?.planType;
   const quotaPlan = quota?.planType;
   return !accountPlan || !quotaPlan || accountPlan === quotaPlan;
+}
+
+function windowLearningSample(previousSnapshot, nextQuota, kind) {
+  const previousWindow = previousSnapshot?.[kind];
+  const nextWindow = nextQuota?.[kind];
+  const estimate = previousWindow?.estimatedDeltaPercent;
+  const previousUsed = Number(previousWindow?.usedPercent);
+  const nextUsed = Number(nextWindow?.usedPercent);
+  const previousEstimateTokens = Number(
+    previousWindow?.estimatedWeightedTokens ?? previousSnapshot?.estimate?.weightedTokens
+  );
+  if (!Number.isFinite(estimate) || estimate <= 0) return null;
+  if (!Number.isFinite(previousUsed) || !Number.isFinite(nextUsed)) return null;
+  if (!Number.isFinite(previousEstimateTokens) || previousEstimateTokens < 1000) return null;
+  if (previousWindow?.resetsAt && nextWindow?.resetsAt && Number(previousWindow.resetsAt) !== Number(nextWindow.resetsAt)) {
+    return null;
+  }
+  const actualDelta = nextUsed - previousUsed;
+  if (!Number.isFinite(actualDelta) || actualDelta <= 0 || actualDelta > 40) return null;
+  const coefficient = actualDelta / previousEstimateTokens;
+  if (!Number.isFinite(coefficient) || coefficient <= 0 || coefficient >= 0.01) return null;
+  return {
+    coefficient,
+    actualDelta: Math.round(actualDelta * 10) / 10,
+    predictedDelta: Math.round(estimate * 10) / 10,
+    weightedTokens: Math.round(previousEstimateTokens),
+    observedAt: nextQuota.checkedAt ?? new Date().toISOString(),
+  };
+}
+
+function updateLearningWindow(existing, sample) {
+  if (!sample) return existing ?? null;
+  const previous = Number(existing?.coefficient);
+  const previousSamples = Number(existing?.samples || 0);
+  const coefficient = Number.isFinite(previous) && previous > 0
+    ? previous * 0.8 + sample.coefficient * 0.2
+    : sample.coefficient;
+  return {
+    coefficient,
+    samples: Math.min(200, previousSamples + 1),
+    updatedAt: sample.observedAt,
+    lastSample: sample,
+  };
+}
+
+function updateQuotaLearning(account, nextQuota) {
+  if (!account?.quotaSnapshot || !nextQuota || nextQuota.source !== "local") return false;
+  const currentLearning = account.quotaCalibration && typeof account.quotaCalibration === "object"
+    ? account.quotaCalibration
+    : {};
+  const sessionSample = windowLearningSample(account.quotaSnapshot, nextQuota, "session");
+  const weeklySample = windowLearningSample(account.quotaSnapshot, nextQuota, "weekly");
+  if (!sessionSample && !weeklySample) return false;
+  account.quotaCalibration = {
+    ...currentLearning,
+    session: updateLearningWindow(currentLearning.session, sessionSample),
+    weekly: updateLearningWindow(currentLearning.weekly, weeklySample),
+  };
+  return true;
 }
 
 async function cleanupMismatchedQuotaSnapshots() {
@@ -2400,12 +2656,18 @@ async function getQuota() {
     ),
     await readLatestUsageLimitQuota({ since: scope.since })
   );
-  const quotaEstimate = await readQuotaEstimate({ since: scope.since, files, baseQuota: latestQuota });
+  const quotaEstimate = await readQuotaEstimate({
+    since: scope.since,
+    files,
+    baseQuota: latestQuota,
+    calibration: scope.accountQuotaCalibration,
+  });
+  const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate);
   if (latestQuota && scope.accountId) {
-    await saveAccountQuotaSnapshot(scope.accountId, latestQuota);
+    await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
   }
   return {
-    quota: attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate),
+    quota: resolvedQuota,
     scope,
     checkedAt: new Date().toISOString(),
   };
@@ -2424,13 +2686,18 @@ async function getDashboard() {
     ),
     await readLatestUsageLimitQuota({ since: scope.since })
   );
-  if (latestQuota && scope.accountId) {
-    await saveAccountQuotaSnapshot(scope.accountId, latestQuota);
-  }
   const usage = await readLocalUsage({ since: scope.since, files });
   const baseQuota = latestQuota ?? usage.latestQuota;
-  const quotaEstimate = await readQuotaEstimate({ since: scope.since, files, baseQuota });
+  const quotaEstimate = await readQuotaEstimate({
+    since: scope.since,
+    files,
+    baseQuota,
+    calibration: scope.accountQuotaCalibration,
+  });
   const quota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
+  if (latestQuota && scope.accountId) {
+    await saveAccountQuotaSnapshot(scope.accountId, quota);
+  }
   return { quota, usage, scope };
 }
 
