@@ -39,13 +39,21 @@ function subtractTokenUsage(later, earlier) {
   };
 }
 
-function modelQuotaMultiplier(model) {
+function modelQuotaMultiplier(model, effort = null) {
   const value = String(model || "").toLowerCase();
-  return /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ? 1.5 : 1;
+  const effortValue = String(effort || "").toLowerCase();
+  let multiplier = /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ? 1.5 : 1;
+  if (effortValue === "xhigh") multiplier *= 1.08;
+  else if (effortValue === "medium") multiplier *= 0.95;
+  else if (effortValue === "low" || effortValue === "minimal") multiplier *= 0.9;
+  return multiplier;
 }
 
-function weightedTokenUsage(usage, model) {
-  return tokenUsageTotal(usage) * modelQuotaMultiplier(model);
+function weightedTokenUsage(usage, model, effort = null) {
+  const baseTokens = tokenUsageTotal(usage);
+  const reasoningTokens = Number(usage?.reasoningOutputTokens ?? 0);
+  const explicitReasoningTokens = Number.isFinite(reasoningTokens) && reasoningTokens > 0 ? reasoningTokens : 0;
+  return (baseTokens + explicitReasoningTokens) * modelQuotaMultiplier(model, effort);
 }
 
 function rawUsedPercent(rateLimits, kind) {
@@ -95,6 +103,7 @@ async function parseFile(file) {
   const events = [];
   let sessionId = null;
   let model = null;
+  let effort = null;
   const stream = fs.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -109,6 +118,7 @@ async function parseFile(file) {
       sessionId = entry.payload?.id ?? sessionId;
     } else if (entry.type === "turn_context") {
       model = entry.payload?.model ?? model;
+      effort = entry.payload?.effort ?? entry.payload?.collaboration_mode?.settings?.reasoning_effort ?? effort;
     } else if (entry.type === "event_msg" && entry.payload?.type === "token_count") {
       const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
       const ms = dateMs(timestamp);
@@ -119,6 +129,7 @@ async function parseFile(file) {
         timestamp,
         ms,
         model,
+        effort,
         tokenUsage: normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage),
         rateLimits: entry.payload.rate_limits,
       });
@@ -163,7 +174,11 @@ function collectSamples(events) {
 
         const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
         const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
-        const weightedTokens = weightedTokenUsage(deltaUsage, event.model || tracker.lastChangeEvent.model);
+        const weightedTokens = weightedTokenUsage(
+          deltaUsage,
+          event.model || tracker.lastChangeEvent.model,
+          event.effort || tracker.lastChangeEvent.effort
+        );
         const percentDelta = current - previous;
         if (percentDelta > 0 && percentDelta <= 40 && weightedTokens >= 1000) {
           samples.push({

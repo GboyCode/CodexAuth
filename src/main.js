@@ -1272,13 +1272,21 @@ function tokenUsageTotal(usage) {
   return Math.max(0, (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0));
 }
 
-function modelQuotaMultiplier(model) {
+function modelQuotaMultiplier(model, effort = null) {
   const value = String(model || "").toLowerCase();
-  return /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ? 1.5 : 1;
+  const effortValue = String(effort || "").toLowerCase();
+  let multiplier = /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ? 1.5 : 1;
+  if (effortValue === "xhigh") multiplier *= 1.08;
+  else if (effortValue === "medium") multiplier *= 0.95;
+  else if (effortValue === "low" || effortValue === "minimal") multiplier *= 0.9;
+  return multiplier;
 }
 
-function weightedTokenUsage(usage, model) {
-  return tokenUsageTotal(usage) * modelQuotaMultiplier(model);
+function weightedTokenUsage(usage, model, effort = null) {
+  const baseTokens = tokenUsageTotal(usage);
+  const reasoningTokens = Number(usage?.reasoningOutputTokens ?? 0);
+  const explicitReasoningTokens = Number.isFinite(reasoningTokens) && reasoningTokens > 0 ? reasoningTokens : 0;
+  return (baseTokens + explicitReasoningTokens) * modelQuotaMultiplier(model, effort);
 }
 
 function cloneTokenUsage(usage) {
@@ -1664,6 +1672,7 @@ async function parseQuotaEventFile(file) {
   let sessionId = null;
   let startedAtMs = null;
   let model = null;
+  let effort = null;
 
   const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1681,6 +1690,7 @@ async function parseQuotaEventFile(file) {
       startedAtMs = dateMs(entry.payload?.timestamp ?? entry.timestamp) ?? startedAtMs;
     } else if (entry.type === "turn_context") {
       model = entry.payload?.model ?? model;
+      effort = entry.payload?.effort ?? entry.payload?.collaboration_mode?.settings?.reasoning_effort ?? effort;
     } else if (entry.type === "event_msg" && entry.payload?.type === "token_count") {
       const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
       const ms = dateMs(timestamp);
@@ -1693,6 +1703,7 @@ async function parseQuotaEventFile(file) {
         timestamp,
         ms,
         model,
+        effort,
         tokenUsage: normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage),
         rateLimits: entry.payload?.rate_limits ?? null,
       });
@@ -1954,7 +1965,11 @@ function collectQuotaCalibration(events, planType) {
         if (changed) {
           const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
           const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
-          const weightedTokens = weightedTokenUsage(deltaUsage, referenceEvent.model || tracker.lastChangeEvent.model);
+          const weightedTokens = weightedTokenUsage(
+            deltaUsage,
+            referenceEvent.model || tracker.lastChangeEvent.model,
+            referenceEvent.effort || tracker.lastChangeEvent.effort
+          );
           const sampleMs = event.ms ?? nowMs;
           const isRecent = nowMs - sampleMs <= sevenDaysMs;
           addTaggedCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens, isRecent);
@@ -2022,9 +2037,11 @@ function tokenDeltaSinceBase(events, baseMs, kind = "session") {
 
     let effectiveBaseMs = baseMs;
     if (rateLimitsStatic && sessionEvents.length >= 2) {
-      // Use the first event's timestamp as the effective base so that all
-      // subsequent token growth in this session counts as delta.
-      effectiveBaseMs = Math.min(baseMs, sessionEvents[0].ms);
+      // If the quota snapshot predates this session, use the first token event
+      // as the local baseline. Do not move the baseline backward when the
+      // snapshot was taken mid-session; doing so double-counts tokens already
+      // covered by that snapshot and can greatly overestimate quota usage.
+      effectiveBaseMs = baseMs < sessionEvents[0].ms ? sessionEvents[0].ms : baseMs;
     }
 
     const after = sessionEvents.filter((event) => event.ms > effectiveBaseMs);
@@ -2044,7 +2061,7 @@ function tokenDeltaSinceBase(events, baseMs, kind = "session") {
 
     if (!deltaUsage || tokenUsageTotal(deltaUsage) <= 0) continue;
     addTokenUsage(tokenUsage, deltaUsage);
-    weightedTokens += weightedTokenUsage(deltaUsage, latestAfter.model);
+    weightedTokens += weightedTokenUsage(deltaUsage, latestAfter.model, latestAfter.effort);
     sessions += 1;
     if (latestAfter.ms >= latestMs) {
       latestMs = latestAfter.ms;
@@ -2321,7 +2338,11 @@ function computeActiveSessionCalibration(events, planType) {
       if (changed) {
         const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
         const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
-        const weightedTokens = weightedTokenUsage(deltaUsage, referenceEvent.model || tracker.lastChangeEvent.model);
+        const weightedTokens = weightedTokenUsage(
+          deltaUsage,
+          referenceEvent.model || tracker.lastChangeEvent.model,
+          referenceEvent.effort || tracker.lastChangeEvent.effort
+        );
         addCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens);
         tracker.lastChangeEvent = event;
         tracker.maxTokensSinceChange = event;
