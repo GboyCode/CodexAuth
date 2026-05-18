@@ -32,11 +32,14 @@ const WIDGET_MAX_ACCOUNT_ROWS = 4;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;
 const WIDGET_MAX_HEIGHT = 900;
 const VALID_RESIZE_EDGES = new Set(["n", "e", "s", "w", "ne", "se", "sw", "nw"]);
-const WIDGET_DOCK_EDGE_THRESHOLD = 18;
-const WIDGET_DOCK_VISIBLE_SIZE = 10;
-const WIDGET_DOCK_SETTLE_MS = 220;
-const WIDGET_DOCK_COLLAPSE_MS = 520;
+const WIDGET_DOCK_EDGE_THRESHOLD = 34;
+const WIDGET_DOCK_VISIBLE_SIZE = 12;
+const WIDGET_DOCK_SETTLE_MS = 90;
+const WIDGET_DOCK_COLLAPSE_MS = 420;
 const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
+const WIDGET_DOCK_POLL_MS = 90;
+const WIDGET_DOCK_HOTZONE = 3;
+const WIDGET_DOCK_CURSOR_GRACE = 14;
 
 let mainWindow;
 let widgetWindow;
@@ -51,6 +54,7 @@ let widgetDockState = {
   pointerInside: false,
   settleTimer: null,
   collapseTimer: null,
+  pollTimer: null,
   suppressMoveUntil: 0,
 };
 let authWatcher;
@@ -2856,10 +2860,15 @@ function clearWidgetDockTimers() {
     clearTimeout(widgetDockState.collapseTimer);
     widgetDockState.collapseTimer = null;
   }
+  if (widgetDockState.pollTimer) {
+    clearInterval(widgetDockState.pollTimer);
+    widgetDockState.pollTimer = null;
+  }
 }
 
 function resetWidgetDockState({ keepPointer = true } = {}) {
   clearWidgetDockTimers();
+  setWidgetDockSizing(false);
   widgetDockState = {
     edge: null,
     expandedBounds: null,
@@ -2867,6 +2876,7 @@ function resetWidgetDockState({ keepPointer = true } = {}) {
     pointerInside: keepPointer ? widgetDockState.pointerInside : false,
     settleTimer: null,
     collapseTimer: null,
+    pollTimer: null,
     suppressMoveUntil: 0,
   };
 }
@@ -2904,12 +2914,29 @@ function expandedWidgetBoundsForDock(bounds, edge) {
 
 function collapsedWidgetBoundsForDock(expandedBounds, edge) {
   const workArea = widgetWorkAreaForBounds(expandedBounds);
-  const bounds = { ...expandedBounds };
-  if (edge === "left") bounds.x = workArea.x - bounds.width + WIDGET_DOCK_VISIBLE_SIZE;
-  if (edge === "right") bounds.x = workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE;
-  if (edge === "top") bounds.y = workArea.y - bounds.height + WIDGET_DOCK_VISIBLE_SIZE;
-  if (edge === "bottom") bounds.y = workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE;
-  return bounds;
+  if (edge === "left") {
+    return { x: workArea.x, y: expandedBounds.y, width: WIDGET_DOCK_VISIBLE_SIZE, height: expandedBounds.height };
+  }
+  if (edge === "right") {
+    return {
+      x: workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE,
+      y: expandedBounds.y,
+      width: WIDGET_DOCK_VISIBLE_SIZE,
+      height: expandedBounds.height,
+    };
+  }
+  if (edge === "top") {
+    return { x: expandedBounds.x, y: workArea.y, width: expandedBounds.width, height: WIDGET_DOCK_VISIBLE_SIZE };
+  }
+  if (edge === "bottom") {
+    return {
+      x: expandedBounds.x,
+      y: workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE,
+      width: expandedBounds.width,
+      height: WIDGET_DOCK_VISIBLE_SIZE,
+    };
+  }
+  return { ...expandedBounds };
 }
 
 function setWidgetDockBounds(bounds) {
@@ -2918,19 +2945,32 @@ function setWidgetDockBounds(bounds) {
   widgetWindow.setBounds(bounds, false);
 }
 
+function setWidgetDockSizing(collapsed) {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  if (collapsed) {
+    widgetWindow.setMinimumSize(WIDGET_DOCK_VISIBLE_SIZE, WIDGET_DOCK_VISIBLE_SIZE);
+    return;
+  }
+  widgetWindow.setMinimumSize(WIDGET_MIN_WIDTH, WIDGET_MIN_HEIGHT);
+}
+
 function expandWidgetDock() {
   if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
   clearTimeout(widgetDockState.collapseTimer);
   widgetDockState.collapseTimer = null;
   widgetDockState.collapsed = false;
+  setWidgetDockSizing(false);
   setWidgetDockBounds(widgetDockState.expandedBounds);
+  startWidgetDockPointerPoll();
 }
 
 function collapseWidgetDock() {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   if (!widgetDockState.edge || !widgetDockState.expandedBounds || widgetDockState.pointerInside) return;
   widgetDockState.collapsed = true;
+  setWidgetDockSizing(true);
   setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
+  startWidgetDockPointerPoll();
 }
 
 function scheduleWidgetDockCollapse() {
@@ -2948,8 +2988,77 @@ function dockWidgetToEdge(edge, bounds) {
   widgetDockState.edge = edge;
   widgetDockState.expandedBounds = expandedBounds;
   widgetDockState.collapsed = false;
+  setWidgetDockSizing(false);
   setWidgetDockBounds(expandedBounds);
+  startWidgetDockPointerPoll();
   if (!widgetDockState.pointerInside) scheduleWidgetDockCollapse();
+}
+
+function pointInBounds(point, bounds, padding = 0) {
+  return (
+    point.x >= bounds.x - padding &&
+    point.x <= bounds.x + bounds.width + padding &&
+    point.y >= bounds.y - padding &&
+    point.y <= bounds.y + bounds.height + padding
+  );
+}
+
+function pointOnDockHotzone(point, expandedBounds, edge) {
+  const workArea = widgetWorkAreaForBounds(expandedBounds);
+  if (edge === "left") {
+    return (
+      point.x <= workArea.x + WIDGET_DOCK_HOTZONE &&
+      point.y >= expandedBounds.y - WIDGET_DOCK_CURSOR_GRACE &&
+      point.y <= expandedBounds.y + expandedBounds.height + WIDGET_DOCK_CURSOR_GRACE
+    );
+  }
+  if (edge === "right") {
+    return (
+      point.x >= workArea.x + workArea.width - WIDGET_DOCK_HOTZONE &&
+      point.y >= expandedBounds.y - WIDGET_DOCK_CURSOR_GRACE &&
+      point.y <= expandedBounds.y + expandedBounds.height + WIDGET_DOCK_CURSOR_GRACE
+    );
+  }
+  if (edge === "top") {
+    return (
+      point.y <= workArea.y + WIDGET_DOCK_HOTZONE &&
+      point.x >= expandedBounds.x - WIDGET_DOCK_CURSOR_GRACE &&
+      point.x <= expandedBounds.x + expandedBounds.width + WIDGET_DOCK_CURSOR_GRACE
+    );
+  }
+  if (edge === "bottom") {
+    return (
+      point.y >= workArea.y + workArea.height - WIDGET_DOCK_HOTZONE &&
+      point.x >= expandedBounds.x - WIDGET_DOCK_CURSOR_GRACE &&
+      point.x <= expandedBounds.x + expandedBounds.width + WIDGET_DOCK_CURSOR_GRACE
+    );
+  }
+  return false;
+}
+
+function startWidgetDockPointerPoll() {
+  if (widgetDockState.pollTimer || !widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  widgetDockState.pollTimer = setInterval(() => {
+    if (!widgetWindow || widgetWindow.isDestroyed() || !widgetWindow.isVisible()) {
+      resetWidgetDockState({ keepPointer: false });
+      return;
+    }
+    if (!widgetDockState.edge || !widgetDockState.expandedBounds || widgetResizeSession) return;
+
+    const cursor = screen.getCursorScreenPoint();
+    const edgeActive = pointOnDockHotzone(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
+    const insideExpanded = pointInBounds(cursor, widgetDockState.expandedBounds, WIDGET_DOCK_CURSOR_GRACE);
+    widgetDockState.pointerInside = insideExpanded;
+
+    if (widgetDockState.collapsed && edgeActive) {
+      expandWidgetDock();
+      return;
+    }
+
+    if (!widgetDockState.collapsed && !insideExpanded && !edgeActive) {
+      scheduleWidgetDockCollapse();
+    }
+  }, WIDGET_DOCK_POLL_MS);
 }
 
 function scheduleWidgetDockCheck() {
