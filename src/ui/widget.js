@@ -21,6 +21,8 @@ const els = {
   opacityRange: document.querySelector("#opacityRange"),
   opacityValue: document.querySelector("#opacityValue"),
   hideBtn: document.querySelector("#hideBtn"),
+  dockCollapseBtn: document.querySelector("#dockCollapseBtn"),
+  dockCollapseIcon: document.querySelector("#dockCollapseIcon"),
   toast: document.querySelector("#toast"),
   resizeHandles: document.querySelectorAll("[data-resize-edge]"),
 };
@@ -36,6 +38,8 @@ let latestSnapshot = null;
 let expandedAccountId = null;
 let accountPopover = null;
 let accountPopoverTimer = null;
+
+const DOCK_HINT_CLASSES = ["dock-hint-left", "dock-hint-right", "dock-hint-top", "dock-hint-bottom"];
 
 function identityLabel(accountLike) {
   if (!accountLike) return "未检测到登录";
@@ -165,6 +169,27 @@ function showToast(message) {
   els.toast.textContent = message;
   els.toast.classList.add("show");
   toastTimer = window.setTimeout(() => els.toast.classList.remove("show"), 2200);
+}
+
+function setDockHint(payload) {
+  const edge = payload?.available ? String(payload.edge || "") : "";
+  document.body.classList.remove(...DOCK_HINT_CLASSES);
+
+  if (!els.dockCollapseBtn) return;
+  if (!edge) {
+    els.dockCollapseBtn.hidden = true;
+    return;
+  }
+
+  const icons = {
+    left: "<",
+    right: ">",
+    top: "^",
+    bottom: "v",
+  };
+  document.body.classList.add(`dock-hint-${edge}`);
+  els.dockCollapseIcon.textContent = icons[edge] || ">";
+  els.dockCollapseBtn.hidden = false;
 }
 
 function clampNumber(value, min, max) {
@@ -523,6 +548,16 @@ function wireEvents() {
   });
   els.mainBtn.addEventListener("click", () => api.showMainWindow());
   els.hideBtn.addEventListener("click", () => api.hideWidget());
+  els.dockCollapseBtn?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      const result = await api.collapseWidgetDock?.();
+      if (!result?.ok) showToast("请先把浮窗贴近屏幕边缘");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  });
+  api.onWidgetDockHint?.(setDockHint);
   api.onStateChanged(() => refresh(true));
 }
 

@@ -36,7 +36,6 @@ const WIDGET_DOCK_EDGE_THRESHOLD = 22;
 const WIDGET_DOCK_VISIBLE_SIZE = 12;
 const WIDGET_DOCK_SETTLE_MS = 180;
 const WIDGET_DOCK_COLLAPSE_MS = 420;
-const WIDGET_DOCK_INITIAL_COLLAPSE_MS = 720;
 const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
 const WIDGET_DOCK_POLL_MS = 90;
 const WIDGET_DOCK_HOTZONE = 3;
@@ -57,6 +56,7 @@ let widgetDockState = {
   expandedBounds: null,
   collapsed: false,
   edgeHoverArmed: true,
+  hintEdge: null,
   pointerInside: false,
   settleTimer: null,
   collapseTimer: null,
@@ -2886,6 +2886,7 @@ function resetWidgetDockState({ keepPointer = true } = {}) {
     expandedBounds: null,
     collapsed: false,
     edgeHoverArmed: true,
+    hintEdge: null,
     pointerInside: keepPointer ? widgetDockState.pointerInside : false,
     settleTimer: null,
     collapseTimer: null,
@@ -2894,6 +2895,7 @@ function resetWidgetDockState({ keepPointer = true } = {}) {
     collapseRetryCount: 0,
     suppressMoveUntil: 0,
   };
+  sendWidgetDockHint(null);
 }
 
 function widgetWorkAreaForBounds(bounds) {
@@ -2965,6 +2967,20 @@ function setWidgetDockBounds(bounds) {
   widgetWindow.setBounds(bounds, false);
 }
 
+function sendWidgetDockHint(edge) {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  const normalizedEdge = edge || null;
+  widgetDockState.hintEdge = normalizedEdge;
+  widgetWindow.webContents.send("widget:dock-hint", {
+    available: Boolean(normalizedEdge && !widgetDockState.collapsed),
+    edge: normalizedEdge,
+  });
+}
+
+function updateWidgetDockHint(edge) {
+  sendWidgetDockHint(edge || null);
+}
+
 function setWidgetDockSizing(collapsed) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   if (collapsed) {
@@ -2987,8 +3003,8 @@ function expandWidgetDock() {
   widgetDockState.collapseRetryCount = 0;
   setWidgetDockSizing(false);
   setWidgetDockBounds(widgetDockState.expandedBounds);
+  updateWidgetDockHint(widgetDockState.edge);
   startWidgetDockPointerPoll();
-  scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
 }
 
 function collapseWidgetDock({ force = false } = {}) {
@@ -2998,6 +3014,7 @@ function collapseWidgetDock({ force = false } = {}) {
   const cursor = screen.getCursorScreenPoint();
   widgetDockState.edgeHoverArmed = !pointOnCollapsedDockStrip(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
   widgetDockState.collapsed = true;
+  updateWidgetDockHint(null);
   setWidgetDockSizing(true);
   setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
   startWidgetDockPointerPoll();
@@ -3054,8 +3071,25 @@ function dockWidgetToEdge(edge, bounds) {
   widgetDockState.collapseRetryCount = 0;
   setWidgetDockSizing(false);
   setWidgetDockBounds(expandedBounds);
+  updateWidgetDockHint(edge);
   startWidgetDockPointerPoll();
-  scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
+}
+
+function collapseWidgetToDock() {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
+  if (widgetDockState.collapsed) return { ok: true, collapsed: true };
+
+  const bounds = widgetWindow.getBounds();
+  const edge = widgetDockEdgeForBounds(bounds);
+  if (!edge) return { ok: false, reason: "not-near-edge" };
+
+  widgetDockState.edge = edge;
+  widgetDockState.expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
+  widgetDockState.collapsed = false;
+  widgetDockState.edgeHoverArmed = false;
+  widgetDockState.collapseRetryCount = 0;
+  collapseWidgetDock({ force: true });
+  return { ok: true, edge };
 }
 
 function pointInBounds(point, bounds, padding = 0) {
@@ -3160,9 +3194,7 @@ function startWidgetDockPointerPoll() {
       return;
     }
 
-    if (!widgetDockState.collapsed && !insideExpanded && !edgeActive) {
-      scheduleWidgetDockCollapse();
-    }
+    if (!widgetDockState.collapsed && !edgeActive) updateWidgetDockHint(widgetDockState.edge);
   }, WIDGET_DOCK_POLL_MS);
 }
 
@@ -3184,6 +3216,7 @@ function scheduleWidgetDockCheck() {
     const edge = widgetDockEdgeForBounds(bounds);
     if (!edge) {
       if (widgetDockState.edge && !widgetDockState.collapsed) resetWidgetDockState();
+      else if (!widgetDockState.collapsed) updateWidgetDockHint(null);
       return;
     }
 
@@ -3196,7 +3229,7 @@ function scheduleWidgetDockCheck() {
       const expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
       widgetDockState.expandedBounds = expandedBounds;
       if (!boundsEqual(bounds, expandedBounds)) setWidgetDockBounds(expandedBounds);
-      scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
+      updateWidgetDockHint(edge);
     }
   };
   widgetDockState.settleTimer = setTimeout(runDockCheck, WIDGET_DOCK_SETTLE_MS);
@@ -3295,7 +3328,6 @@ function handleWidgetPointerEnter() {
 
 function handleWidgetPointerLeave() {
   widgetDockState.pointerInside = false;
-  scheduleWidgetDockCollapse();
   return { ok: true };
 }
 
@@ -3350,6 +3382,7 @@ function registerIpc() {
   ipcMain.handle("window:resize-widget-start", (_event, edge) => startWidgetResize(edge));
   ipcMain.handle("window:resize-widget-update", () => updateWidgetResize());
   ipcMain.handle("window:resize-widget-end", () => finishWidgetResize());
+  ipcMain.handle("window:collapse-widget-dock", () => collapseWidgetToDock());
   ipcMain.handle("window:widget-pointer-enter", () => handleWidgetPointerEnter());
   ipcMain.handle("window:widget-pointer-leave", () => handleWidgetPointerLeave());
 }

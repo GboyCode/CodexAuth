@@ -35,6 +35,10 @@ body.resizing {
   user-select: none;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 button {
   border: 0;
   font: inherit;
@@ -53,6 +57,80 @@ button {
   padding: 13px;
   background: rgba(255, 255, 255, var(--widget-alpha));
   box-shadow: 0 24px 70px -42px rgba(16, 24, 40, 0.62);
+}
+
+.dock-collapse-btn {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  z-index: 35;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-height: 76px;
+  gap: 4px;
+  border: 1px solid rgba(79, 108, 255, 0.18);
+  border-left: 0;
+  border-radius: 0 10px 10px 0;
+  padding: 7px 4px;
+  color: #fff;
+  background: linear-gradient(180deg, rgba(111, 140, 255, 0.96), rgba(63, 87, 255, 0.96));
+  box-shadow: 0 14px 34px -22px rgba(20, 32, 84, 0.9);
+  transform: translateY(-50%);
+  -webkit-app-region: no-drag;
+}
+
+.dock-collapse-btn:hover {
+  background: linear-gradient(180deg, rgba(126, 151, 255, 0.98), rgba(68, 92, 255, 0.98));
+}
+
+.dock-collapse-text {
+  font-size: 11px;
+  line-height: 1;
+  writing-mode: vertical-rl;
+}
+
+.dock-collapse-btn strong {
+  font-size: 15px;
+  line-height: 1;
+}
+
+body.dock-hint-left .dock-collapse-btn {
+  right: 0;
+  left: auto;
+  border-right: 0;
+  border-left: 1px solid rgba(79, 108, 255, 0.18);
+  border-radius: 10px 0 0 10px;
+}
+
+body.dock-hint-top .dock-collapse-btn,
+body.dock-hint-bottom .dock-collapse-btn {
+  left: 50%;
+  width: 78px;
+  min-height: 30px;
+  gap: 6px;
+  border: 1px solid rgba(79, 108, 255, 0.18);
+  padding: 5px 10px;
+  transform: translateX(-50%);
+}
+
+body.dock-hint-top .dock-collapse-btn {
+  top: 0;
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+
+body.dock-hint-bottom .dock-collapse-btn {
+  top: auto;
+  bottom: 0;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+}
+
+body.dock-hint-top .dock-collapse-text,
+body.dock-hint-bottom .dock-collapse-text {
+  writing-mode: horizontal-tb;
 }
 
 .widget-head {

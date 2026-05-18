@@ -19,8 +19,14 @@ contextBridge.exposeInMainWorld("codexAuth", {
   startWidgetResize: (edge) => ipcRenderer.invoke("window:resize-widget-start", edge),
   updateWidgetResize: () => ipcRenderer.invoke("window:resize-widget-update"),
   endWidgetResize: () => ipcRenderer.invoke("window:resize-widget-end"),
+  collapseWidgetDock: () => ipcRenderer.invoke("window:collapse-widget-dock"),
   widgetPointerEnter: () => ipcRenderer.invoke("window:widget-pointer-enter"),
   widgetPointerLeave: () => ipcRenderer.invoke("window:widget-pointer-leave"),
+  onWidgetDockHint: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("widget:dock-hint", handler);
+    return () => ipcRenderer.removeListener("widget:dock-hint", handler);
+  },
   onStateChanged: (callback) => {
     const handler = () => callback();
     ipcRenderer.on("state:changed", handler);
