@@ -499,6 +499,8 @@ function wireEvents() {
     }
   });
   window.addEventListener("resize", destroyAccountPopover);
+  window.addEventListener("mouseenter", () => api.widgetPointerEnter?.().catch(() => {}));
+  window.addEventListener("mouseleave", () => api.widgetPointerLeave?.().catch(() => {}));
   els.accountList.addEventListener("scroll", destroyAccountPopover);
   els.restartBtn.addEventListener("click", async () => {
     if (!restartArmed) {

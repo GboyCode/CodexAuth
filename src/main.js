@@ -32,6 +32,11 @@ const WIDGET_MAX_ACCOUNT_ROWS = 4;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;
 const WIDGET_MAX_HEIGHT = 900;
 const VALID_RESIZE_EDGES = new Set(["n", "e", "s", "w", "ne", "se", "sw", "nw"]);
+const WIDGET_DOCK_EDGE_THRESHOLD = 18;
+const WIDGET_DOCK_VISIBLE_SIZE = 10;
+const WIDGET_DOCK_SETTLE_MS = 220;
+const WIDGET_DOCK_COLLAPSE_MS = 520;
+const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
 
 let mainWindow;
 let widgetWindow;
@@ -39,6 +44,15 @@ let tray;
 let isQuitting = false;
 let widgetManualSize = false;
 let widgetResizeSession = null;
+let widgetDockState = {
+  edge: null,
+  expandedBounds: null,
+  collapsed: false,
+  pointerInside: false,
+  settleTimer: null,
+  collapseTimer: null,
+  suppressMoveUntil: 0,
+};
 let authWatcher;
 let authSyncTimer;
 let authSyncInterval;
@@ -1021,11 +1035,13 @@ function showWidgetWindow() {
     createWidgetWindow();
   }
   widgetWindow.show();
+  expandWidgetDock();
   widgetWindow.focus();
 }
 
 function hideWidgetWindow() {
   if (widgetWindow && !widgetWindow.isDestroyed()) {
+    clearWidgetDockTimers();
     widgetWindow.hide();
   }
 }
@@ -2791,6 +2807,8 @@ function createWidgetWindow() {
     event.preventDefault();
     widgetWindow.hide();
   });
+  widgetWindow.on("move", () => scheduleWidgetDockCheck());
+  widgetWindow.on("moved", () => scheduleWidgetDockCheck());
   widgetWindow.on("show", () => rebuildTrayMenu().catch(() => {}));
   widgetWindow.on("hide", () => rebuildTrayMenu().catch(() => {}));
   widgetWindow.loadFile(path.join(__dirname, "ui", "widget.html"));
@@ -2800,26 +2818,166 @@ function createWidgetWindow() {
 function resizeWidgetForAccounts(accountCount) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
   if (widgetManualSize) return { ok: true, skipped: true };
-  const bounds = widgetWindow.getBounds();
+  const bounds = widgetDockState.edge && widgetDockState.expandedBounds ? widgetDockState.expandedBounds : widgetWindow.getBounds();
   const nextHeight = widgetHeightForAccounts(accountCount);
   const display = screen.getDisplayMatching(bounds);
   const workArea = display.workArea;
   const maxY = workArea.y + workArea.height - nextHeight - 8;
   const nextY = Math.max(workArea.y + 8, Math.min(bounds.y, maxY));
-  widgetWindow.setBounds(
-    {
-      x: bounds.x,
-      y: nextY,
-      width: WIDGET_WIDTH,
-      height: nextHeight,
-    },
-    false
-  );
+  const nextBounds = {
+    x: bounds.x,
+    y: nextY,
+    width: WIDGET_WIDTH,
+    height: nextHeight,
+  };
+  if (widgetDockState.edge) {
+    widgetDockState.expandedBounds = expandedWidgetBoundsForDock(nextBounds, widgetDockState.edge);
+    setWidgetDockBounds(
+      widgetDockState.collapsed
+        ? collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge)
+        : widgetDockState.expandedBounds
+    );
+  } else {
+    widgetWindow.setBounds(nextBounds, false);
+  }
   return { ok: true, height: nextHeight };
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function clearWidgetDockTimers() {
+  if (widgetDockState.settleTimer) {
+    clearTimeout(widgetDockState.settleTimer);
+    widgetDockState.settleTimer = null;
+  }
+  if (widgetDockState.collapseTimer) {
+    clearTimeout(widgetDockState.collapseTimer);
+    widgetDockState.collapseTimer = null;
+  }
+}
+
+function resetWidgetDockState({ keepPointer = true } = {}) {
+  clearWidgetDockTimers();
+  widgetDockState = {
+    edge: null,
+    expandedBounds: null,
+    collapsed: false,
+    pointerInside: keepPointer ? widgetDockState.pointerInside : false,
+    settleTimer: null,
+    collapseTimer: null,
+    suppressMoveUntil: 0,
+  };
+}
+
+function widgetWorkAreaForBounds(bounds) {
+  return screen.getDisplayMatching(bounds).workArea;
+}
+
+function widgetDockEdgeForBounds(bounds) {
+  if (!bounds) return null;
+  const workArea = widgetWorkAreaForBounds(bounds);
+  const distances = [
+    { edge: "left", value: Math.abs(bounds.x - workArea.x) },
+    { edge: "right", value: Math.abs(workArea.x + workArea.width - (bounds.x + bounds.width)) },
+    { edge: "top", value: Math.abs(bounds.y - workArea.y) },
+    { edge: "bottom", value: Math.abs(workArea.y + workArea.height - (bounds.y + bounds.height)) },
+  ].sort((a, b) => a.value - b.value);
+  return distances[0]?.value <= WIDGET_DOCK_EDGE_THRESHOLD ? distances[0].edge : null;
+}
+
+function expandedWidgetBoundsForDock(bounds, edge) {
+  const workArea = widgetWorkAreaForBounds(bounds);
+  const width = clamp(bounds.width, WIDGET_MIN_WIDTH, WIDGET_MAX_WIDTH);
+  const height = clamp(bounds.height, WIDGET_MIN_HEIGHT, WIDGET_MAX_HEIGHT);
+  let x = clamp(bounds.x, workArea.x, workArea.x + workArea.width - width);
+  let y = clamp(bounds.y, workArea.y, workArea.y + workArea.height - height);
+
+  if (edge === "left") x = workArea.x;
+  if (edge === "right") x = workArea.x + workArea.width - width;
+  if (edge === "top") y = workArea.y;
+  if (edge === "bottom") y = workArea.y + workArea.height - height;
+
+  return { x, y, width, height };
+}
+
+function collapsedWidgetBoundsForDock(expandedBounds, edge) {
+  const workArea = widgetWorkAreaForBounds(expandedBounds);
+  const bounds = { ...expandedBounds };
+  if (edge === "left") bounds.x = workArea.x - bounds.width + WIDGET_DOCK_VISIBLE_SIZE;
+  if (edge === "right") bounds.x = workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE;
+  if (edge === "top") bounds.y = workArea.y - bounds.height + WIDGET_DOCK_VISIBLE_SIZE;
+  if (edge === "bottom") bounds.y = workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE;
+  return bounds;
+}
+
+function setWidgetDockBounds(bounds) {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  widgetDockState.suppressMoveUntil = Date.now() + WIDGET_DOCK_SUPPRESS_MOVE_MS;
+  widgetWindow.setBounds(bounds, false);
+}
+
+function expandWidgetDock() {
+  if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  clearTimeout(widgetDockState.collapseTimer);
+  widgetDockState.collapseTimer = null;
+  widgetDockState.collapsed = false;
+  setWidgetDockBounds(widgetDockState.expandedBounds);
+}
+
+function collapseWidgetDock() {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  if (!widgetDockState.edge || !widgetDockState.expandedBounds || widgetDockState.pointerInside) return;
+  widgetDockState.collapsed = true;
+  setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
+}
+
+function scheduleWidgetDockCollapse() {
+  if (!widgetDockState.edge || widgetDockState.collapsed) return;
+  if (widgetDockState.collapseTimer) clearTimeout(widgetDockState.collapseTimer);
+  widgetDockState.collapseTimer = setTimeout(() => {
+    widgetDockState.collapseTimer = null;
+    collapseWidgetDock();
+  }, WIDGET_DOCK_COLLAPSE_MS);
+}
+
+function dockWidgetToEdge(edge, bounds) {
+  if (!edge || !widgetWindow || widgetWindow.isDestroyed()) return;
+  const expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
+  widgetDockState.edge = edge;
+  widgetDockState.expandedBounds = expandedBounds;
+  widgetDockState.collapsed = false;
+  setWidgetDockBounds(expandedBounds);
+  if (!widgetDockState.pointerInside) scheduleWidgetDockCollapse();
+}
+
+function scheduleWidgetDockCheck() {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  if (widgetResizeSession) return;
+  if (Date.now() < widgetDockState.suppressMoveUntil) return;
+  if (widgetDockState.settleTimer) clearTimeout(widgetDockState.settleTimer);
+  widgetDockState.settleTimer = setTimeout(() => {
+    widgetDockState.settleTimer = null;
+    if (!widgetWindow || widgetWindow.isDestroyed() || !widgetWindow.isVisible()) return;
+    if (widgetResizeSession || Date.now() < widgetDockState.suppressMoveUntil) return;
+
+    const bounds = widgetWindow.getBounds();
+    const edge = widgetDockEdgeForBounds(bounds);
+    if (!edge) {
+      if (widgetDockState.edge && !widgetDockState.collapsed) resetWidgetDockState();
+      return;
+    }
+
+    if (!widgetDockState.edge || widgetDockState.edge !== edge) {
+      dockWidgetToEdge(edge, bounds);
+      return;
+    }
+
+    if (!widgetDockState.collapsed) {
+      widgetDockState.expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
+    }
+  }, WIDGET_DOCK_SETTLE_MS);
 }
 
 function resizeWidgetBoundsFromSession(session) {
@@ -2870,6 +3028,7 @@ function startWidgetResize(edge) {
   const direction = String(edge || "");
   if (!VALID_RESIZE_EDGES.has(direction)) return { ok: false };
 
+  expandWidgetDock();
   widgetManualSize = true;
   widgetResizeSession = {
     edge: direction,
@@ -2891,7 +3050,32 @@ function updateWidgetResize() {
 function finishWidgetResize() {
   const bounds = widgetWindow && !widgetWindow.isDestroyed() ? widgetWindow.getBounds() : null;
   widgetResizeSession = null;
+  if (bounds && widgetDockState.edge) {
+    const edge = widgetDockEdgeForBounds(bounds);
+    if (edge) {
+      widgetDockState.edge = edge;
+      widgetDockState.expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
+    } else {
+      resetWidgetDockState();
+    }
+  }
   return { ok: true, bounds };
+}
+
+function handleWidgetPointerEnter() {
+  widgetDockState.pointerInside = true;
+  if (widgetDockState.collapseTimer) {
+    clearTimeout(widgetDockState.collapseTimer);
+    widgetDockState.collapseTimer = null;
+  }
+  if (widgetDockState.edge && widgetDockState.collapsed) expandWidgetDock();
+  return { ok: true };
+}
+
+function handleWidgetPointerLeave() {
+  widgetDockState.pointerInside = false;
+  scheduleWidgetDockCollapse();
+  return { ok: true };
 }
 
 function registerIpc() {
@@ -2945,6 +3129,8 @@ function registerIpc() {
   ipcMain.handle("window:resize-widget-start", (_event, edge) => startWidgetResize(edge));
   ipcMain.handle("window:resize-widget-update", () => updateWidgetResize());
   ipcMain.handle("window:resize-widget-end", () => finishWidgetResize());
+  ipcMain.handle("window:widget-pointer-enter", () => handleWidgetPointerEnter());
+  ipcMain.handle("window:widget-pointer-leave", () => handleWidgetPointerLeave());
 }
 
 if (hasSingleInstanceLock) {
@@ -2986,6 +3172,7 @@ app.on("before-quit", () => {
   if (localLogWatcher) localLogWatcher.close();
   if (sessionsWatcher) sessionsWatcher.close();
   if (sessionsPollingInterval) clearInterval(sessionsPollingInterval);
+  clearWidgetDockTimers();
   for (const timer of reauthCheckTimers.values()) clearTimeout(timer);
   reauthCheckTimers.clear();
 });

@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("codexAuth", {
   startWidgetResize: (edge) => ipcRenderer.invoke("window:resize-widget-start", edge),
   updateWidgetResize: () => ipcRenderer.invoke("window:resize-widget-update"),
   endWidgetResize: () => ipcRenderer.invoke("window:resize-widget-end"),
+  widgetPointerEnter: () => ipcRenderer.invoke("window:widget-pointer-enter"),
+  widgetPointerLeave: () => ipcRenderer.invoke("window:widget-pointer-leave"),
   onStateChanged: (callback) => {
     const handler = () => callback();
     ipcRenderer.on("state:changed", handler);
