@@ -783,14 +783,22 @@ async function refreshQuotaSnapshotFromLocalLog() {
       localLogRefreshPending = false;
       const scope = await dashboardScope();
       if (!scope.hasCurrentAuth || !scope.accountId) continue;
+      const files = await walkSessionFiles(sessionsDir());
       const latestQuota = newerQuota(
         newerQuota(
-          await readLatestLocalQuota({ since: scope.since }),
+          await readLatestLocalQuota({ since: scope.since, files }),
           await readLatestSqliteRateLimitQuota({ since: scope.since })
         ),
         await readLatestUsageLimitQuota({ since: scope.since })
       );
-      const changed = await saveAccountQuotaSnapshot(scope.accountId, latestQuota);
+      const quotaEstimate = await readQuotaEstimate({
+        since: scope.since,
+        files,
+        baseQuota: latestQuota,
+        calibration: scope.accountQuotaCalibration,
+      });
+      const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate);
+      const changed = await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
       if (changed) broadcastStateChanged();
     } while (localLogRefreshPending);
   } catch {
@@ -1159,16 +1167,27 @@ function hardenWindowNavigation(win) {
   });
 }
 
-function normalizeRateWindow(window, checkedAt = null) {
+function normalizeRateWindow(window, checkedAt = null, estimateBaseAt = checkedAt, estimateSeed = {}) {
   if (!window) return null;
   const seconds = Number(window.limit_window_seconds ?? window.window_minutes * 60);
   const resetRaw = window.reset_at ?? window.resets_at;
   const resetsAt = resetRaw ? Number(resetRaw) : null;
+  const seedWeightedTokens = Number(estimateSeed.estimateWeightedTokens);
+  const seed =
+    Number.isFinite(seedWeightedTokens) && seedWeightedTokens > 0
+      ? {
+          estimateTokenUsage: estimateSeed.estimateTokenUsage ?? null,
+          estimateWeightedTokens: Math.round(seedWeightedTokens),
+          estimateLatestAt: estimateSeed.estimateLatestAt ?? checkedAt,
+        }
+      : {};
   return {
     usedPercent: Math.max(0, Math.min(100, Math.round(Number(window.used_percent ?? 0)))),
     windowMinutes: Number.isFinite(seconds) ? Math.round(seconds / 60) : null,
     resetsAt,
     checkedAt,
+    estimateBaseAt,
+    ...seed,
   };
 }
 
@@ -1453,8 +1472,26 @@ function quotaFromLocalRateLimits(rateLimits, checkedAt, windowCheckedAt = {}) {
     source: "local",
     checkedAt,
     planType: rateLimits.plan_type ?? null,
-    session: normalizeRateWindow(rateLimits.primary, windowCheckedAt.session ?? checkedAt),
-    weekly: normalizeRateWindow(rateLimits.secondary, windowCheckedAt.weekly ?? checkedAt),
+    session: normalizeRateWindow(
+      rateLimits.primary,
+      windowCheckedAt.session ?? checkedAt,
+      windowCheckedAt.sessionEstimateBase ?? windowCheckedAt.session ?? checkedAt,
+      {
+        estimateTokenUsage: windowCheckedAt.sessionEstimateTokenUsage,
+        estimateWeightedTokens: windowCheckedAt.sessionEstimateWeightedTokens,
+        estimateLatestAt: windowCheckedAt.sessionEstimateLatestAt,
+      }
+    ),
+    weekly: normalizeRateWindow(
+      rateLimits.secondary,
+      windowCheckedAt.weekly ?? checkedAt,
+      windowCheckedAt.weeklyEstimateBase ?? windowCheckedAt.weekly ?? checkedAt,
+      {
+        estimateTokenUsage: windowCheckedAt.weeklyEstimateTokenUsage,
+        estimateWeightedTokens: windowCheckedAt.weeklyEstimateWeightedTokens,
+        estimateLatestAt: windowCheckedAt.weeklyEstimateLatestAt,
+      }
+    ),
     credits: normalizeCredits(rateLimits.credits),
     error: null,
   };
@@ -1675,6 +1712,13 @@ function rawQuotaWindowIdentity(rateLimits, kind) {
   };
 }
 
+function rawQuotaValueSignature(rateLimits, kind) {
+  return JSON.stringify({
+    ...rawQuotaWindowIdentity(rateLimits, kind),
+    usedPercent: rawUsedPercent(rateLimits, kind),
+  });
+}
+
 function sameRawWindowIdentity(leftRateLimits, rightRateLimits, kind) {
   const left = rawQuotaWindowIdentity(leftRateLimits, kind);
   const right = rawQuotaWindowIdentity(rightRateLimits, kind);
@@ -1720,8 +1764,28 @@ function selectBestLocalQuotaCandidate(candidates) {
   return comparable.reduce((best, candidate) => moreConstrainedRawQuota(best, candidate), latest);
 }
 
+function quotaEstimateSeedFromUsage(latestUsage, baseUsage, model, effort, timestamp) {
+  if (!latestUsage || !baseUsage) return {};
+  const deltaUsage = subtractTokenUsage(latestUsage, baseUsage);
+  const weightedTokens = weightedTokenUsage(deltaUsage, model, effort);
+  if (!Number.isFinite(weightedTokens) || weightedTokens <= 0) return {};
+  return {
+    estimateTokenUsage: deltaUsage,
+    estimateWeightedTokens: weightedTokens,
+    estimateLatestAt: timestamp,
+  };
+}
+
 async function parseLatestRateLimitFile(file, sinceMs) {
   let latest = null;
+  let previousSessionSignature = null;
+  let previousWeeklySignature = null;
+  let latestSessionChangeTimestamp = null;
+  let latestWeeklyChangeTimestamp = null;
+  let latestSessionChangeTokenUsage = null;
+  let latestWeeklyChangeTokenUsage = null;
+  let model = null;
+  let effort = null;
 
   const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1733,17 +1797,54 @@ async function parseLatestRateLimitFile(file, sinceMs) {
     } catch {
       continue;
     }
+    if (entry.type === "turn_context") {
+      model = entry.payload?.model ?? model;
+      effort = entry.payload?.effort ?? entry.payload?.collaboration_mode?.settings?.reasoning_effort ?? effort;
+      continue;
+    }
     if (entry.type !== "event_msg" || entry.payload?.type !== "token_count") continue;
     if (!entry.payload?.rate_limits) continue;
     const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
     const eventMs = new Date(timestamp).getTime();
+    const info = entry.payload?.info ?? {};
+    const tokenUsage = normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage);
+    const sessionSignature = rawQuotaValueSignature(entry.payload.rate_limits, "session");
+    const weeklySignature = rawQuotaValueSignature(entry.payload.rate_limits, "weekly");
+    const sessionChanged = previousSessionSignature === null || sessionSignature !== previousSessionSignature;
+    const weeklyChanged = previousWeeklySignature === null || weeklySignature !== previousWeeklySignature;
+    previousSessionSignature = sessionSignature;
+    previousWeeklySignature = weeklySignature;
     if (sinceMs && Number.isFinite(eventMs) && eventMs < sinceMs) continue;
+    if (sessionChanged) {
+      latestSessionChangeTimestamp = timestamp;
+      latestSessionChangeTokenUsage = cloneTokenUsage(tokenUsage);
+    }
+    if (weeklyChanged) {
+      latestWeeklyChangeTimestamp = timestamp;
+      latestWeeklyChangeTokenUsage = cloneTokenUsage(tokenUsage);
+    }
+    const sessionSeed = quotaEstimateSeedFromUsage(
+      tokenUsage,
+      latestSessionChangeTokenUsage,
+      model,
+      effort,
+      timestamp
+    );
+    const weeklySeed = quotaEstimateSeedFromUsage(tokenUsage, latestWeeklyChangeTokenUsage, model, effort, timestamp);
     latest = {
       rateLimits: entry.payload.rate_limits,
       timestamp,
       windowTimestamps: {
         session: timestamp,
         weekly: timestamp,
+        sessionEstimateBase: latestSessionChangeTimestamp ?? timestamp,
+        weeklyEstimateBase: latestWeeklyChangeTimestamp ?? timestamp,
+        sessionEstimateTokenUsage: sessionSeed.estimateTokenUsage,
+        sessionEstimateWeightedTokens: sessionSeed.estimateWeightedTokens,
+        sessionEstimateLatestAt: sessionSeed.estimateLatestAt,
+        weeklyEstimateTokenUsage: weeklySeed.estimateTokenUsage,
+        weeklyEstimateWeightedTokens: weeklySeed.estimateWeightedTokens,
+        weeklyEstimateLatestAt: weeklySeed.estimateLatestAt,
       },
     };
   }
@@ -2260,13 +2361,26 @@ function quotaEstimateUnavailable(reason) {
   };
 }
 
+function tokenDeltaFromEstimateSeed(window) {
+  const weightedTokens = Number(window?.estimateWeightedTokens);
+  if (!Number.isFinite(weightedTokens) || weightedTokens <= 0) return null;
+  const latestAt = window?.estimateLatestAt ?? window?.checkedAt;
+  if (!latestAt) return null;
+  return {
+    tokenUsage: cloneTokenUsage(window?.estimateTokenUsage),
+    weightedTokens,
+    latestAt,
+    sessions: 1,
+  };
+}
+
 async function readQuotaEstimate(options = {}) {
   const baseQuota = options.baseQuota;
   if (!baseQuota || baseQuota.source !== "local") {
     return quotaEstimateUnavailable("\u7b49\u5f85\u672c\u5730\u989d\u5ea6\u5feb\u7167");
   }
-  const sessionBaseMs = dateMs(baseQuota.session?.checkedAt ?? baseQuota.checkedAt);
-  const weeklyBaseMs = dateMs(baseQuota.weekly?.checkedAt ?? baseQuota.checkedAt);
+  const sessionBaseMs = dateMs(baseQuota.session?.estimateBaseAt ?? baseQuota.session?.checkedAt ?? baseQuota.checkedAt);
+  const weeklyBaseMs = dateMs(baseQuota.weekly?.estimateBaseAt ?? baseQuota.weekly?.checkedAt ?? baseQuota.checkedAt);
   const baseTimes = [sessionBaseMs, weeklyBaseMs].filter(Number.isFinite);
   if (!baseTimes.length) return quotaEstimateUnavailable("\u5feb\u7167\u65f6\u95f4\u4e0d\u53ef\u7528");
   const earliestBaseMs = Math.min(...baseTimes);
@@ -2296,18 +2410,22 @@ async function readQuotaEstimate(options = {}) {
 
   const scopedSessionEvents = effectiveSinceMs ? sessionEvents.filter((event) => event.ms >= effectiveSinceMs) : sessionEvents;
   const scopedSqliteEvents = effectiveSinceMs ? sqliteEvents.filter((event) => event.ms >= effectiveSinceMs) : sqliteEvents;
-  const sessionDelta = Number.isFinite(sessionBaseMs)
+  const seededSessionDelta = tokenDeltaFromEstimateSeed(baseQuota.session);
+  const seededWeeklyDelta = tokenDeltaFromEstimateSeed(baseQuota.weekly);
+  const eventSessionDelta = Number.isFinite(sessionBaseMs)
     ? newerTokenDelta(
         tokenDeltaSinceBase(scopedSessionEvents, sessionBaseMs, "session"),
         tokenDeltaSinceBase(scopedSqliteEvents, sessionBaseMs, "session")
       )
     : null;
-  const weeklyDelta = Number.isFinite(weeklyBaseMs)
+  const eventWeeklyDelta = Number.isFinite(weeklyBaseMs)
     ? newerTokenDelta(
         tokenDeltaSinceBase(scopedSessionEvents, weeklyBaseMs, "weekly"),
         tokenDeltaSinceBase(scopedSqliteEvents, weeklyBaseMs, "weekly")
       )
     : null;
+  const sessionDelta = seededSessionDelta ?? eventSessionDelta;
+  const weeklyDelta = seededWeeklyDelta ?? eventWeeklyDelta;
   const freshestDelta = newerTokenDelta(sessionDelta, weeklyDelta);
   if (!sessionDelta?.latestAt && !weeklyDelta?.latestAt) {
     const baseAgeMs = Date.now() - earliestBaseMs;
@@ -2351,9 +2469,13 @@ async function readQuotaEstimate(options = {}) {
     weeklyCoefficient,
     coefficientFromCalibration(learned, "weekly")
   );
-  const sessionEstimate = sessionDelta?.weightedTokens >= 100
-    ? buildWindowEstimate(baseQuota.session, tunedSessionCoefficient.coefficient, sessionDelta.weightedTokens, calibration.sessionSamples)
-    : null;
+  const sessionEstimateCoefficient = seededSessionDelta
+    ? Math.min(tunedSessionCoefficient.coefficient, fallbackQuotaCoefficient(baseQuota.planType, "session") * 1.25)
+    : tunedSessionCoefficient.coefficient;
+  const sessionEstimate =
+    sessionDelta?.weightedTokens >= 100
+      ? buildWindowEstimate(baseQuota.session, sessionEstimateCoefficient, sessionDelta.weightedTokens, calibration.sessionSamples)
+      : null;
   // Weekly quota moves slowly and local Codex logs normally include the latest
   // weekly rate_limit snapshot. Estimating between snapshots tends to be more
   // confusing than useful, so keep weekly display pinned to the observed value.
