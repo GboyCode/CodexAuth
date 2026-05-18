@@ -52,6 +52,7 @@ let widgetDockState = {
   edge: null,
   expandedBounds: null,
   collapsed: false,
+  edgeHoverArmed: true,
   pointerInside: false,
   settleTimer: null,
   collapseTimer: null,
@@ -2874,6 +2875,7 @@ function resetWidgetDockState({ keepPointer = true } = {}) {
     edge: null,
     expandedBounds: null,
     collapsed: false,
+    edgeHoverArmed: true,
     pointerInside: keepPointer ? widgetDockState.pointerInside : false,
     settleTimer: null,
     collapseTimer: null,
@@ -2915,29 +2917,12 @@ function expandedWidgetBoundsForDock(bounds, edge) {
 
 function collapsedWidgetBoundsForDock(expandedBounds, edge) {
   const workArea = widgetWorkAreaForBounds(expandedBounds);
-  if (edge === "left") {
-    return { x: workArea.x, y: expandedBounds.y, width: WIDGET_DOCK_VISIBLE_SIZE, height: expandedBounds.height };
-  }
-  if (edge === "right") {
-    return {
-      x: workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE,
-      y: expandedBounds.y,
-      width: WIDGET_DOCK_VISIBLE_SIZE,
-      height: expandedBounds.height,
-    };
-  }
-  if (edge === "top") {
-    return { x: expandedBounds.x, y: workArea.y, width: expandedBounds.width, height: WIDGET_DOCK_VISIBLE_SIZE };
-  }
-  if (edge === "bottom") {
-    return {
-      x: expandedBounds.x,
-      y: workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE,
-      width: expandedBounds.width,
-      height: WIDGET_DOCK_VISIBLE_SIZE,
-    };
-  }
-  return { ...expandedBounds };
+  const bounds = { ...expandedBounds };
+  if (edge === "left") bounds.x = workArea.x - bounds.width + WIDGET_DOCK_VISIBLE_SIZE;
+  if (edge === "right") bounds.x = workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE;
+  if (edge === "top") bounds.y = workArea.y - bounds.height + WIDGET_DOCK_VISIBLE_SIZE;
+  if (edge === "bottom") bounds.y = workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE;
+  return bounds;
 }
 
 function setWidgetDockBounds(bounds) {
@@ -2960,6 +2945,7 @@ function expandWidgetDock() {
   clearTimeout(widgetDockState.collapseTimer);
   widgetDockState.collapseTimer = null;
   widgetDockState.collapsed = false;
+  widgetDockState.edgeHoverArmed = true;
   setWidgetDockSizing(false);
   setWidgetDockBounds(widgetDockState.expandedBounds);
   startWidgetDockPointerPoll();
@@ -2969,6 +2955,8 @@ function collapseWidgetDock({ force = false } = {}) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
   if (widgetDockState.pointerInside && !force) return;
+  const cursor = screen.getCursorScreenPoint();
+  widgetDockState.edgeHoverArmed = !pointOnDockHotzone(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
   widgetDockState.collapsed = true;
   setWidgetDockSizing(true);
   setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
@@ -2990,6 +2978,7 @@ function dockWidgetToEdge(edge, bounds) {
   widgetDockState.edge = edge;
   widgetDockState.expandedBounds = expandedBounds;
   widgetDockState.collapsed = false;
+  widgetDockState.edgeHoverArmed = true;
   setWidgetDockSizing(false);
   setWidgetDockBounds(expandedBounds);
   startWidgetDockPointerPoll();
@@ -3052,8 +3041,14 @@ function startWidgetDockPointerPoll() {
     const insideExpanded = pointInBounds(cursor, widgetDockState.expandedBounds, WIDGET_DOCK_CURSOR_GRACE);
     widgetDockState.pointerInside = insideExpanded;
 
-    if (widgetDockState.collapsed && edgeActive) {
-      expandWidgetDock();
+    if (widgetDockState.collapsed) {
+      if (!edgeActive) {
+        widgetDockState.edgeHoverArmed = true;
+        return;
+      }
+      if (widgetDockState.edgeHoverArmed) {
+        expandWidgetDock();
+      }
       return;
     }
 
@@ -3175,11 +3170,7 @@ function finishWidgetResize() {
 
 function handleWidgetPointerEnter() {
   widgetDockState.pointerInside = true;
-  if (widgetDockState.collapseTimer) {
-    clearTimeout(widgetDockState.collapseTimer);
-    widgetDockState.collapseTimer = null;
-  }
-  if (widgetDockState.edge && widgetDockState.collapsed) expandWidgetDock();
+  if (widgetDockState.edge && widgetDockState.collapsed && widgetDockState.edgeHoverArmed) expandWidgetDock();
   return { ok: true };
 }
 
