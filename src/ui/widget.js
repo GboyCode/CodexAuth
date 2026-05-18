@@ -39,8 +39,6 @@ let expandedAccountId = null;
 let accountPopover = null;
 let accountPopoverTimer = null;
 
-const DOCK_HINT_CLASSES = ["dock-hint-left", "dock-hint-right", "dock-hint-top", "dock-hint-bottom"];
-
 function identityLabel(accountLike) {
   if (!accountLike) return "未检测到登录";
   return accountLike.email || accountLike.userId || accountLike.subject || "未知账号";
@@ -172,23 +170,13 @@ function showToast(message) {
 }
 
 function setDockHint(payload) {
-  const edge = payload?.available ? String(payload.edge || "") : "";
-  document.body.classList.remove(...DOCK_HINT_CLASSES);
-
   if (!els.dockCollapseBtn) return;
-  if (!edge) {
+  if (!payload?.available) {
     els.dockCollapseBtn.hidden = true;
     return;
   }
 
-  const icons = {
-    left: "<",
-    right: ">",
-    top: "^",
-    bottom: "v",
-  };
-  document.body.classList.add(`dock-hint-${edge}`);
-  els.dockCollapseIcon.textContent = icons[edge] || ">";
+  els.dockCollapseIcon.textContent = ">";
   els.dockCollapseBtn.hidden = false;
 }
 

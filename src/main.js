@@ -38,8 +38,6 @@ const WIDGET_DOCK_SETTLE_MS = 180;
 const WIDGET_DOCK_COLLAPSE_MS = 420;
 const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
 const WIDGET_DOCK_POLL_MS = 90;
-const WIDGET_DOCK_HOTZONE = 3;
-const WIDGET_DOCK_CURSOR_GRACE = 14;
 const WIDGET_DOCK_STRIP_GRACE = 4;
 const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
 const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
@@ -2830,7 +2828,7 @@ function createWidgetWindow() {
 function resizeWidgetForAccounts(accountCount) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
   if (widgetManualSize) return { ok: true, skipped: true };
-  const bounds = widgetDockState.edge && widgetDockState.expandedBounds ? widgetDockState.expandedBounds : widgetWindow.getBounds();
+  const bounds = widgetDockState.collapsed && widgetDockState.expandedBounds ? widgetDockState.expandedBounds : widgetWindow.getBounds();
   const nextHeight = widgetHeightForAccounts(accountCount);
   const display = screen.getDisplayMatching(bounds);
   const workArea = display.workArea;
@@ -2842,14 +2840,16 @@ function resizeWidgetForAccounts(accountCount) {
     width: WIDGET_WIDTH,
     height: nextHeight,
   };
-  if (widgetDockState.edge) {
+  if (widgetDockState.edge && widgetDockState.collapsed) {
     widgetDockState.expandedBounds = expandedWidgetBoundsForDock(nextBounds, widgetDockState.edge);
     setWidgetDockBounds(
-      widgetDockState.collapsed
-        ? collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge)
-        : widgetDockState.expandedBounds
+      collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge)
     );
   } else {
+    if (widgetDockState.edge) {
+      widgetDockState.expandedBounds = nextBounds;
+      updateWidgetDockHint(widgetDockEdgeForBounds(nextBounds));
+    }
     widgetWindow.setBounds(nextBounds, false);
   }
   return { ok: true, height: nextHeight };
@@ -2937,17 +2937,6 @@ function collapsedWidgetBoundsForDock(expandedBounds, edge) {
   if (edge === "top") bounds.y = workArea.y - bounds.height + WIDGET_DOCK_VISIBLE_SIZE;
   if (edge === "bottom") bounds.y = workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE;
   return bounds;
-}
-
-function boundsEqual(left, right) {
-  return (
-    left &&
-    right &&
-    left.x === right.x &&
-    left.y === right.y &&
-    left.width === right.width &&
-    left.height === right.height
-  );
 }
 
 function boundsNear(left, right, tolerance = 2) {
@@ -3061,18 +3050,15 @@ function verifyWidgetDockCollapsed() {
   scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_COLLAPSE_RETRY_MS });
 }
 
-function dockWidgetToEdge(edge, bounds) {
+function markWidgetNearDockEdge(edge, bounds) {
   if (!edge || !widgetWindow || widgetWindow.isDestroyed()) return;
-  const expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
   widgetDockState.edge = edge;
-  widgetDockState.expandedBounds = expandedBounds;
+  widgetDockState.expandedBounds = bounds;
   widgetDockState.collapsed = false;
   widgetDockState.edgeHoverArmed = true;
   widgetDockState.collapseRetryCount = 0;
   setWidgetDockSizing(false);
-  setWidgetDockBounds(expandedBounds);
   updateWidgetDockHint(edge);
-  startWidgetDockPointerPoll();
 }
 
 function collapseWidgetToDock() {
@@ -3090,48 +3076,6 @@ function collapseWidgetToDock() {
   widgetDockState.collapseRetryCount = 0;
   collapseWidgetDock({ force: true });
   return { ok: true, edge };
-}
-
-function pointInBounds(point, bounds, padding = 0) {
-  return (
-    point.x >= bounds.x - padding &&
-    point.x <= bounds.x + bounds.width + padding &&
-    point.y >= bounds.y - padding &&
-    point.y <= bounds.y + bounds.height + padding
-  );
-}
-
-function pointOnDockHotzone(point, expandedBounds, edge) {
-  const workArea = widgetWorkAreaForBounds(expandedBounds);
-  if (edge === "left") {
-    return (
-      point.x <= workArea.x + WIDGET_DOCK_HOTZONE &&
-      point.y >= expandedBounds.y - WIDGET_DOCK_CURSOR_GRACE &&
-      point.y <= expandedBounds.y + expandedBounds.height + WIDGET_DOCK_CURSOR_GRACE
-    );
-  }
-  if (edge === "right") {
-    return (
-      point.x >= workArea.x + workArea.width - WIDGET_DOCK_HOTZONE &&
-      point.y >= expandedBounds.y - WIDGET_DOCK_CURSOR_GRACE &&
-      point.y <= expandedBounds.y + expandedBounds.height + WIDGET_DOCK_CURSOR_GRACE
-    );
-  }
-  if (edge === "top") {
-    return (
-      point.y <= workArea.y + WIDGET_DOCK_HOTZONE &&
-      point.x >= expandedBounds.x - WIDGET_DOCK_CURSOR_GRACE &&
-      point.x <= expandedBounds.x + expandedBounds.width + WIDGET_DOCK_CURSOR_GRACE
-    );
-  }
-  if (edge === "bottom") {
-    return (
-      point.y >= workArea.y + workArea.height - WIDGET_DOCK_HOTZONE &&
-      point.x >= expandedBounds.x - WIDGET_DOCK_CURSOR_GRACE &&
-      point.x <= expandedBounds.x + expandedBounds.width + WIDGET_DOCK_CURSOR_GRACE
-    );
-  }
-  return false;
 }
 
 function pointOnCollapsedDockStrip(point, expandedBounds, edge) {
@@ -3178,10 +3122,7 @@ function startWidgetDockPointerPoll() {
     if (!widgetDockState.edge || !widgetDockState.expandedBounds || widgetResizeSession) return;
 
     const cursor = screen.getCursorScreenPoint();
-    const edgeActive = pointOnDockHotzone(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
     const stripActive = pointOnCollapsedDockStrip(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
-    const insideExpanded = pointInBounds(cursor, widgetDockState.expandedBounds, WIDGET_DOCK_CURSOR_GRACE);
-    widgetDockState.pointerInside = insideExpanded;
 
     if (widgetDockState.collapsed) {
       if (!stripActive) {
@@ -3193,8 +3134,6 @@ function startWidgetDockPointerPoll() {
       }
       return;
     }
-
-    if (!widgetDockState.collapsed && !edgeActive) updateWidgetDockHint(widgetDockState.edge);
   }, WIDGET_DOCK_POLL_MS);
 }
 
@@ -3221,14 +3160,12 @@ function scheduleWidgetDockCheck() {
     }
 
     if (!widgetDockState.edge || widgetDockState.edge !== edge) {
-      dockWidgetToEdge(edge, bounds);
+      markWidgetNearDockEdge(edge, bounds);
       return;
     }
 
     if (!widgetDockState.collapsed) {
-      const expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
-      widgetDockState.expandedBounds = expandedBounds;
-      if (!boundsEqual(bounds, expandedBounds)) setWidgetDockBounds(expandedBounds);
+      widgetDockState.expandedBounds = bounds;
       updateWidgetDockHint(edge);
     }
   };

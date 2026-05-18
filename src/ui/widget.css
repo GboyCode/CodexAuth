@@ -96,43 +96,6 @@ button {
   line-height: 1;
 }
 
-body.dock-hint-left .dock-collapse-btn {
-  right: 0;
-  left: auto;
-  border-right: 0;
-  border-left: 1px solid rgba(79, 108, 255, 0.18);
-  border-radius: 10px 0 0 10px;
-}
-
-body.dock-hint-top .dock-collapse-btn,
-body.dock-hint-bottom .dock-collapse-btn {
-  left: 50%;
-  width: 78px;
-  min-height: 30px;
-  gap: 6px;
-  border: 1px solid rgba(79, 108, 255, 0.18);
-  padding: 5px 10px;
-  transform: translateX(-50%);
-}
-
-body.dock-hint-top .dock-collapse-btn {
-  top: 0;
-  border-top: 0;
-  border-radius: 0 0 10px 10px;
-}
-
-body.dock-hint-bottom .dock-collapse-btn {
-  top: auto;
-  bottom: 0;
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
-}
-
-body.dock-hint-top .dock-collapse-text,
-body.dock-hint-bottom .dock-collapse-text {
-  writing-mode: horizontal-tb;
-}
-
 .widget-head {
   display: flex;
   align-items: center;
