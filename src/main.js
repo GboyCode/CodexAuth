@@ -1629,30 +1629,8 @@ function newerQuota(left, right) {
   return rightMs > leftMs ? right : left;
 }
 
-function newerTimestamp(left, right) {
-  const leftMs = dateMs(left);
-  const rightMs = dateMs(right);
-  if (!Number.isFinite(leftMs)) return right ?? null;
-  if (!Number.isFinite(rightMs)) return left ?? null;
-  return rightMs > leftMs ? right : left;
-}
-
-function rateWindowSignature(window) {
-  if (!window) return "null";
-  return JSON.stringify({
-    usedPercent: window.used_percent ?? null,
-    windowMinutes: window.window_minutes ?? null,
-    limitWindowSeconds: window.limit_window_seconds ?? null,
-    resetAt: window.reset_at ?? window.resets_at ?? null,
-  });
-}
-
 async function parseLatestRateLimitFile(file, sinceMs) {
   let latest = null;
-  let previousSessionSignature = null;
-  let previousWeeklySignature = null;
-  let latestSessionChangeTimestamp = null;
-  let latestWeeklyChangeTimestamp = null;
 
   const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1668,25 +1646,13 @@ async function parseLatestRateLimitFile(file, sinceMs) {
     if (!entry.payload?.rate_limits) continue;
     const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
     const eventMs = new Date(timestamp).getTime();
-    const sessionSignature = rateWindowSignature(entry.payload.rate_limits.primary);
-    const weeklySignature = rateWindowSignature(entry.payload.rate_limits.secondary);
-    const sessionChanged = previousSessionSignature === null || sessionSignature !== previousSessionSignature;
-    const weeklyChanged = previousWeeklySignature === null || weeklySignature !== previousWeeklySignature;
-    previousSessionSignature = sessionSignature;
-    previousWeeklySignature = weeklySignature;
     if (sinceMs && Number.isFinite(eventMs) && eventMs < sinceMs) continue;
-    if (sessionChanged) {
-      latestSessionChangeTimestamp = timestamp;
-    }
-    if (weeklyChanged) {
-      latestWeeklyChangeTimestamp = timestamp;
-    }
     latest = {
       rateLimits: entry.payload.rate_limits,
-      timestamp: newerTimestamp(latestSessionChangeTimestamp, latestWeeklyChangeTimestamp) ?? timestamp,
+      timestamp,
       windowTimestamps: {
-        session: latestSessionChangeTimestamp ?? timestamp,
-        weekly: latestWeeklyChangeTimestamp ?? timestamp,
+        session: timestamp,
+        weekly: timestamp,
       },
     };
   }
@@ -2116,8 +2082,25 @@ function buildWindowEstimate(baseWindow, coefficient, weightedTokens, sampleCoun
 }
 
 function coefficientFromCalibration(calibration, kind) {
-  const value = Number(calibration?.[kind]?.coefficient);
-  return Number.isFinite(value) && value > 0 ? value : null;
+  const window = calibration?.[kind];
+  const value = Number(window?.coefficient);
+  if (!Number.isFinite(value) || value <= 0) return null;
+
+  const lastSampleCoefficient = Number(window?.lastSample?.coefficient);
+  const actualDelta = Number(window?.lastSample?.actualDelta);
+  const predictedDelta = Number(window?.lastSample?.predictedDelta);
+  if (
+    Number.isFinite(lastSampleCoefficient) &&
+    lastSampleCoefficient > 0 &&
+    Number.isFinite(actualDelta) &&
+    actualDelta > 0 &&
+    Number.isFinite(predictedDelta) &&
+    predictedDelta > actualDelta * 2
+  ) {
+    return Math.min(value, lastSampleCoefficient * 1.5);
+  }
+
+  return value;
 }
 
 function fallbackQuotaCoefficient(planType, kind) {
@@ -2423,17 +2406,20 @@ async function readLatestLocalQuota(options = {}) {
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
   const files = options.files ?? (await walkSessionFiles(sessionsDir()));
   const recentFiles = files.slice(0, 24);
+  let latest = null;
 
   for (const file of recentFiles) {
-    let latest;
+    let parsed;
     try {
-      latest = await parseLatestRateLimitFile(file, effectiveSinceMs);
+      parsed = await parseLatestRateLimitFile(file, effectiveSinceMs);
     } catch {
       continue;
     }
-    if (latest?.rateLimits) {
-      return quotaFromLocalRateLimits(latest.rateLimits, latest.timestamp, latest.windowTimestamps);
-    }
+    if (!parsed?.rateLimits) continue;
+    if (!latest || dateMs(parsed.timestamp) > dateMs(latest.timestamp)) latest = parsed;
+  }
+  if (latest?.rateLimits) {
+    return quotaFromLocalRateLimits(latest.rateLimits, latest.timestamp, latest.windowTimestamps);
   }
   return null;
 }
@@ -2607,8 +2593,16 @@ function updateLearningWindow(existing, sample) {
   if (!sample) return existing ?? null;
   const previous = Number(existing?.coefficient);
   const previousSamples = Number(existing?.samples || 0);
+  const predictedDelta = Number(sample.predictedDelta);
+  const actualDelta = Number(sample.actualDelta);
+  const needsFastCorrection =
+    Number.isFinite(predictedDelta) &&
+    Number.isFinite(actualDelta) &&
+    actualDelta > 0 &&
+    predictedDelta > actualDelta * 2;
+  const sampleWeight = needsFastCorrection ? 0.55 : 0.2;
   const coefficient = Number.isFinite(previous) && previous > 0
-    ? previous * 0.8 + sample.coefficient * 0.2
+    ? previous * (1 - sampleWeight) + sample.coefficient * sampleWeight
     : sample.coefficient;
   return {
     coefficient,
