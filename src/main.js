@@ -34,7 +34,7 @@ const WIDGET_MAX_HEIGHT = 900;
 const VALID_RESIZE_EDGES = new Set(["n", "e", "s", "w", "ne", "se", "sw", "nw"]);
 const WIDGET_DOCK_EDGE_THRESHOLD = 22;
 const WIDGET_DOCK_VISIBLE_SIZE = 12;
-const WIDGET_DOCK_SETTLE_MS = 90;
+const WIDGET_DOCK_SETTLE_MS = 180;
 const WIDGET_DOCK_COLLAPSE_MS = 420;
 const WIDGET_DOCK_INITIAL_COLLAPSE_MS = 720;
 const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
@@ -2926,6 +2926,17 @@ function collapsedWidgetBoundsForDock(expandedBounds, edge) {
   return bounds;
 }
 
+function boundsEqual(left, right) {
+  return (
+    left &&
+    right &&
+    left.x === right.x &&
+    left.y === right.y &&
+    left.width === right.width &&
+    left.height === right.height
+  );
+}
+
 function setWidgetDockBounds(bounds) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   widgetDockState.suppressMoveUntil = Date.now() + WIDGET_DOCK_SUPPRESS_MOVE_MS;
@@ -3117,7 +3128,10 @@ function scheduleWidgetDockCheck() {
     }
 
     if (!widgetDockState.collapsed) {
-      widgetDockState.expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
+      const expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
+      widgetDockState.expandedBounds = expandedBounds;
+      if (!boundsEqual(bounds, expandedBounds)) setWidgetDockBounds(expandedBounds);
+      scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
     }
   }, WIDGET_DOCK_SETTLE_MS);
 }
