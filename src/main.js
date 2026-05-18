@@ -41,6 +41,7 @@ const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
 const WIDGET_DOCK_POLL_MS = 90;
 const WIDGET_DOCK_HOTZONE = 3;
 const WIDGET_DOCK_CURSOR_GRACE = 14;
+const WIDGET_DOCK_STRIP_GRACE = 4;
 
 let mainWindow;
 let widgetWindow;
@@ -2956,7 +2957,7 @@ function collapseWidgetDock({ force = false } = {}) {
   if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
   if (widgetDockState.pointerInside && !force) return;
   const cursor = screen.getCursorScreenPoint();
-  widgetDockState.edgeHoverArmed = !pointOnDockHotzone(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
+  widgetDockState.edgeHoverArmed = !pointOnCollapsedDockStrip(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
   widgetDockState.collapsed = true;
   setWidgetDockSizing(true);
   setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
@@ -3027,6 +3028,40 @@ function pointOnDockHotzone(point, expandedBounds, edge) {
   return false;
 }
 
+function pointOnCollapsedDockStrip(point, expandedBounds, edge) {
+  const workArea = widgetWorkAreaForBounds(expandedBounds);
+  const padding = WIDGET_DOCK_STRIP_GRACE;
+  if (edge === "left") {
+    return (
+      point.x <= workArea.x + WIDGET_DOCK_VISIBLE_SIZE + padding &&
+      point.y >= expandedBounds.y - padding &&
+      point.y <= expandedBounds.y + expandedBounds.height + padding
+    );
+  }
+  if (edge === "right") {
+    return (
+      point.x >= workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE - padding &&
+      point.y >= expandedBounds.y - padding &&
+      point.y <= expandedBounds.y + expandedBounds.height + padding
+    );
+  }
+  if (edge === "top") {
+    return (
+      point.y <= workArea.y + WIDGET_DOCK_VISIBLE_SIZE + padding &&
+      point.x >= expandedBounds.x - padding &&
+      point.x <= expandedBounds.x + expandedBounds.width + padding
+    );
+  }
+  if (edge === "bottom") {
+    return (
+      point.y >= workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE - padding &&
+      point.x >= expandedBounds.x - padding &&
+      point.x <= expandedBounds.x + expandedBounds.width + padding
+    );
+  }
+  return false;
+}
+
 function startWidgetDockPointerPoll() {
   if (widgetDockState.pollTimer || !widgetDockState.edge || !widgetDockState.expandedBounds) return;
   widgetDockState.pollTimer = setInterval(() => {
@@ -3038,11 +3073,12 @@ function startWidgetDockPointerPoll() {
 
     const cursor = screen.getCursorScreenPoint();
     const edgeActive = pointOnDockHotzone(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
+    const stripActive = pointOnCollapsedDockStrip(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
     const insideExpanded = pointInBounds(cursor, widgetDockState.expandedBounds, WIDGET_DOCK_CURSOR_GRACE);
     widgetDockState.pointerInside = insideExpanded;
 
     if (widgetDockState.collapsed) {
-      if (!edgeActive) {
+      if (!stripActive) {
         widgetDockState.edgeHoverArmed = true;
         return;
       }
@@ -3170,7 +3206,10 @@ function finishWidgetResize() {
 
 function handleWidgetPointerEnter() {
   widgetDockState.pointerInside = true;
-  if (widgetDockState.edge && widgetDockState.collapsed && widgetDockState.edgeHoverArmed) expandWidgetDock();
+  if (widgetDockState.edge && widgetDockState.collapsed && widgetDockState.edgeHoverArmed) {
+    const cursor = screen.getCursorScreenPoint();
+    if (pointOnCollapsedDockStrip(cursor, widgetDockState.expandedBounds, widgetDockState.edge)) expandWidgetDock();
+  }
   return { ok: true };
 }
 
