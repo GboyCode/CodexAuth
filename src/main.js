@@ -36,6 +36,7 @@ const WIDGET_DOCK_EDGE_THRESHOLD = 34;
 const WIDGET_DOCK_VISIBLE_SIZE = 12;
 const WIDGET_DOCK_SETTLE_MS = 90;
 const WIDGET_DOCK_COLLAPSE_MS = 420;
+const WIDGET_DOCK_INITIAL_COLLAPSE_MS = 720;
 const WIDGET_DOCK_SUPPRESS_MOVE_MS = 280;
 const WIDGET_DOCK_POLL_MS = 90;
 const WIDGET_DOCK_HOTZONE = 3;
@@ -2964,22 +2965,23 @@ function expandWidgetDock() {
   startWidgetDockPointerPoll();
 }
 
-function collapseWidgetDock() {
+function collapseWidgetDock({ force = false } = {}) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
-  if (!widgetDockState.edge || !widgetDockState.expandedBounds || widgetDockState.pointerInside) return;
+  if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  if (widgetDockState.pointerInside && !force) return;
   widgetDockState.collapsed = true;
   setWidgetDockSizing(true);
   setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
   startWidgetDockPointerPoll();
 }
 
-function scheduleWidgetDockCollapse() {
+function scheduleWidgetDockCollapse({ force = false, delay = WIDGET_DOCK_COLLAPSE_MS } = {}) {
   if (!widgetDockState.edge || widgetDockState.collapsed) return;
   if (widgetDockState.collapseTimer) clearTimeout(widgetDockState.collapseTimer);
   widgetDockState.collapseTimer = setTimeout(() => {
     widgetDockState.collapseTimer = null;
-    collapseWidgetDock();
-  }, WIDGET_DOCK_COLLAPSE_MS);
+    collapseWidgetDock({ force });
+  }, delay);
 }
 
 function dockWidgetToEdge(edge, bounds) {
@@ -2991,7 +2993,7 @@ function dockWidgetToEdge(edge, bounds) {
   setWidgetDockSizing(false);
   setWidgetDockBounds(expandedBounds);
   startWidgetDockPointerPoll();
-  if (!widgetDockState.pointerInside) scheduleWidgetDockCollapse();
+  scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
 }
 
 function pointInBounds(point, bounds, padding = 0) {
