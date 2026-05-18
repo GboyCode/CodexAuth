@@ -2961,6 +2961,7 @@ function expandWidgetDock() {
   setWidgetDockSizing(false);
   setWidgetDockBounds(widgetDockState.expandedBounds);
   startWidgetDockPointerPoll();
+  scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
 }
 
 function collapseWidgetDock({ force = false } = {}) {
@@ -3108,12 +3109,16 @@ function startWidgetDockPointerPoll() {
 function scheduleWidgetDockCheck() {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   if (widgetResizeSession) return;
-  if (Date.now() < widgetDockState.suppressMoveUntil) return;
   if (widgetDockState.settleTimer) clearTimeout(widgetDockState.settleTimer);
-  widgetDockState.settleTimer = setTimeout(() => {
+  const runDockCheck = () => {
     widgetDockState.settleTimer = null;
     if (!widgetWindow || widgetWindow.isDestroyed() || !widgetWindow.isVisible()) return;
-    if (widgetResizeSession || Date.now() < widgetDockState.suppressMoveUntil) return;
+    if (widgetResizeSession) return;
+    const waitMs = widgetDockState.suppressMoveUntil - Date.now();
+    if (waitMs > 0) {
+      widgetDockState.settleTimer = setTimeout(runDockCheck, waitMs + WIDGET_DOCK_SETTLE_MS);
+      return;
+    }
 
     const bounds = widgetWindow.getBounds();
     const edge = widgetDockEdgeForBounds(bounds);
@@ -3133,7 +3138,8 @@ function scheduleWidgetDockCheck() {
       if (!boundsEqual(bounds, expandedBounds)) setWidgetDockBounds(expandedBounds);
       scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_INITIAL_COLLAPSE_MS });
     }
-  }, WIDGET_DOCK_SETTLE_MS);
+  };
+  widgetDockState.settleTimer = setTimeout(runDockCheck, WIDGET_DOCK_SETTLE_MS);
 }
 
 function resizeWidgetBoundsFromSession(session) {
