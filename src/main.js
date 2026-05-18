@@ -42,6 +42,9 @@ const WIDGET_DOCK_POLL_MS = 90;
 const WIDGET_DOCK_HOTZONE = 3;
 const WIDGET_DOCK_CURSOR_GRACE = 14;
 const WIDGET_DOCK_STRIP_GRACE = 4;
+const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
+const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
+const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
 
 let mainWindow;
 let widgetWindow;
@@ -57,7 +60,9 @@ let widgetDockState = {
   pointerInside: false,
   settleTimer: null,
   collapseTimer: null,
+  verifyTimer: null,
   pollTimer: null,
+  collapseRetryCount: 0,
   suppressMoveUntil: 0,
 };
 let authWatcher;
@@ -2863,6 +2868,10 @@ function clearWidgetDockTimers() {
     clearTimeout(widgetDockState.collapseTimer);
     widgetDockState.collapseTimer = null;
   }
+  if (widgetDockState.verifyTimer) {
+    clearTimeout(widgetDockState.verifyTimer);
+    widgetDockState.verifyTimer = null;
+  }
   if (widgetDockState.pollTimer) {
     clearInterval(widgetDockState.pollTimer);
     widgetDockState.pollTimer = null;
@@ -2880,7 +2889,9 @@ function resetWidgetDockState({ keepPointer = true } = {}) {
     pointerInside: keepPointer ? widgetDockState.pointerInside : false,
     settleTimer: null,
     collapseTimer: null,
+    verifyTimer: null,
     pollTimer: null,
+    collapseRetryCount: 0,
     suppressMoveUntil: 0,
   };
 }
@@ -2937,6 +2948,17 @@ function boundsEqual(left, right) {
   );
 }
 
+function boundsNear(left, right, tolerance = 2) {
+  return (
+    left &&
+    right &&
+    Math.abs(left.x - right.x) <= tolerance &&
+    Math.abs(left.y - right.y) <= tolerance &&
+    Math.abs(left.width - right.width) <= tolerance &&
+    Math.abs(left.height - right.height) <= tolerance
+  );
+}
+
 function setWidgetDockBounds(bounds) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   widgetDockState.suppressMoveUntil = Date.now() + WIDGET_DOCK_SUPPRESS_MOVE_MS;
@@ -2956,8 +2978,13 @@ function expandWidgetDock() {
   if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
   clearTimeout(widgetDockState.collapseTimer);
   widgetDockState.collapseTimer = null;
+  if (widgetDockState.verifyTimer) {
+    clearTimeout(widgetDockState.verifyTimer);
+    widgetDockState.verifyTimer = null;
+  }
   widgetDockState.collapsed = false;
   widgetDockState.edgeHoverArmed = true;
+  widgetDockState.collapseRetryCount = 0;
   setWidgetDockSizing(false);
   setWidgetDockBounds(widgetDockState.expandedBounds);
   startWidgetDockPointerPoll();
@@ -2974,6 +3001,7 @@ function collapseWidgetDock({ force = false } = {}) {
   setWidgetDockSizing(true);
   setWidgetDockBounds(collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge));
   startWidgetDockPointerPoll();
+  scheduleWidgetDockCollapseVerify();
 }
 
 function scheduleWidgetDockCollapse({ force = false, delay = WIDGET_DOCK_COLLAPSE_MS } = {}) {
@@ -2985,6 +3013,37 @@ function scheduleWidgetDockCollapse({ force = false, delay = WIDGET_DOCK_COLLAPS
   }, delay);
 }
 
+function scheduleWidgetDockCollapseVerify() {
+  if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  if (widgetDockState.verifyTimer) clearTimeout(widgetDockState.verifyTimer);
+  widgetDockState.verifyTimer = setTimeout(() => {
+    widgetDockState.verifyTimer = null;
+    verifyWidgetDockCollapsed();
+  }, WIDGET_DOCK_COLLAPSE_VERIFY_MS);
+}
+
+function verifyWidgetDockCollapsed() {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  if (!widgetDockState.edge || !widgetDockState.expandedBounds || !widgetDockState.collapsed) return;
+
+  const actualBounds = widgetWindow.getBounds();
+  const targetBounds = collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge);
+  if (boundsNear(actualBounds, targetBounds)) {
+    widgetDockState.collapseRetryCount = 0;
+    return;
+  }
+
+  if (widgetDockState.collapseRetryCount >= WIDGET_DOCK_COLLAPSE_RETRY_LIMIT) return;
+  widgetDockState.collapseRetryCount += 1;
+
+  const edge = widgetDockEdgeForBounds(actualBounds) || widgetDockState.edge;
+  widgetDockState.edge = edge;
+  widgetDockState.expandedBounds = expandedWidgetBoundsForDock(actualBounds, edge);
+  widgetDockState.collapsed = false;
+  setWidgetDockSizing(false);
+  scheduleWidgetDockCollapse({ force: true, delay: WIDGET_DOCK_COLLAPSE_RETRY_MS });
+}
+
 function dockWidgetToEdge(edge, bounds) {
   if (!edge || !widgetWindow || widgetWindow.isDestroyed()) return;
   const expandedBounds = expandedWidgetBoundsForDock(bounds, edge);
@@ -2992,6 +3051,7 @@ function dockWidgetToEdge(edge, bounds) {
   widgetDockState.expandedBounds = expandedBounds;
   widgetDockState.collapsed = false;
   widgetDockState.edgeHoverArmed = true;
+  widgetDockState.collapseRetryCount = 0;
   setWidgetDockSizing(false);
   setWidgetDockBounds(expandedBounds);
   startWidgetDockPointerPoll();
