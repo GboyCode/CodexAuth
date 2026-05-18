@@ -32,7 +32,7 @@ const WIDGET_MAX_ACCOUNT_ROWS = 4;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;
 const WIDGET_MAX_HEIGHT = 900;
 const VALID_RESIZE_EDGES = new Set(["n", "e", "s", "w", "ne", "se", "sw", "nw"]);
-const WIDGET_DOCK_EDGE_THRESHOLD = 22;
+const WIDGET_DOCK_EDGE_THRESHOLD = 12;
 const WIDGET_DOCK_VISIBLE_SIZE = 12;
 const WIDGET_DOCK_SETTLE_MS = 180;
 const WIDGET_DOCK_COLLAPSE_MS = 420;
@@ -2902,14 +2902,16 @@ function widgetWorkAreaForBounds(bounds) {
   return screen.getDisplayMatching(bounds).workArea;
 }
 
+function isWidgetDockEdge(edge) {
+  return edge === "left" || edge === "right";
+}
+
 function widgetDockEdgeForBounds(bounds) {
   if (!bounds) return null;
   const workArea = widgetWorkAreaForBounds(bounds);
   const distances = [
     { edge: "left", value: Math.abs(bounds.x - workArea.x) },
     { edge: "right", value: Math.abs(workArea.x + workArea.width - (bounds.x + bounds.width)) },
-    { edge: "top", value: Math.abs(bounds.y - workArea.y) },
-    { edge: "bottom", value: Math.abs(workArea.y + workArea.height - (bounds.y + bounds.height)) },
   ].sort((a, b) => a.value - b.value);
   return distances[0]?.value <= WIDGET_DOCK_EDGE_THRESHOLD ? distances[0].edge : null;
 }
@@ -2923,8 +2925,6 @@ function expandedWidgetBoundsForDock(bounds, edge) {
 
   if (edge === "left") x = workArea.x;
   if (edge === "right") x = workArea.x + workArea.width - width;
-  if (edge === "top") y = workArea.y;
-  if (edge === "bottom") y = workArea.y + workArea.height - height;
 
   return { x, y, width, height };
 }
@@ -2934,8 +2934,6 @@ function collapsedWidgetBoundsForDock(expandedBounds, edge) {
   const bounds = { ...expandedBounds };
   if (edge === "left") bounds.x = workArea.x - bounds.width + WIDGET_DOCK_VISIBLE_SIZE;
   if (edge === "right") bounds.x = workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE;
-  if (edge === "top") bounds.y = workArea.y - bounds.height + WIDGET_DOCK_VISIBLE_SIZE;
-  if (edge === "bottom") bounds.y = workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE;
   return bounds;
 }
 
@@ -2958,7 +2956,7 @@ function setWidgetDockBounds(bounds) {
 
 function sendWidgetDockHint(edge) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
-  const normalizedEdge = edge || null;
+  const normalizedEdge = isWidgetDockEdge(edge) ? edge : null;
   widgetDockState.hintEdge = normalizedEdge;
   widgetWindow.webContents.send("widget:dock-hint", {
     available: Boolean(normalizedEdge && !widgetDockState.collapsed),
@@ -2980,7 +2978,7 @@ function setWidgetDockSizing(collapsed) {
 }
 
 function expandWidgetDock() {
-  if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  if (!isWidgetDockEdge(widgetDockState.edge) || !widgetDockState.expandedBounds) return;
   clearTimeout(widgetDockState.collapseTimer);
   widgetDockState.collapseTimer = null;
   if (widgetDockState.verifyTimer) {
@@ -2998,7 +2996,7 @@ function expandWidgetDock() {
 
 function collapseWidgetDock({ force = false } = {}) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
-  if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  if (!isWidgetDockEdge(widgetDockState.edge) || !widgetDockState.expandedBounds) return;
   if (widgetDockState.pointerInside && !force) return;
   const cursor = screen.getCursorScreenPoint();
   widgetDockState.edgeHoverArmed = !pointOnCollapsedDockStrip(cursor, widgetDockState.expandedBounds, widgetDockState.edge);
@@ -3011,7 +3009,7 @@ function collapseWidgetDock({ force = false } = {}) {
 }
 
 function scheduleWidgetDockCollapse({ force = false, delay = WIDGET_DOCK_COLLAPSE_MS } = {}) {
-  if (!widgetDockState.edge || widgetDockState.collapsed) return;
+  if (!isWidgetDockEdge(widgetDockState.edge) || widgetDockState.collapsed) return;
   if (widgetDockState.collapseTimer) clearTimeout(widgetDockState.collapseTimer);
   widgetDockState.collapseTimer = setTimeout(() => {
     widgetDockState.collapseTimer = null;
@@ -3020,7 +3018,7 @@ function scheduleWidgetDockCollapse({ force = false, delay = WIDGET_DOCK_COLLAPS
 }
 
 function scheduleWidgetDockCollapseVerify() {
-  if (!widgetDockState.edge || !widgetDockState.expandedBounds) return;
+  if (!isWidgetDockEdge(widgetDockState.edge) || !widgetDockState.expandedBounds) return;
   if (widgetDockState.verifyTimer) clearTimeout(widgetDockState.verifyTimer);
   widgetDockState.verifyTimer = setTimeout(() => {
     widgetDockState.verifyTimer = null;
@@ -3030,7 +3028,7 @@ function scheduleWidgetDockCollapseVerify() {
 
 function verifyWidgetDockCollapsed() {
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
-  if (!widgetDockState.edge || !widgetDockState.expandedBounds || !widgetDockState.collapsed) return;
+  if (!isWidgetDockEdge(widgetDockState.edge) || !widgetDockState.expandedBounds || !widgetDockState.collapsed) return;
 
   const actualBounds = widgetWindow.getBounds();
   const targetBounds = collapsedWidgetBoundsForDock(widgetDockState.expandedBounds, widgetDockState.edge);
@@ -3051,7 +3049,7 @@ function verifyWidgetDockCollapsed() {
 }
 
 function markWidgetNearDockEdge(edge, bounds) {
-  if (!edge || !widgetWindow || widgetWindow.isDestroyed()) return;
+  if (!isWidgetDockEdge(edge) || !widgetWindow || widgetWindow.isDestroyed()) return;
   widgetDockState.edge = edge;
   widgetDockState.expandedBounds = bounds;
   widgetDockState.collapsed = false;
@@ -3093,20 +3091,6 @@ function pointOnCollapsedDockStrip(point, expandedBounds, edge) {
       point.x >= workArea.x + workArea.width - WIDGET_DOCK_VISIBLE_SIZE - padding &&
       point.y >= expandedBounds.y - padding &&
       point.y <= expandedBounds.y + expandedBounds.height + padding
-    );
-  }
-  if (edge === "top") {
-    return (
-      point.y <= workArea.y + WIDGET_DOCK_VISIBLE_SIZE + padding &&
-      point.x >= expandedBounds.x - padding &&
-      point.x <= expandedBounds.x + expandedBounds.width + padding
-    );
-  }
-  if (edge === "bottom") {
-    return (
-      point.y >= workArea.y + workArea.height - WIDGET_DOCK_VISIBLE_SIZE - padding &&
-      point.x >= expandedBounds.x - padding &&
-      point.x <= expandedBounds.x + expandedBounds.width + padding
     );
   }
   return false;
