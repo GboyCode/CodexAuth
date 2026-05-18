@@ -42,6 +42,7 @@ const WIDGET_DOCK_STRIP_GRACE = 4;
 const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
 const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
 const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
+const QUOTA_CONFLICT_WINDOW_MS = 5 * 60 * 1000;
 
 let mainWindow;
 let widgetWindow;
@@ -1626,7 +1627,97 @@ function newerQuota(left, right) {
   const rightMs = new Date(right.checkedAt).getTime();
   if (!Number.isFinite(leftMs)) return right;
   if (!Number.isFinite(rightMs)) return left;
+  if (Math.abs(rightMs - leftMs) <= QUOTA_CONFLICT_WINDOW_MS && sameNormalizedQuotaWindow(left, right)) {
+    return moreConstrainedNormalizedQuota(left, right);
+  }
   return rightMs > leftMs ? right : left;
+}
+
+function sameWindowIdentity(leftWindow, rightWindow) {
+  if (!leftWindow || !rightWindow) return true;
+  const leftReset = Number(leftWindow.resetsAt);
+  const rightReset = Number(rightWindow.resetsAt);
+  if (Number.isFinite(leftReset) && Number.isFinite(rightReset) && leftReset !== rightReset) return false;
+  const leftMinutes = Number(leftWindow.windowMinutes);
+  const rightMinutes = Number(rightWindow.windowMinutes);
+  if (Number.isFinite(leftMinutes) && Number.isFinite(rightMinutes) && leftMinutes !== rightMinutes) return false;
+  return true;
+}
+
+function sameNormalizedQuotaWindow(left, right) {
+  const leftPlan = left?.planType;
+  const rightPlan = right?.planType;
+  if (leftPlan && rightPlan && leftPlan !== rightPlan) return false;
+  return sameWindowIdentity(left?.session, right?.session) && sameWindowIdentity(left?.weekly, right?.weekly);
+}
+
+function moreConstrainedNormalizedQuota(left, right) {
+  const leftSessionUsed = Number(left?.session?.usedPercent);
+  const rightSessionUsed = Number(right?.session?.usedPercent);
+  if (Number.isFinite(leftSessionUsed) && Number.isFinite(rightSessionUsed) && leftSessionUsed !== rightSessionUsed) {
+    return leftSessionUsed > rightSessionUsed ? left : right;
+  }
+  const leftWeeklyUsed = Number(left?.weekly?.usedPercent);
+  const rightWeeklyUsed = Number(right?.weekly?.usedPercent);
+  if (Number.isFinite(leftWeeklyUsed) && Number.isFinite(rightWeeklyUsed) && leftWeeklyUsed !== rightWeeklyUsed) {
+    return leftWeeklyUsed > rightWeeklyUsed ? left : right;
+  }
+  return dateMs(right?.checkedAt) > dateMs(left?.checkedAt) ? right : left;
+}
+
+function rawQuotaWindowIdentity(rateLimits, kind) {
+  const window = quotaRawWindow(rateLimits, kind);
+  const resetAt = Number(window?.reset_at ?? window?.resets_at);
+  const seconds = Number(window?.limit_window_seconds ?? window?.window_minutes * 60);
+  return {
+    resetAt: Number.isFinite(resetAt) ? resetAt : null,
+    seconds: Number.isFinite(seconds) ? seconds : null,
+  };
+}
+
+function sameRawWindowIdentity(leftRateLimits, rightRateLimits, kind) {
+  const left = rawQuotaWindowIdentity(leftRateLimits, kind);
+  const right = rawQuotaWindowIdentity(rightRateLimits, kind);
+  if (left.resetAt !== null && right.resetAt !== null && left.resetAt !== right.resetAt) return false;
+  if (left.seconds !== null && right.seconds !== null && left.seconds !== right.seconds) return false;
+  return true;
+}
+
+function sameRawQuotaWindow(left, right) {
+  const leftPlan = left?.rateLimits?.plan_type;
+  const rightPlan = right?.rateLimits?.plan_type;
+  if (leftPlan && rightPlan && leftPlan !== rightPlan) return false;
+  return (
+    sameRawWindowIdentity(left?.rateLimits, right?.rateLimits, "session") &&
+    sameRawWindowIdentity(left?.rateLimits, right?.rateLimits, "weekly")
+  );
+}
+
+function moreConstrainedRawQuota(left, right) {
+  const leftSessionUsed = rawUsedPercent(left?.rateLimits, "session");
+  const rightSessionUsed = rawUsedPercent(right?.rateLimits, "session");
+  if (Number.isFinite(leftSessionUsed) && Number.isFinite(rightSessionUsed) && leftSessionUsed !== rightSessionUsed) {
+    return leftSessionUsed > rightSessionUsed ? left : right;
+  }
+  const leftWeeklyUsed = rawUsedPercent(left?.rateLimits, "weekly");
+  const rightWeeklyUsed = rawUsedPercent(right?.rateLimits, "weekly");
+  if (Number.isFinite(leftWeeklyUsed) && Number.isFinite(rightWeeklyUsed) && leftWeeklyUsed !== rightWeeklyUsed) {
+    return leftWeeklyUsed > rightWeeklyUsed ? left : right;
+  }
+  return dateMs(right?.timestamp) > dateMs(left?.timestamp) ? right : left;
+}
+
+function selectBestLocalQuotaCandidate(candidates) {
+  const valid = candidates
+    .filter((candidate) => candidate?.rateLimits && Number.isFinite(dateMs(candidate.timestamp)))
+    .sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp));
+  const latest = valid[0];
+  if (!latest) return null;
+  const latestMs = dateMs(latest.timestamp);
+  const comparable = valid.filter(
+    (candidate) => latestMs - dateMs(candidate.timestamp) <= QUOTA_CONFLICT_WINDOW_MS && sameRawQuotaWindow(candidate, latest)
+  );
+  return comparable.reduce((best, candidate) => moreConstrainedRawQuota(best, candidate), latest);
 }
 
 async function parseLatestRateLimitFile(file, sinceMs) {
@@ -2406,7 +2497,7 @@ async function readLatestLocalQuota(options = {}) {
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
   const files = options.files ?? (await walkSessionFiles(sessionsDir()));
   const recentFiles = files.slice(0, 24);
-  let latest = null;
+  const candidates = [];
 
   for (const file of recentFiles) {
     let parsed;
@@ -2416,8 +2507,9 @@ async function readLatestLocalQuota(options = {}) {
       continue;
     }
     if (!parsed?.rateLimits) continue;
-    if (!latest || dateMs(parsed.timestamp) > dateMs(latest.timestamp)) latest = parsed;
+    candidates.push(parsed);
   }
+  const latest = selectBestLocalQuotaCandidate(candidates);
   if (latest?.rateLimits) {
     return quotaFromLocalRateLimits(latest.rateLimits, latest.timestamp, latest.windowTimestamps);
   }
