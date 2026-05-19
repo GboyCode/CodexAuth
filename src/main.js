@@ -43,6 +43,8 @@ const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
 const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
 const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
 const QUOTA_CONFLICT_WINDOW_MS = 5 * 60 * 1000;
+const QUOTA_CACHED_INPUT_WEIGHT = 0.15;
+const QUOTA_ESTIMATE_ALGORITHM = 2;
 
 let mainWindow;
 let widgetWindow;
@@ -451,6 +453,37 @@ function markAccountAuthSnapshot(account, auth, content, now) {
   delete account.reauthMarkedAt;
 }
 
+function stripWindowEstimate(window) {
+  if (!window) return window;
+  const {
+    estimatedUsedPercent,
+    estimatedRemainingPercent,
+    estimatedDeltaPercent,
+    estimatedWeightedTokens,
+    estimateCoefficient,
+    estimateSamples,
+    estimateTokenUsage,
+    estimateWeightedTokens,
+    estimateLatestAt,
+    ...rest
+  } = window;
+  return rest;
+}
+
+function normalizePublicQuotaSnapshot(snapshot) {
+  if (!snapshot?.estimate || snapshot.estimate.algorithm === QUOTA_ESTIMATE_ALGORITHM) return snapshot ?? null;
+  return {
+    ...snapshot,
+    session: stripWindowEstimate(snapshot.session),
+    weekly: stripWindowEstimate(snapshot.weekly),
+    estimate: {
+      ...snapshot.estimate,
+      available: false,
+      reason: "等待新算法快照",
+    },
+  };
+}
+
 function normalizePublicAccount(account, activeId, currentIdentityKey) {
   const key = identityKey(account.identity ?? {});
   return {
@@ -472,7 +505,7 @@ function normalizePublicAccount(account, activeId, currentIdentityKey) {
     reauthMarkedAt: account.reauthMarkedAt ?? null,
     lastSyncedAt: account.lastSyncedAt ?? null,
     lastSwitchedAt: account.lastSwitchedAt ?? null,
-    quotaSnapshot: account.quotaSnapshot ?? null,
+    quotaSnapshot: normalizePublicQuotaSnapshot(account.quotaSnapshot),
     quotaSnapshotUpdatedAt: account.quotaSnapshotUpdatedAt ?? null,
     isActive: account.id === activeId || (!!currentIdentityKey && key === currentIdentityKey),
   };
@@ -1315,24 +1348,38 @@ function tokenUsageTotal(usage) {
   if (Number.isFinite(total) && total > 0) return total;
   const input = Number(usage?.inputTokens ?? 0);
   const output = Number(usage?.outputTokens ?? 0);
-  return Math.max(0, (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0));
+  const reasoning = Number(usage?.reasoningOutputTokens ?? 0);
+  return Math.max(
+    0,
+    (Number.isFinite(input) ? input : 0) +
+      (Number.isFinite(output) ? output : 0) +
+      (Number.isFinite(reasoning) ? reasoning : 0)
+  );
 }
 
-function modelQuotaMultiplier(model, effort = null) {
+function quotaSpeedMultiplier(model, serviceTier = null) {
   const value = String(model || "").toLowerCase();
-  const effortValue = String(effort || "").toLowerCase();
-  let multiplier = /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ? 1.5 : 1;
-  if (effortValue === "xhigh") multiplier *= 1.08;
-  else if (effortValue === "medium") multiplier *= 0.95;
-  else if (effortValue === "low" || effortValue === "minimal") multiplier *= 0.9;
-  return multiplier;
+  const tier = String(serviceTier || "").toLowerCase();
+  return /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
+    tier === "fast" ||
+    tier === "priority"
+    ? 1.5
+    : 1;
 }
 
-function weightedTokenUsage(usage, model, effort = null) {
-  const baseTokens = tokenUsageTotal(usage);
-  const reasoningTokens = Number(usage?.reasoningOutputTokens ?? 0);
-  const explicitReasoningTokens = Number.isFinite(reasoningTokens) && reasoningTokens > 0 ? reasoningTokens : 0;
-  return (baseTokens + explicitReasoningTokens) * modelQuotaMultiplier(model, effort);
+function weightedTokenUsage(usage, model, serviceTier = null) {
+  const input = Math.max(0, Number.isFinite(Number(usage?.inputTokens)) ? Number(usage.inputTokens) : 0);
+  const cachedInput = Math.max(
+    0,
+    Number.isFinite(Number(usage?.cachedInputTokens)) ? Number(usage.cachedInputTokens) : 0
+  );
+  const output = Math.max(0, Number.isFinite(Number(usage?.outputTokens)) ? Number(usage.outputTokens) : 0);
+  const hasBreakdown = [input, cachedInput, output].some((value) => Number.isFinite(value) && value > 0);
+  const effectiveCachedInput = Math.min(cachedInput, input);
+  const total = hasBreakdown
+    ? Math.max(0, input - effectiveCachedInput) + effectiveCachedInput * QUOTA_CACHED_INPUT_WEIGHT + output
+    : tokenUsageTotal(usage);
+  return total * quotaSpeedMultiplier(model, serviceTier);
 }
 
 function cloneTokenUsage(usage) {
@@ -1764,10 +1811,10 @@ function selectBestLocalQuotaCandidate(candidates) {
   return comparable.reduce((best, candidate) => moreConstrainedRawQuota(best, candidate), latest);
 }
 
-function quotaEstimateSeedFromUsage(latestUsage, baseUsage, model, effort, timestamp) {
+function quotaEstimateSeedFromUsage(latestUsage, baseUsage, model, serviceTier, timestamp) {
   if (!latestUsage || !baseUsage) return {};
   const deltaUsage = subtractTokenUsage(latestUsage, baseUsage);
-  const weightedTokens = weightedTokenUsage(deltaUsage, model, effort);
+  const weightedTokens = weightedTokenUsage(deltaUsage, model, serviceTier);
   if (!Number.isFinite(weightedTokens) || weightedTokens <= 0) return {};
   return {
     estimateTokenUsage: deltaUsage,
@@ -1785,7 +1832,7 @@ async function parseLatestRateLimitFile(file, sinceMs) {
   let latestSessionChangeTokenUsage = null;
   let latestWeeklyChangeTokenUsage = null;
   let model = null;
-  let effort = null;
+  let serviceTier = null;
 
   const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1799,7 +1846,8 @@ async function parseLatestRateLimitFile(file, sinceMs) {
     }
     if (entry.type === "turn_context") {
       model = entry.payload?.model ?? model;
-      effort = entry.payload?.effort ?? entry.payload?.collaboration_mode?.settings?.reasoning_effort ?? effort;
+      serviceTier =
+        entry.payload?.service_tier ?? entry.payload?.serviceTier ?? entry.payload?.collaboration_mode?.settings?.service_tier ?? serviceTier;
       continue;
     }
     if (entry.type !== "event_msg" || entry.payload?.type !== "token_count") continue;
@@ -1827,10 +1875,10 @@ async function parseLatestRateLimitFile(file, sinceMs) {
       tokenUsage,
       latestSessionChangeTokenUsage,
       model,
-      effort,
+      serviceTier,
       timestamp
     );
-    const weeklySeed = quotaEstimateSeedFromUsage(tokenUsage, latestWeeklyChangeTokenUsage, model, effort, timestamp);
+    const weeklySeed = quotaEstimateSeedFromUsage(tokenUsage, latestWeeklyChangeTokenUsage, model, serviceTier, timestamp);
     latest = {
       rateLimits: entry.payload.rate_limits,
       timestamp,
@@ -1856,7 +1904,7 @@ async function parseQuotaEventFile(file) {
   let sessionId = null;
   let startedAtMs = null;
   let model = null;
-  let effort = null;
+  let serviceTier = null;
 
   const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1874,7 +1922,8 @@ async function parseQuotaEventFile(file) {
       startedAtMs = dateMs(entry.payload?.timestamp ?? entry.timestamp) ?? startedAtMs;
     } else if (entry.type === "turn_context") {
       model = entry.payload?.model ?? model;
-      effort = entry.payload?.effort ?? entry.payload?.collaboration_mode?.settings?.reasoning_effort ?? effort;
+      serviceTier =
+        entry.payload?.service_tier ?? entry.payload?.serviceTier ?? entry.payload?.collaboration_mode?.settings?.service_tier ?? serviceTier;
     } else if (entry.type === "event_msg" && entry.payload?.type === "token_count") {
       const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
       const ms = dateMs(timestamp);
@@ -1887,7 +1936,7 @@ async function parseQuotaEventFile(file) {
         timestamp,
         ms,
         model,
-        effort,
+        serviceTier,
         tokenUsage: normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage),
         rateLimits: entry.payload?.rate_limits ?? null,
       });
@@ -1937,6 +1986,7 @@ function responseCompletedEventFromLogRow(row) {
     const ms = dateMs(timestamp);
     if (!Number.isFinite(ms)) return null;
     const model = response.model || response.metadata?.model || null;
+    const serviceTier = response.service_tier || response.serviceTier || response.metadata?.service_tier || null;
     const signature = [
       Math.floor(ms / 1000),
       model ?? "",
@@ -1951,6 +2001,7 @@ function responseCompletedEventFromLogRow(row) {
       timestamp,
       ms,
       model,
+      serviceTier,
       tokenUsage,
       signature,
     };
@@ -1974,12 +2025,14 @@ function responseCompletedEventFromLogRow(row) {
 
   const conversationId = fields["conversation.id"] || row?.thread_id || `sqlite-row-${row?.id ?? ms}`;
   const model = fields.slug || fields.model || null;
+  const serviceTier = fields.service_tier || fields["service.tier"] || null;
   return {
     id: row?.id ?? null,
     sessionId: `sqlite:${conversationId}`,
     timestamp,
     ms,
     model,
+    serviceTier,
     tokenUsage: {
       inputTokens,
       cachedInputTokens,
@@ -2066,6 +2119,7 @@ async function readSqliteResponseCompletedEvents(options = {}) {
           timestamp: event.timestamp,
           ms: event.ms,
           model: event.model,
+          serviceTier: event.serviceTier,
           tokenUsage: cloneTokenUsage(cumulative),
           rateLimits: null,
           source: "sqlite-response-completed",
@@ -2102,14 +2156,28 @@ function rawUsedPercent(rateLimits, kind) {
 
 function rateLimitsMatchPlan(rateLimits, planType) {
   const eventPlan = rateLimits?.plan_type ?? null;
-  return !planType || !eventPlan || eventPlan === planType;
+  return !planType || !eventPlan || String(eventPlan).toLowerCase() === String(planType).toLowerCase();
 }
 
-function addCalibrationSample(samples, percentDelta, weightedTokens) {
+function quotaCoefficientBounds(planType, kind) {
+  const fallback = fallbackQuotaCoefficient(planType, kind);
+  return {
+    min: fallback / 8,
+    max: fallback * 4,
+  };
+}
+
+function isReasonableQuotaCoefficient(coefficient, planType, kind) {
+  if (!Number.isFinite(coefficient) || coefficient <= 0) return false;
+  const bounds = quotaCoefficientBounds(planType, kind);
+  return coefficient >= bounds.min && coefficient <= bounds.max;
+}
+
+function addCalibrationSample(samples, percentDelta, weightedTokens, planType, kind) {
   if (!Number.isFinite(percentDelta) || !Number.isFinite(weightedTokens)) return;
   if (percentDelta <= 0 || percentDelta > 40 || weightedTokens < 1000) return;
   const coefficient = percentDelta / weightedTokens;
-  if (coefficient > 0 && coefficient < 0.01) samples.push(coefficient);
+  if (isReasonableQuotaCoefficient(coefficient, planType, kind)) samples.push(coefficient);
 }
 
 function collectQuotaCalibration(events, planType) {
@@ -2147,16 +2215,15 @@ function collectQuotaCalibration(events, planType) {
         const previousPercent = rawUsedPercent(tracker.lastChangeEvent.rateLimits, kind);
         const changed = Number.isFinite(previousPercent) && currentPercent !== previousPercent;
         if (changed) {
-          const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
-          const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
+          const deltaUsage = subtractTokenUsage(event.tokenUsage, tracker.lastChangeEvent.tokenUsage);
           const weightedTokens = weightedTokenUsage(
             deltaUsage,
-            referenceEvent.model || tracker.lastChangeEvent.model,
-            referenceEvent.effort || tracker.lastChangeEvent.effort
+            event.model || tracker.lastChangeEvent.model,
+            event.serviceTier || tracker.lastChangeEvent.serviceTier
           );
           const sampleMs = event.ms ?? nowMs;
           const isRecent = nowMs - sampleMs <= sevenDaysMs;
-          addTaggedCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens, isRecent);
+          addTaggedCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens, isRecent, planType, kind);
           tracker.lastChangeEvent = event;
           tracker.maxTokensSinceChange = event;
         } else if (
@@ -2188,11 +2255,13 @@ function collectQuotaCalibration(events, planType) {
   };
 }
 
-function addTaggedCalibrationSample(samples, percentDelta, weightedTokens, isRecent) {
+function addTaggedCalibrationSample(samples, percentDelta, weightedTokens, isRecent, planType, kind) {
   if (!Number.isFinite(percentDelta) || !Number.isFinite(weightedTokens)) return;
   if (percentDelta <= 0 || percentDelta > 40 || weightedTokens < 1000) return;
   const coefficient = percentDelta / weightedTokens;
-  if (coefficient > 0 && coefficient < 0.01) samples.push({ coeff: coefficient, recent: !!isRecent });
+  if (isReasonableQuotaCoefficient(coefficient, planType, kind)) {
+    samples.push({ coeff: coefficient, recent: !!isRecent });
+  }
 }
 
 function tokenDeltaSinceBase(events, baseMs, kind = "session") {
@@ -2245,7 +2314,7 @@ function tokenDeltaSinceBase(events, baseMs, kind = "session") {
 
     if (!deltaUsage || tokenUsageTotal(deltaUsage) <= 0) continue;
     addTokenUsage(tokenUsage, deltaUsage);
-    weightedTokens += weightedTokenUsage(deltaUsage, latestAfter.model, latestAfter.effort);
+    weightedTokens += weightedTokenUsage(deltaUsage, latestAfter.model, latestAfter.serviceTier);
     sessions += 1;
     if (latestAfter.ms >= latestMs) {
       latestMs = latestAfter.ms;
@@ -2273,10 +2342,10 @@ function buildWindowEstimate(baseWindow, coefficient, weightedTokens, sampleCoun
   };
 }
 
-function coefficientFromCalibration(calibration, kind) {
+function coefficientFromCalibration(calibration, kind, planType) {
   const window = calibration?.[kind];
   const value = Number(window?.coefficient);
-  if (!Number.isFinite(value) || value <= 0) return null;
+  if (!isReasonableQuotaCoefficient(value, planType, kind)) return null;
 
   const lastSampleCoefficient = Number(window?.lastSample?.coefficient);
   const actualDelta = Number(window?.lastSample?.actualDelta);
@@ -2289,7 +2358,8 @@ function coefficientFromCalibration(calibration, kind) {
     Number.isFinite(predictedDelta) &&
     predictedDelta > actualDelta * 2
   ) {
-    return Math.min(value, lastSampleCoefficient * 1.5);
+    const capped = Math.min(value, lastSampleCoefficient * 1.5);
+    return isReasonableQuotaCoefficient(capped, planType, kind) ? capped : null;
   }
 
   return value;
@@ -2328,15 +2398,16 @@ function selectQuotaCoefficient(kind, planType, historicalCoefficient, historica
   return { coefficient: fallback, source: "fallback" };
 }
 
-function blendLearnedCoefficient(kind, selected, learnedCoefficient) {
+function blendLearnedCoefficient(kind, selected, learnedCoefficient, planType) {
   if (!Number.isFinite(learnedCoefficient) || learnedCoefficient <= 0) return selected;
+  if (!isReasonableQuotaCoefficient(learnedCoefficient, planType, kind)) return selected;
   const base = Number(selected?.coefficient);
   if (!Number.isFinite(base) || base <= 0) return { coefficient: learnedCoefficient, source: "learned" };
-  const min = base * 0.25;
-  const max = base * 4;
+  const min = base * 0.5;
+  const max = base * 2;
   const bounded = Math.max(min, Math.min(max, learnedCoefficient));
   return {
-    coefficient: bounded * 0.7 + base * 0.3,
+    coefficient: bounded * 0.4 + base * 0.6,
     source: selected?.source ? `learned-${selected.source}` : "learned",
   };
 }
@@ -2356,6 +2427,7 @@ function newerTokenDelta(left, right) {
 function quotaEstimateUnavailable(reason) {
   return {
     source: "local-estimate",
+    algorithm: QUOTA_ESTIMATE_ALGORITHM,
     available: false,
     reason,
   };
@@ -2462,15 +2534,17 @@ async function readQuotaEstimate(options = {}) {
   const tunedSessionCoefficient = blendLearnedCoefficient(
     "session",
     sessionCoefficient,
-    coefficientFromCalibration(learned, "session")
+    coefficientFromCalibration(learned, "session", baseQuota.planType),
+    baseQuota.planType
   );
   const tunedWeeklyCoefficient = blendLearnedCoefficient(
     "weekly",
     weeklyCoefficient,
-    coefficientFromCalibration(learned, "weekly")
+    coefficientFromCalibration(learned, "weekly", baseQuota.planType),
+    baseQuota.planType
   );
   const sessionEstimateCoefficient = seededSessionDelta
-    ? Math.min(tunedSessionCoefficient.coefficient, fallbackQuotaCoefficient(baseQuota.planType, "session") * 1.25)
+    ? Math.min(tunedSessionCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "session").max)
     : tunedSessionCoefficient.coefficient;
   const sessionEstimate =
     sessionDelta?.weightedTokens >= 100
@@ -2484,6 +2558,7 @@ async function readQuotaEstimate(options = {}) {
   if (!sessionEstimate && !weeklyEstimate) return quotaEstimateUnavailable("\u7b49\u5f85\u5386\u53f2\u6821\u51c6\u6837\u672c");
   return {
     source: "local-estimate",
+    algorithm: QUOTA_ESTIMATE_ALGORITHM,
     available: true,
     checkedAt: freshestDelta?.latestAt,
     baseCheckedAt: baseQuota.checkedAt,
@@ -2558,14 +2633,13 @@ function computeActiveSessionCalibration(events, planType) {
       const previousPercent = rawUsedPercent(tracker.lastChangeEvent.rateLimits, kind);
       const changed = Number.isFinite(previousPercent) && currentPercent !== previousPercent;
       if (changed) {
-        const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
-        const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
+        const deltaUsage = subtractTokenUsage(event.tokenUsage, tracker.lastChangeEvent.tokenUsage);
         const weightedTokens = weightedTokenUsage(
           deltaUsage,
-          referenceEvent.model || tracker.lastChangeEvent.model,
-          referenceEvent.effort || tracker.lastChangeEvent.effort
+          event.model || tracker.lastChangeEvent.model,
+          event.serviceTier || tracker.lastChangeEvent.serviceTier
         );
-        addCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens);
+        addCalibrationSample(tracker.samples, currentPercent - previousPercent, weightedTokens, planType, kind);
         tracker.lastChangeEvent = event;
         tracker.maxTokensSinceChange = event;
       } else if (
@@ -2593,6 +2667,7 @@ function attachQuotaEstimate(quota, estimate) {
     ...quota,
     estimate: {
       source: estimate.source,
+      algorithm: estimate.algorithm,
       available: estimate.available === true,
       reason: estimate.reason ?? null,
       checkedAt: estimate.checkedAt,
@@ -2772,7 +2847,7 @@ async function saveAccountQuotaSnapshot(accountId, quota) {
 function quotaMatchesAccount(account, quota) {
   const accountPlan = account?.identity?.planType;
   const quotaPlan = quota?.planType;
-  return !accountPlan || !quotaPlan || accountPlan === quotaPlan;
+  return !accountPlan || !quotaPlan || String(accountPlan).toLowerCase() === String(quotaPlan).toLowerCase();
 }
 
 function windowLearningSample(previousSnapshot, nextQuota, kind) {

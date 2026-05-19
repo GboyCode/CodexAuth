@@ -4,6 +4,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 
 const sessionsRoot = process.argv[2] || path.join(os.homedir(), ".codex", "sessions");
+const QUOTA_CACHED_INPUT_WEIGHT = 0.15;
 
 function dateMs(value) {
   const ms = new Date(value).getTime();
@@ -23,7 +24,10 @@ function normalizeTokenUsage(raw) {
 function tokenUsageTotal(usage) {
   const total = Number(usage?.totalTokens ?? 0);
   if (Number.isFinite(total) && total > 0) return total;
-  return Math.max(0, Number(usage?.inputTokens ?? 0) + Number(usage?.outputTokens ?? 0));
+  return Math.max(
+    0,
+    Number(usage?.inputTokens ?? 0) + Number(usage?.outputTokens ?? 0) + Number(usage?.reasoningOutputTokens ?? 0)
+  );
 }
 
 function subtractTokenUsage(later, earlier) {
@@ -39,27 +43,45 @@ function subtractTokenUsage(later, earlier) {
   };
 }
 
-function modelQuotaMultiplier(model, effort = null) {
+function quotaSpeedMultiplier(model, serviceTier = null) {
   const value = String(model || "").toLowerCase();
-  const effortValue = String(effort || "").toLowerCase();
-  let multiplier = /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ? 1.5 : 1;
-  if (effortValue === "xhigh") multiplier *= 1.08;
-  else if (effortValue === "medium") multiplier *= 0.95;
-  else if (effortValue === "low" || effortValue === "minimal") multiplier *= 0.9;
-  return multiplier;
+  const tier = String(serviceTier || "").toLowerCase();
+  return /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
+    tier === "fast" ||
+    tier === "priority"
+    ? 1.5
+    : 1;
 }
 
-function weightedTokenUsage(usage, model, effort = null) {
-  const baseTokens = tokenUsageTotal(usage);
-  const reasoningTokens = Number(usage?.reasoningOutputTokens ?? 0);
-  const explicitReasoningTokens = Number.isFinite(reasoningTokens) && reasoningTokens > 0 ? reasoningTokens : 0;
-  return (baseTokens + explicitReasoningTokens) * modelQuotaMultiplier(model, effort);
+function weightedTokenUsage(usage, model, serviceTier = null) {
+  const input = Math.max(0, Number.isFinite(Number(usage?.inputTokens)) ? Number(usage.inputTokens) : 0);
+  const cachedInput = Math.max(
+    0,
+    Number.isFinite(Number(usage?.cachedInputTokens)) ? Number(usage.cachedInputTokens) : 0
+  );
+  const output = Math.max(0, Number.isFinite(Number(usage?.outputTokens)) ? Number(usage.outputTokens) : 0);
+  const hasBreakdown = [input, cachedInput, output].some((value) => Number.isFinite(value) && value > 0);
+  const effectiveCachedInput = Math.min(cachedInput, input);
+  const total = hasBreakdown
+    ? Math.max(0, input - effectiveCachedInput) + effectiveCachedInput * QUOTA_CACHED_INPUT_WEIGHT + output
+    : tokenUsageTotal(usage);
+  return total * quotaSpeedMultiplier(model, serviceTier);
 }
 
 function rawUsedPercent(rateLimits, kind) {
   const window = kind === "weekly" ? rateLimits?.secondary : rateLimits?.primary;
   const value = Number(window?.used_percent);
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+}
+
+function fallbackQuotaCoefficient(kind) {
+  return kind === "weekly" ? 1 / 500000 : 1 / 250000;
+}
+
+function isReasonableQuotaCoefficient(coefficient, kind) {
+  if (!Number.isFinite(coefficient) || coefficient <= 0) return false;
+  const fallback = fallbackQuotaCoefficient(kind);
+  return coefficient >= fallback / 8 && coefficient <= fallback * 4;
 }
 
 function median(values) {
@@ -103,7 +125,7 @@ async function parseFile(file) {
   const events = [];
   let sessionId = null;
   let model = null;
-  let effort = null;
+  let serviceTier = null;
   const stream = fs.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -118,7 +140,8 @@ async function parseFile(file) {
       sessionId = entry.payload?.id ?? sessionId;
     } else if (entry.type === "turn_context") {
       model = entry.payload?.model ?? model;
-      effort = entry.payload?.effort ?? entry.payload?.collaboration_mode?.settings?.reasoning_effort ?? effort;
+      serviceTier =
+        entry.payload?.service_tier ?? entry.payload?.serviceTier ?? entry.payload?.collaboration_mode?.settings?.service_tier ?? serviceTier;
     } else if (entry.type === "event_msg" && entry.payload?.type === "token_count") {
       const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
       const ms = dateMs(timestamp);
@@ -129,7 +152,7 @@ async function parseFile(file) {
         timestamp,
         ms,
         model,
-        effort,
+        serviceTier,
         tokenUsage: normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage),
         rateLimits: entry.payload.rate_limits,
       });
@@ -172,21 +195,26 @@ function collectSamples(events) {
           continue;
         }
 
-        const referenceEvent = tracker.maxTokensSinceChange || tracker.lastChangeEvent;
-        const deltaUsage = subtractTokenUsage(referenceEvent.tokenUsage, tracker.lastChangeEvent.tokenUsage);
+        const deltaUsage = subtractTokenUsage(event.tokenUsage, tracker.lastChangeEvent.tokenUsage);
         const weightedTokens = weightedTokenUsage(
           deltaUsage,
           event.model || tracker.lastChangeEvent.model,
-          event.effort || tracker.lastChangeEvent.effort
+          event.serviceTier || tracker.lastChangeEvent.serviceTier
         );
         const percentDelta = current - previous;
-        if (percentDelta > 0 && percentDelta <= 40 && weightedTokens >= 1000) {
+        const coefficient = percentDelta / weightedTokens;
+        if (
+          percentDelta > 0 &&
+          percentDelta <= 40 &&
+          weightedTokens >= 1000 &&
+          isReasonableQuotaCoefficient(coefficient, kind)
+        ) {
           samples.push({
             kind,
             ms: event.ms,
             weightedTokens,
             percentDelta,
-            coefficient: percentDelta / weightedTokens,
+            coefficient,
           });
         }
         tracker.lastChangeEvent = event;
