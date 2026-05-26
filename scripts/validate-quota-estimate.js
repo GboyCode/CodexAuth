@@ -4,11 +4,35 @@ const path = require("node:path");
 const readline = require("node:readline");
 
 const sessionsRoot = process.argv[2] || path.join(os.homedir(), ".codex", "sessions");
-const QUOTA_CACHED_INPUT_WEIGHT = 0.15;
+const QUOTA_RATE_CARD_BASE_INPUT_CREDITS = 125;
+const CODEX_RATE_CARDS = [
+  { pattern: /gpt[-_\s]?5\.5/, input: 125, cachedInput: 12.5, output: 750, fastMultiplier: 2.5 },
+  { pattern: /gpt[-_\s]?5\.4[-_\s]?mini/, input: 18.75, cachedInput: 1.875, output: 113, fastMultiplier: 1 },
+  { pattern: /gpt[-_\s]?5\.4/, input: 62.5, cachedInput: 6.25, output: 375, fastMultiplier: 2 },
+  { pattern: /gpt[-_\s]?5\.3[-_\s]?codex/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
+  { pattern: /gpt[-_\s]?5\.2/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
+  { pattern: /gpt[-_\s]?5[-_\s]?codex/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
+];
+const DEFAULT_CODEX_RATE_CARD = CODEX_RATE_CARDS[0];
 
 function dateMs(value) {
   const ms = new Date(value).getTime();
   return Number.isFinite(ms) ? ms : null;
+}
+
+function normalizePlanType(planType) {
+  const value = String(planType || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (!value) return "unknown";
+  if (value.includes("business") || value.includes("team")) return "business";
+  if (value.includes("enterprise")) return "enterprise";
+  if (value.includes("teacher") || value.includes("health") || value.includes("gov") || value.includes("edu")) {
+    return "enterprise";
+  }
+  if (value.includes("plus")) return "plus";
+  if (value.includes("pro")) return "pro";
+  if (value.includes("go")) return "go";
+  if (value.includes("free")) return "free";
+  return value;
 }
 
 function normalizeTokenUsage(raw) {
@@ -16,8 +40,12 @@ function normalizeTokenUsage(raw) {
     inputTokens: Number(raw?.input_tokens ?? raw?.inputTokens ?? 0),
     outputTokens: Number(raw?.output_tokens ?? raw?.outputTokens ?? 0),
     totalTokens: Number(raw?.total_tokens ?? raw?.totalTokens ?? 0),
-    cachedInputTokens: Number(raw?.cached_input_tokens ?? raw?.cachedInputTokens ?? 0),
-    reasoningOutputTokens: Number(raw?.reasoning_output_tokens ?? raw?.reasoningOutputTokens ?? 0),
+    cachedInputTokens: Number(
+      raw?.cached_input_tokens ?? raw?.cachedInputTokens ?? raw?.input_tokens_details?.cached_tokens ?? 0
+    ),
+    reasoningOutputTokens: Number(
+      raw?.reasoning_output_tokens ?? raw?.reasoningOutputTokens ?? raw?.output_tokens_details?.reasoning_tokens ?? 0
+    ),
   };
 }
 
@@ -43,14 +71,19 @@ function subtractTokenUsage(later, earlier) {
   };
 }
 
+function codexRateCard(model) {
+  const value = String(model || "").toLowerCase();
+  return CODEX_RATE_CARDS.find((card) => card.pattern.test(value)) ?? DEFAULT_CODEX_RATE_CARD;
+}
+
 function quotaSpeedMultiplier(model, serviceTier = null) {
   const value = String(model || "").toLowerCase();
   const tier = String(serviceTier || "").toLowerCase();
-  return /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
+  const isFast =
+    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
     tier === "fast" ||
-    tier === "priority"
-    ? 1.5
-    : 1;
+    tier === "priority";
+  return isFast ? codexRateCard(model).fastMultiplier : 1;
 }
 
 function weightedTokenUsage(usage, model, serviceTier = null) {
@@ -62,8 +95,13 @@ function weightedTokenUsage(usage, model, serviceTier = null) {
   const output = Math.max(0, Number.isFinite(Number(usage?.outputTokens)) ? Number(usage.outputTokens) : 0);
   const hasBreakdown = [input, cachedInput, output].some((value) => Number.isFinite(value) && value > 0);
   const effectiveCachedInput = Math.min(cachedInput, input);
+  const uncachedInput = Math.max(0, input - effectiveCachedInput);
+  const rateCard = codexRateCard(model);
   const total = hasBreakdown
-    ? Math.max(0, input - effectiveCachedInput) + effectiveCachedInput * QUOTA_CACHED_INPUT_WEIGHT + output
+    ? (uncachedInput * rateCard.input +
+        effectiveCachedInput * rateCard.cachedInput +
+        output * rateCard.output) /
+      QUOTA_RATE_CARD_BASE_INPUT_CREDITS
     : tokenUsageTotal(usage);
   return total * quotaSpeedMultiplier(model, serviceTier);
 }
@@ -74,14 +112,36 @@ function rawUsedPercent(rateLimits, kind) {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
 }
 
-function fallbackQuotaCoefficient(kind) {
-  return kind === "weekly" ? 1 / 500000 : 1 / 250000;
+function fallbackQuotaCreditUnitsPerPercent(planType, kind) {
+  const plan = normalizePlanType(planType);
+  if (kind === "weekly") {
+    if (plan === "business" || plan === "enterprise") return 137000;
+    if (plan === "plus") return 180000;
+    return 100000;
+  }
+  if (plan === "business" || plan === "enterprise") return 24000;
+  if (plan === "plus") return 36000;
+  return 22000;
 }
 
-function isReasonableQuotaCoefficient(coefficient, kind) {
+function fallbackQuotaCoefficient(planType, kind) {
+  return 1 / fallbackQuotaCreditUnitsPerPercent(planType, kind);
+}
+
+function quotaCoefficientBounds(planType, kind) {
+  const fallbackUnits = fallbackQuotaCreditUnitsPerPercent(planType, kind);
+  const minUnits = kind === "weekly" ? 25000 : 8000;
+  const maxUnits = kind === "weekly" ? 4000000 : 1500000;
+  return {
+    min: Math.min(1 / maxUnits, 1 / (fallbackUnits * 25)),
+    max: Math.max(1 / minUnits, 25 / fallbackUnits),
+  };
+}
+
+function isReasonableQuotaCoefficient(coefficient, planType, kind) {
   if (!Number.isFinite(coefficient) || coefficient <= 0) return false;
-  const fallback = fallbackQuotaCoefficient(kind);
-  return coefficient >= fallback / 8 && coefficient <= fallback * 4;
+  const bounds = quotaCoefficientBounds(planType, kind);
+  return coefficient >= bounds.min && coefficient <= bounds.max;
 }
 
 function median(values) {
@@ -141,7 +201,10 @@ async function parseFile(file) {
     } else if (entry.type === "turn_context") {
       model = entry.payload?.model ?? model;
       serviceTier =
-        entry.payload?.service_tier ?? entry.payload?.serviceTier ?? entry.payload?.collaboration_mode?.settings?.service_tier ?? serviceTier;
+        entry.payload?.service_tier ??
+        entry.payload?.serviceTier ??
+        entry.payload?.collaboration_mode?.settings?.service_tier ??
+        serviceTier;
     } else if (entry.type === "event_msg" && entry.payload?.type === "token_count") {
       const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
       const ms = dateMs(timestamp);
@@ -153,6 +216,7 @@ async function parseFile(file) {
         ms,
         model,
         serviceTier,
+        planType: normalizePlanType(entry.payload.rate_limits.plan_type),
         tokenUsage: normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage),
         rateLimits: entry.payload.rate_limits,
       });
@@ -171,8 +235,8 @@ function collectSamples(events) {
   for (const sessionEvents of bySession.values()) {
     sessionEvents.sort((a, b) => a.ms - b.ms);
     const trackers = {
-      session: { lastChangeEvent: null, maxTokensSinceChange: null },
-      weekly: { lastChangeEvent: null, maxTokensSinceChange: null },
+      session: { lastChangeEvent: null },
+      weekly: { lastChangeEvent: null },
     };
     for (const event of sessionEvents) {
       for (const kind of ["session", "weekly"]) {
@@ -182,18 +246,15 @@ function collectSamples(events) {
 
         if (!tracker.lastChangeEvent) {
           tracker.lastChangeEvent = event;
-          tracker.maxTokensSinceChange = event;
           continue;
         }
 
         const previous = rawUsedPercent(tracker.lastChangeEvent.rateLimits, kind);
-        if (!Number.isFinite(previous)) continue;
-        if (current === previous) {
-          if (tokenUsageTotal(event.tokenUsage) > tokenUsageTotal(tracker.maxTokensSinceChange.tokenUsage)) {
-            tracker.maxTokensSinceChange = event;
-          }
+        if (!Number.isFinite(previous)) {
+          tracker.lastChangeEvent = event;
           continue;
         }
+        if (current === previous) continue;
 
         const deltaUsage = subtractTokenUsage(event.tokenUsage, tracker.lastChangeEvent.tokenUsage);
         const weightedTokens = weightedTokenUsage(
@@ -207,10 +268,11 @@ function collectSamples(events) {
           percentDelta > 0 &&
           percentDelta <= 40 &&
           weightedTokens >= 1000 &&
-          isReasonableQuotaCoefficient(coefficient, kind)
+          isReasonableQuotaCoefficient(coefficient, event.planType, kind)
         ) {
           samples.push({
             kind,
+            planType: event.planType,
             ms: event.ms,
             weightedTokens,
             percentDelta,
@@ -218,7 +280,6 @@ function collectSamples(events) {
           });
         }
         tracker.lastChangeEvent = event;
-        tracker.maxTokensSinceChange = event;
       }
     }
   }
@@ -227,21 +288,36 @@ function collectSamples(events) {
 
 function validateKind(samples, kind) {
   const kindSamples = samples.filter((sample) => sample.kind === kind);
-  const coefficients = [];
+  const coefficientsByPlan = new Map();
+  const errorsByPlan = new Map();
   const errors = [];
   for (const sample of kindSamples) {
-    const coeff = median(coefficients);
-    if (coeff) {
-      errors.push(Math.abs(coeff * sample.weightedTokens - sample.percentDelta));
-    }
+    const plan = sample.planType || "unknown";
+    const coefficients = coefficientsByPlan.get(plan) ?? [];
+    const coeff = median(coefficients) ?? fallbackQuotaCoefficient(plan, kind);
+    const error = Math.abs(coeff * sample.weightedTokens - sample.percentDelta);
+    errors.push(error);
+    if (!errorsByPlan.has(plan)) errorsByPlan.set(plan, []);
+    errorsByPlan.get(plan).push(error);
     coefficients.push(sample.coefficient);
+    coefficientsByPlan.set(plan, coefficients);
+  }
+  const byPlan = {};
+  for (const plan of Array.from(new Set(kindSamples.map((sample) => sample.planType || "unknown"))).sort()) {
+    const planSamples = kindSamples.filter((sample) => (sample.planType || "unknown") === plan);
+    byPlan[plan] = {
+      samples: planSamples.length,
+      medianCreditUnitsPerPercent: median(planSamples.map((sample) => sample.weightedTokens / sample.percentDelta)),
+      p90AbsError: percentile(errorsByPlan.get(plan) ?? [], 90),
+    };
   }
   return {
     samples: kindSamples.length,
-    medianTokensPerPercent: median(kindSamples.map((sample) => 1 / sample.coefficient)),
+    medianCreditUnitsPerPercent: median(kindSamples.map((sample) => sample.weightedTokens / sample.percentDelta)),
     replayed: errors.length,
     p50AbsError: percentile(errors, 50),
     p90AbsError: percentile(errors, 90),
+    byPlan,
   };
 }
 

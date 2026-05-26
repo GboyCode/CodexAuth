@@ -37,11 +37,13 @@ jobs:
         with:
           name: CodexAuth Switch ${{ github.ref_name }}
           body: |
-            Initial open-source release.
+            CodexAuth Switch release.
 
             - Windows local Codex App account switcher
             - DPAPI-encrypted local account snapshots
-            - No OpenAI official API calls
+            - Local quota estimation by default
+            - Optional online precise quota mode for current-account limits
+            - Reviews, model-level quota cards, and quota pace hints
             - No Codex conversation history upload
             - The installer is not commercially code-signed, so Windows may show a security warning.
           files: |

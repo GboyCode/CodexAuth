@@ -6,7 +6,7 @@ English README | [中文说明](README.md)
 
 CodexAuth Switch is a local Windows desktop utility for quickly switching between multiple Codex App login accounts.
 
-It is designed for people who use more than one OpenAI / Codex App account. You can save each account's local login state, then switch the active Codex login through this tool. The project only operates on local files. It does not call OpenAI official APIs, does not access `chatgpt.com`, and does not upload Codex conversation history.
+It is designed for people who use more than one OpenAI / Codex App account. You can save each account's local login state, then switch the active Codex login through this tool. By default the app only operates on local files. If you manually enable online precise quota mode, it uses the current Codex access token to query the `chatgpt.com` quota endpoint. It does not upload Codex conversation history.
 
 One-line positioning: **CodexAuth Switch is a local-first Codex App multi-account switcher with `auth.json` snapshot management, Windows DPAPI encryption, quota display, and token usage statistics.**
 
@@ -17,12 +17,12 @@ One-line positioning: **CodexAuth Switch is a local-first Codex App multi-accoun
 - Users who manage multiple Codex App login accounts on Windows.
 - Users who want to switch the active OpenAI Codex / Codex App account quickly.
 - Users who want to safely save and restore local `%USERPROFILE%\.codex\auth.json` login snapshots.
-- Users who want to view local Codex quota, 5-hour quota, weekly quota, token usage, and recent sessions.
-- Users who want a local-only tool that does not call OpenAI official APIs or upload Codex conversation history.
+- Users who want to view local Codex quota, 5-hour quota, weekly quota, Reviews, model-level limits, token usage, and recent sessions.
+- Users who want local log estimation by default, with an optional online precise quota mode.
 
 ## Search Keywords
 
-Codex account switcher, Codex multi account, Codex App account manager, OpenAI Codex account switcher, Codex auth.json switcher, Codex local login manager, Codex quota viewer, Codex token usage dashboard, Codex Windows desktop app, Codex DPAPI encryption, Codex no official API calls, Codex local history read-only.
+Codex account switcher, Codex multi account, Codex App account manager, OpenAI Codex account switcher, Codex auth.json switcher, Codex local login manager, Codex quota viewer, Codex token usage dashboard, Codex Windows desktop app, Codex DPAPI encryption, Codex local quota estimate, Codex online precise quota, Codex local history read-only.
 
 ## Features
 
@@ -32,8 +32,10 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - Encrypt saved account credentials with Windows DPAPI, readable only by the current Windows user.
 - Automatically back up the original `auth.json` before switching, reauth, or deleting the active account.
 - Provide a main window, system tray menu, and floating quick-view widget.
-- Read quota and token usage from local Codex logs.
-- Disable network requests inside the app to keep it local-only.
+- Read quota and token usage from local Codex logs by default.
+- Optionally use the current login token to read precise quota from the ChatGPT backend, falling back to local estimation on failure.
+- Show quota pace hints, Reviews, and model-level limit cards.
+- Disable network requests in renderer pages; only the main process performs an online quota request after the user enables precise mode.
 
 ## Screenshots
 
@@ -73,9 +75,10 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 - It does not modify Codex conversation history.
 - It does not delete `%USERPROFILE%\.codex\sessions`.
 - It does not write to `logs_2.sqlite`.
-- It does not upload tokens, account data, session logs, or usage records.
+- By default, it does not upload tokens, account data, session logs, or usage records.
+- Online precise quota mode uses the current access token only as authentication for the `chatgpt.com` quota endpoint and does not upload local conversation history.
 - It does not refresh OpenAI tokens by itself.
-- It does not call OpenAI official APIs.
+- It does not call remote quota endpoints unless the user explicitly enables online precise quota mode.
 
 The only features that intentionally affect Codex App runtime state are account switching, reauth, deleting the active account, and restarting Codex App. These actions may replace or remove the current `auth.json` and restart Codex App so the new local login state takes effect.
 
@@ -135,9 +138,18 @@ If a saved account's refresh token becomes invalid, the app can start a reauth f
 
 This does not bypass or replace official login. The real login still happens inside Codex App.
 
+### Quota Modes
+
+The quota panel supports two modes:
+
+- Local estimate: default mode; reads only logs already written by Codex App.
+- Online precise: manually enabled; uses the access token in the current `auth.json` to request `https://chatgpt.com/backend-api/wham/usage` and read 5-hour, weekly, Reviews, model-level limits, and credits. If the request fails, the app falls back to local estimation.
+
+Online precise mode does not refresh OpenAI tokens and does not write back to `auth.json`.
+
 ### Local Quota And Usage
 
-The quota and usage panels only read logs already written by Codex App:
+Local estimate mode reads:
 
 - `codex.rate_limits` records in session JSONL files.
 - `codex.rate_limits` and usage-limit records in `logs_2.sqlite`.
@@ -146,6 +158,10 @@ The quota and usage panels only read logs already written by Codex App:
 The app watches local log file changes with a short debounce and uses a low-frequency SQLite modification-time polling fallback to avoid missed filesystem events.
 
 Quota snapshots are saved only into this app's own account metadata. They are not written back to Codex log files.
+
+### Quota Pace Hints
+
+The app uses the current used percentage, quota window length, and reset time to estimate consumption pace. It can show whether usage is light, on track, or likely to run out early. This is a trend hint, not a promise of how much quota the next request will consume.
 
 ### Network Isolation
 
@@ -173,7 +189,7 @@ ws://
 wss://
 ```
 
-These restrictions keep the app local-only and help prevent account data or local history from being uploaded.
+These restrictions keep renderer pages local-only and help prevent account data or local history from being uploaded. Online precise quota requests are made by the main process only after the user enables that mode.
 
 ## Usage
 
@@ -268,19 +284,14 @@ QUOTA-LOGIC.md                      Quota-estimation notes
 - Windows only for now.
 - Credential encryption depends on Windows DPAPI.
 - This targets Codex App local login switching, not Codex CLI-only workflows.
-- Quota and usage display are best-effort interpretations of local logs.
+- Local estimate mode is a best-effort interpretation of local logs.
+- Online precise mode depends on the `chatgpt.com` quota endpoint, whose response shape may change with Codex backend updates.
 - Quota snapshots may stay stale until Codex writes new local rate-limit records.
 - Do not share saved credential snapshots across machines or Windows users.
 
-## Release Notes
+## Release
 
-For a first GitHub release, upload the generated Windows installer from:
-
-```text
-release\CodexAuthSwitch-Setup-0.1.0.exe
-```
-
-The installer is not commercially code-signed, so Windows may show a security warning.
+Windows installers are uploaded through GitHub Releases. The installer is not commercially code-signed, so Windows may show a security warning.
 
 ## License
 

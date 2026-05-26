@@ -43,8 +43,21 @@ const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
 const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
 const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
 const QUOTA_CONFLICT_WINDOW_MS = 5 * 60 * 1000;
-const QUOTA_CACHED_INPUT_WEIGHT = 0.15;
-const QUOTA_ESTIMATE_ALGORITHM = 2;
+const QUOTA_ESTIMATE_ALGORITHM = 3;
+const QUOTA_MODE_LOCAL = "local";
+const QUOTA_MODE_ONLINE = "online";
+const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const LIVE_QUOTA_TIMEOUT_MS = 10000;
+const QUOTA_RATE_CARD_BASE_INPUT_CREDITS = 125;
+const CODEX_RATE_CARDS = [
+  { pattern: /gpt[-_\s]?5\.5/, input: 125, cachedInput: 12.5, output: 750, fastMultiplier: 2.5 },
+  { pattern: /gpt[-_\s]?5\.4[-_\s]?mini/, input: 18.75, cachedInput: 1.875, output: 113, fastMultiplier: 1 },
+  { pattern: /gpt[-_\s]?5\.4/, input: 62.5, cachedInput: 6.25, output: 375, fastMultiplier: 2 },
+  { pattern: /gpt[-_\s]?5\.3[-_\s]?codex/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
+  { pattern: /gpt[-_\s]?5\.2/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
+  { pattern: /gpt[-_\s]?5[-_\s]?codex/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
+];
+const DEFAULT_CODEX_RATE_CARD = CODEX_RATE_CARDS[0];
 
 let mainWindow;
 let widgetWindow;
@@ -191,14 +204,29 @@ async function writeJsonAtomic(filePath, value) {
   await fs.rename(temp, filePath);
 }
 
+function defaultSettings() {
+  return {
+    quotaMode: QUOTA_MODE_LOCAL,
+  };
+}
+
+function normalizeSettings(settings) {
+  const quotaMode = settings?.quotaMode === QUOTA_MODE_ONLINE ? QUOTA_MODE_ONLINE : QUOTA_MODE_LOCAL;
+  return {
+    ...defaultSettings(),
+    quotaMode,
+  };
+}
+
 async function readIndex() {
-  const fallback = { version: STORE_VERSION, activeAccountId: null, accounts: [], deletedIdentityKeys: [] };
+  const fallback = { version: STORE_VERSION, activeAccountId: null, accounts: [], deletedIdentityKeys: [], settings: defaultSettings() };
   const data = await readJson(indexPath(), fallback);
   return {
     version: STORE_VERSION,
     activeAccountId: data.activeAccountId ?? null,
     accounts: Array.isArray(data.accounts) ? data.accounts : [],
     deletedIdentityKeys: Array.isArray(data.deletedIdentityKeys) ? data.deletedIdentityKeys : [],
+    settings: normalizeSettings(data.settings),
   };
 }
 
@@ -208,6 +236,7 @@ async function writeIndex(index) {
     activeAccountId: index.activeAccountId ?? null,
     accounts: index.accounts,
     deletedIdentityKeys: Array.isArray(index.deletedIdentityKeys) ? index.deletedIdentityKeys : [],
+    settings: normalizeSettings(index.settings),
   });
 }
 
@@ -541,11 +570,21 @@ async function currentState() {
     codexDir: codexDir(),
     authPath: authPath(),
     storeRoot: storeRoot(),
+    settings: normalizeSettings(index.settings),
     current,
     accounts: index.accounts.map((account) =>
       normalizePublicAccount(account, index.activeAccountId, currentIdentityKey)
     ),
   };
+}
+
+async function updateSettings(patch) {
+  await mutateIndex(async (index) => {
+    const previous = JSON.stringify(normalizeSettings(index.settings));
+    index.settings = normalizeSettings({ ...index.settings, ...patch });
+    return previous === JSON.stringify(index.settings) ? { write: false } : {};
+  });
+  return currentState();
 }
 
 async function importCurrentAccount(displayName) {
@@ -1233,6 +1272,48 @@ function normalizeCredits(credits) {
   };
 }
 
+function numericValue(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeLiveRateWindow(window, checkedAt, fallbackWindowMinutes, usedPercentOverride = null) {
+  if (!window && usedPercentOverride === null) return null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const windowMinutes = numericValue(window?.window_minutes);
+  const seconds = numericValue(window?.limit_window_seconds) ?? (windowMinutes !== null ? windowMinutes * 60 : null);
+  const resetAt = numericValue(window?.reset_at ?? window?.resets_at);
+  const resetAfter = numericValue(window?.reset_after_seconds);
+  const resetsAt = resetAt ?? (resetAfter !== null ? nowSec + resetAfter : null);
+  const rawUsed = usedPercentOverride ?? numericValue(window?.used_percent);
+  return {
+    usedPercent: rawUsed !== null ? Math.max(0, Math.min(100, Math.round(rawUsed))) : null,
+    windowMinutes: Number.isFinite(seconds) ? Math.round(seconds / 60) : fallbackWindowMinutes,
+    resetsAt,
+    checkedAt,
+    estimateBaseAt: checkedAt,
+  };
+}
+
+function normalizeLiveAdditionalRateLimits(entries, checkedAt) {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map((entry) => {
+      const limitName = typeof entry?.limit_name === "string" ? entry.limit_name : "";
+      const label = limitName.replace(/^GPT-[\d.]+-Codex-/, "") || limitName || "模型额度";
+      const rateLimit = entry?.rate_limit ?? null;
+      const sessionWindow = rateLimit?.primary_window ?? null;
+      const weeklyWindow = rateLimit?.secondary_window ?? null;
+      return {
+        label,
+        session: normalizeLiveRateWindow(sessionWindow, checkedAt, 300),
+        weekly: normalizeLiveRateWindow(weeklyWindow, checkedAt, 7 * 24 * 60),
+      };
+    })
+    .filter((entry) => entry.session || entry.weekly);
+}
+
 function numberHeader(headers, name) {
   const value = headers?.[name.toLowerCase()];
   if (value === undefined || value === null || value === "") return null;
@@ -1246,12 +1327,110 @@ function boolHeader(headers, name) {
   return String(value).toLowerCase() === "true";
 }
 
+function normalizePlanType(planType) {
+  const value = String(planType || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (!value) return null;
+  if (value.includes("business") || value.includes("team")) return "business";
+  if (value.includes("enterprise")) return "enterprise";
+  if (value.includes("teacher") || value.includes("health") || value.includes("gov") || value.includes("edu")) {
+    return "enterprise";
+  }
+  if (value.includes("plus")) return "plus";
+  if (value.includes("pro")) return "pro";
+  if (value.includes("go")) return "go";
+  if (value.includes("free")) return "free";
+  return value;
+}
+
+function planTypesMatch(left, right) {
+  const leftPlan = normalizePlanType(left);
+  const rightPlan = normalizePlanType(right);
+  return !leftPlan || !rightPlan || leftPlan === rightPlan;
+}
+
 function normalizeHeaderMap(headers) {
   const normalized = {};
   for (const [key, value] of Object.entries(headers ?? {})) {
     normalized[String(key).toLowerCase()] = value;
   }
   return normalized;
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = LIVE_QUOTA_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const text = await response.text();
+    const headers = {};
+    response.headers.forEach((value, key) => {
+      headers[String(key).toLowerCase()] = value;
+    });
+    let body = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = null;
+      }
+    }
+    return { status: response.status, ok: response.ok, headers, body, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readOnlineQuota(scope) {
+  const auth = await readCurrentAuth();
+  const accessToken = auth.parsed?.tokens?.access_token;
+  if (!accessToken) {
+    throw new Error("当前 auth.json 没有 access_token，无法联网读取额度。");
+  }
+
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+    "User-Agent": APP_NAME,
+  };
+  const accountId = auth.parsed?.tokens?.account_id ?? auth.identity?.userId ?? null;
+  if (accountId) headers["ChatGPT-Account-Id"] = accountId;
+
+  const response = await fetchJsonWithTimeout(WHAM_USAGE_URL, { method: "GET", headers });
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("联网额度读取未授权，请在 Codex App 重新登录后再试。");
+  }
+  if (!response.ok) {
+    throw new Error(`联网额度读取失败：HTTP ${response.status}`);
+  }
+  if (!response.body || typeof response.body !== "object") {
+    throw new Error("联网额度响应不是有效 JSON。");
+  }
+
+  const checkedAt = new Date().toISOString();
+  const data = response.body;
+  const rateLimit = data.rate_limit ?? null;
+  const primaryWindow = rateLimit?.primary_window ?? null;
+  const secondaryWindow = rateLimit?.secondary_window ?? null;
+  const reviewWindow = data.code_review_rate_limit?.primary_window ?? null;
+  const headerPrimary = numberHeader(response.headers, "x-codex-primary-used-percent");
+  const headerSecondary = numberHeader(response.headers, "x-codex-secondary-used-percent");
+  const creditsBalance = numericValue(data.credits?.balance) ?? numberHeader(response.headers, "x-codex-credits-balance");
+
+  return {
+    source: "online",
+    checkedAt,
+    planType: data.plan_type ?? scope.accountPlanType ?? auth.identity?.planType ?? null,
+    session: normalizeLiveRateWindow(primaryWindow, checkedAt, 300, headerPrimary),
+    weekly: normalizeLiveRateWindow(secondaryWindow, checkedAt, 7 * 24 * 60, headerSecondary),
+    review: normalizeLiveRateWindow(reviewWindow, checkedAt, 7 * 24 * 60),
+    additional: normalizeLiveAdditionalRateLimits(data.additional_rate_limits, checkedAt),
+    credits: data.credits
+      ? normalizeCredits({ ...data.credits, balance: creditsBalance ?? data.credits.balance })
+      : creditsBalance !== null
+        ? { hasCredits: true, unlimited: null, balance: creditsBalance }
+        : null,
+    error: null,
+  };
 }
 
 async function walkSessionFiles(dir) {
@@ -1357,14 +1536,19 @@ function tokenUsageTotal(usage) {
   );
 }
 
+function codexRateCard(model) {
+  const value = String(model || "").toLowerCase();
+  return CODEX_RATE_CARDS.find((card) => card.pattern.test(value)) ?? DEFAULT_CODEX_RATE_CARD;
+}
+
 function quotaSpeedMultiplier(model, serviceTier = null) {
   const value = String(model || "").toLowerCase();
   const tier = String(serviceTier || "").toLowerCase();
-  return /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
+  const isFast =
+    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
     tier === "fast" ||
-    tier === "priority"
-    ? 1.5
-    : 1;
+    tier === "priority";
+  return isFast ? codexRateCard(model).fastMultiplier : 1;
 }
 
 function weightedTokenUsage(usage, model, serviceTier = null) {
@@ -1376,8 +1560,13 @@ function weightedTokenUsage(usage, model, serviceTier = null) {
   const output = Math.max(0, Number.isFinite(Number(usage?.outputTokens)) ? Number(usage.outputTokens) : 0);
   const hasBreakdown = [input, cachedInput, output].some((value) => Number.isFinite(value) && value > 0);
   const effectiveCachedInput = Math.min(cachedInput, input);
+  const uncachedInput = Math.max(0, input - effectiveCachedInput);
+  const rateCard = codexRateCard(model);
   const total = hasBreakdown
-    ? Math.max(0, input - effectiveCachedInput) + effectiveCachedInput * QUOTA_CACHED_INPUT_WEIGHT + output
+    ? (uncachedInput * rateCard.input +
+        effectiveCachedInput * rateCard.cachedInput +
+        output * rateCard.output) /
+      QUOTA_RATE_CARD_BASE_INPUT_CREDITS
     : tokenUsageTotal(usage);
   return total * quotaSpeedMultiplier(model, serviceTier);
 }
@@ -1509,6 +1698,113 @@ async function parseSessionFileCached(file, indexMap, options = {}) {
   if (sessionParseCache.size > 200) {
     const firstKey = sessionParseCache.keys().next().value;
     sessionParseCache.delete(firstKey);
+  }
+  return parsed;
+}
+
+// Fast tail-based parser for usage statistics. Only reads the last ~128KB of
+// each file to extract the final token_count (which contains cumulative totals),
+// session metadata, and model info. Much faster than streaming the entire file
+// for large sessions (100+ MB).
+async function parseSessionFileFast(file, indexMap) {
+  const maxTailBytes = 128 * 1024;
+  const handle = await fs.open(file.path, "r");
+  let headText = "";
+  let tailText = "";
+  try {
+    const stat = await handle.stat();
+    // Always read the first 8KB for session_meta and initial turn_context
+    const headLen = Math.min(stat.size, 8192);
+    const headBuf = Buffer.alloc(headLen);
+    await handle.read(headBuf, 0, headLen, 0);
+    headText = headBuf.toString("utf8");
+
+    // Read the tail for the latest token_count
+    const tailLen = Math.min(stat.size, maxTailBytes);
+    const tailStart = Math.max(0, stat.size - tailLen);
+    const tailBuf = Buffer.alloc(tailLen);
+    await handle.read(tailBuf, 0, tailLen, tailStart);
+    tailText = tailBuf.toString("utf8");
+    if (tailStart > 0) {
+      const firstBreak = tailText.indexOf("\n");
+      tailText = firstBreak >= 0 ? tailText.slice(firstBreak + 1) : "";
+    }
+  } finally {
+    await handle.close();
+  }
+
+  let sessionId = null;
+  let cwd = null;
+  let model = null;
+  let startedAt = null;
+
+  // Parse head for metadata
+  for (const line of headText.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type === "session_meta") {
+      sessionId = entry.payload?.id ?? sessionId;
+      startedAt = entry.payload?.timestamp ?? startedAt;
+      cwd = entry.payload?.cwd ?? cwd;
+    } else if (entry.type === "turn_context") {
+      model = entry.payload?.model ?? model;
+      cwd = entry.payload?.cwd ?? cwd;
+    }
+  }
+
+  // Parse tail for latest token_count and model
+  let lastTokenCount = null;
+  let lastRateLimits = null;
+  let lastTimestamp = new Date(file.mtimeMs).toISOString();
+  for (const line of tailText.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.timestamp) lastTimestamp = entry.timestamp;
+    if (entry.type === "turn_context") {
+      model = entry.payload?.model ?? model;
+      cwd = entry.payload?.cwd ?? cwd;
+    } else if (entry.type === "event_msg" && entry.payload?.type === "token_count") {
+      const info = entry.payload?.info ?? {};
+      lastTokenCount = normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage);
+      if (entry.payload?.rate_limits) lastRateLimits = entry.payload.rate_limits;
+    }
+  }
+
+  if (!lastTokenCount) return null;
+
+  const indexed = sessionId ? indexMap.get(sessionId) : null;
+  const title =
+    indexed?.thread_name ||
+    (cwd ? path.basename(cwd) || cwd : null) ||
+    sessionId ||
+    path.basename(file.path);
+  const updatedAt = indexed?.updated_at ?? lastTimestamp;
+
+  return {
+    id: sessionId,
+    title,
+    cwd,
+    model,
+    startedAt,
+    updatedAt,
+    tokenUsage: lastTokenCount,
+    rateLimits: lastRateLimits,
+    tokenCountAt: lastTimestamp,
+    rateLimitsAt: lastRateLimits ? lastTimestamp : null,
+  };
+}
+
+const sessionFastParseCache = new Map();
+async function parseSessionFileFastCached(file, indexMap) {
+  const cacheKey = `fast:${file.path}:${file.size}:${file.mtimeMs}`;
+  if (sessionFastParseCache.has(cacheKey)) return sessionFastParseCache.get(cacheKey);
+  const parsed = await parseSessionFileFast(file, indexMap);
+  sessionFastParseCache.set(cacheKey, parsed);
+  if (sessionFastParseCache.size > 200) {
+    const firstKey = sessionFastParseCache.keys().next().value;
+    sessionFastParseCache.delete(firstKey);
   }
   return parsed;
 }
@@ -1729,9 +2025,7 @@ function sameWindowIdentity(leftWindow, rightWindow) {
 }
 
 function sameNormalizedQuotaWindow(left, right) {
-  const leftPlan = left?.planType;
-  const rightPlan = right?.planType;
-  if (leftPlan && rightPlan && leftPlan !== rightPlan) return false;
+  if (!planTypesMatch(left?.planType, right?.planType)) return false;
   return sameWindowIdentity(left?.session, right?.session) && sameWindowIdentity(left?.weekly, right?.weekly);
 }
 
@@ -1775,9 +2069,7 @@ function sameRawWindowIdentity(leftRateLimits, rightRateLimits, kind) {
 }
 
 function sameRawQuotaWindow(left, right) {
-  const leftPlan = left?.rateLimits?.plan_type;
-  const rightPlan = right?.rateLimits?.plan_type;
-  if (leftPlan && rightPlan && leftPlan !== rightPlan) return false;
+  if (!planTypesMatch(left?.rateLimits?.plan_type, right?.rateLimits?.plan_type)) return false;
   return (
     sameRawWindowIdentity(left?.rateLimits, right?.rateLimits, "session") &&
     sameRawWindowIdentity(left?.rateLimits, right?.rateLimits, "weekly")
@@ -2156,14 +2448,28 @@ function rawUsedPercent(rateLimits, kind) {
 
 function rateLimitsMatchPlan(rateLimits, planType) {
   const eventPlan = rateLimits?.plan_type ?? null;
-  return !planType || !eventPlan || String(eventPlan).toLowerCase() === String(planType).toLowerCase();
+  return planTypesMatch(eventPlan, planType);
+}
+
+function fallbackQuotaCreditUnitsPerPercent(planType, kind) {
+  const plan = normalizePlanType(planType);
+  if (kind === "weekly") {
+    if (plan === "business" || plan === "enterprise") return 137000;
+    if (plan === "plus") return 180000;
+    return 100000;
+  }
+  if (plan === "business" || plan === "enterprise") return 24000;
+  if (plan === "plus") return 36000;
+  return 22000;
 }
 
 function quotaCoefficientBounds(planType, kind) {
-  const fallback = fallbackQuotaCoefficient(planType, kind);
+  const fallbackUnits = fallbackQuotaCreditUnitsPerPercent(planType, kind);
+  const minUnits = kind === "weekly" ? 25000 : 8000;
+  const maxUnits = kind === "weekly" ? 4000000 : 1500000;
   return {
-    min: fallback / 8,
-    max: fallback * 4,
+    min: Math.min(1 / maxUnits, 1 / (fallbackUnits * 25)),
+    max: Math.max(1 / minUnits, 25 / fallbackUnits),
   };
 }
 
@@ -2343,6 +2649,7 @@ function buildWindowEstimate(baseWindow, coefficient, weightedTokens, sampleCoun
 }
 
 function coefficientFromCalibration(calibration, kind, planType) {
+  if (calibration?.algorithm !== QUOTA_ESTIMATE_ALGORITHM) return null;
   const window = calibration?.[kind];
   const value = Number(window?.coefficient);
   if (!isReasonableQuotaCoefficient(value, planType, kind)) return null;
@@ -2366,15 +2673,7 @@ function coefficientFromCalibration(calibration, kind, planType) {
 }
 
 function fallbackQuotaCoefficient(planType, kind) {
-  // Fallback coefficients derived from observed Codex Plus plan behavior:
-  // ~250K–300K weighted tokens per 1% session quota, ~500K per 1% weekly quota.
-  const plan = String(planType || "").toLowerCase();
-  if (kind === "weekly") {
-    if (plan === "team" || plan === "business") return 1 / 500000;
-    return 1 / 500000;
-  }
-  if (plan === "team" || plan === "business") return 1 / 250000;
-  return 1 / 250000;
+  return 1 / fallbackQuotaCreditUnitsPerPercent(planType, kind);
 }
 
 function selectQuotaCoefficient(kind, planType, historicalCoefficient, historicalSamples, activeCoefficient, activeSamples) {
@@ -2394,6 +2693,12 @@ function selectQuotaCoefficient(kind, planType, historicalCoefficient, historica
   }
   if (hasHistorical) return { coefficient: historicalCoefficient, source: "calibrated" };
   if (hasActive && activeSamples >= 2) return { coefficient: activeCoefficient, source: "active-session" };
+  if (hasActive) {
+    return {
+      coefficient: activeCoefficient * 0.75 + fallback * 0.25,
+      source: "active-session-low-sample",
+    };
+  }
   if (Number.isFinite(historicalCoefficient)) return { coefficient: historicalCoefficient, source: "low-sample" };
   return { coefficient: fallback, source: "fallback" };
 }
@@ -2567,7 +2872,7 @@ async function readQuotaEstimate(options = {}) {
     sessions: Math.max(sessionDelta?.sessions ?? 0, weeklyDelta?.sessions ?? 0),
     confidence: [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("active-session")
       ? "active-session"
-      : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("active-session-blended")
+      : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].some((source) => String(source).startsWith("active-session"))
         ? "active-session-blended"
         : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].some((source) => String(source).startsWith("learned"))
           ? "learned"
@@ -2689,6 +2994,8 @@ function attachQuotaEstimate(quota, estimate) {
   return hasEstimate || estimate.available === false ? next : quota;
 }
 
+const rateLimitFileCache = new Map();
+
 async function readLatestLocalQuota(options = {}) {
   const sinceMs = options.since ? new Date(options.since).getTime() : null;
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
@@ -2699,11 +3006,26 @@ async function readLatestLocalQuota(options = {}) {
   for (const file of recentFiles) {
     let parsed;
     try {
-      parsed = await parseLatestRateLimitFile(file, effectiveSinceMs);
+      const cacheKey = `rl:${file.path}:${file.size}:${file.mtimeMs}`;
+      if (rateLimitFileCache.has(cacheKey)) {
+        parsed = rateLimitFileCache.get(cacheKey);
+      } else {
+        parsed = await parseLatestRateLimitFile(file, null);
+        rateLimitFileCache.set(cacheKey, parsed);
+        if (rateLimitFileCache.size > 30) {
+          const firstKey = rateLimitFileCache.keys().next().value;
+          rateLimitFileCache.delete(firstKey);
+        }
+      }
     } catch {
       continue;
     }
     if (!parsed?.rateLimits) continue;
+    // Apply since filter after cache lookup
+    if (effectiveSinceMs && parsed.timestamp) {
+      const parsedMs = new Date(parsed.timestamp).getTime();
+      if (Number.isFinite(parsedMs) && parsedMs < effectiveSinceMs) continue;
+    }
     candidates.push(parsed);
   }
   const latest = selectBestLocalQuotaCandidate(candidates);
@@ -2718,18 +3040,31 @@ async function readLocalUsage(options = {}) {
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
   const files = options.files ?? (await walkSessionFiles(sessionsDir()));
   const indexMap = await readSessionIndexMap();
-  const recentFiles = files.slice(0, 80);
+  const scanLimit = Number.isFinite(options.scanLimit) ? options.scanLimit : 80;
+  const recentFiles = files.slice(0, scanLimit);
   const sessions = [];
   let latestQuota = null;
+
+  // Use fast tail-based parser for usage statistics. The token_count events
+  // contain cumulative totals, so reading only the tail gives us the final
+  // values without streaming through hundreds of MB of JSONL.
+  const useFastParser = true;
 
   for (const file of recentFiles) {
     let parsed;
     try {
-      parsed = await parseSessionFileCached(file, indexMap, { sinceMs: effectiveSinceMs });
+      parsed = useFastParser
+        ? await parseSessionFileFastCached(file, indexMap)
+        : await parseSessionFileCached(file, indexMap, { sinceMs: effectiveSinceMs });
     } catch {
       continue;
     }
     if (!parsed) continue;
+    // When using fast parser with a since filter, skip sessions that ended before since
+    if (effectiveSinceMs && useFastParser) {
+      const updatedMs = new Date(parsed.updatedAt).getTime();
+      if (Number.isFinite(updatedMs) && updatedMs < effectiveSinceMs) continue;
+    }
     sessions.push(parsed);
     if (!latestQuota && parsed.rateLimits) {
       latestQuota = quotaFromLocalRateLimits(parsed.rateLimits, parsed.rateLimitsAt ?? parsed.updatedAt);
@@ -2756,6 +3091,16 @@ async function readLocalUsage(options = {}) {
     addTokenUsage(dayEntry.tokenUsage, session.tokenUsage);
   }
 
+  // Per-project aggregation using session cwd
+  const byProject = new Map();
+  for (const session of sessions) {
+    const project = session.cwd ? path.basename(session.cwd) || session.cwd : "未知项目";
+    if (!byProject.has(project)) byProject.set(project, { project, cwd: session.cwd, sessions: 0, tokenUsage: emptyTokenUsage() });
+    const projectEntry = byProject.get(project);
+    projectEntry.sessions += 1;
+    addTokenUsage(projectEntry.tokenUsage, session.tokenUsage);
+  }
+
   return {
     source: "local",
     scannedFiles: recentFiles.length,
@@ -2764,6 +3109,7 @@ async function readLocalUsage(options = {}) {
     tokenUsage: total,
     models: Array.from(byModel.values()).sort((a, b) => b.tokenUsage.totalTokens - a.tokenUsage.totalTokens),
     daily: Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day)).slice(-7),
+    projects: Array.from(byProject.values()).sort((a, b) => b.tokenUsage.totalTokens - a.tokenUsage.totalTokens).slice(0, 10),
     recentSessions: sessions.slice(0, 12),
     latestQuota,
     since: options.since ?? null,
@@ -2813,28 +3159,20 @@ async function dashboardScope() {
     accountPlanType: account?.identity?.planType ?? null,
     accountQuotaSnapshot: account?.quotaSnapshot ?? null,
     accountQuotaCalibration: account?.quotaCalibration ?? null,
+    settings: normalizeSettings(index.settings),
     since: account?.lastSwitchedAt ?? null,
     mode: account?.lastSwitchedAt ? "since-account-switch" : "all-local",
   };
 }
 
 async function saveAccountQuotaSnapshot(accountId, quota) {
-  if (!accountId || !quota || !["local", "local-error"].includes(quota.source)) return false;
-  const nextSnapshot = {
-    source: quota.source,
-    checkedAt: quota.checkedAt,
-    planType: quota.planType,
-    session: quota.session,
-    weekly: quota.weekly,
-    credits: quota.credits,
-    error: quota.error ?? null,
-    estimate: quota.estimate ?? null,
-  };
+  if (!accountId || !quota || !["local", "local-error", "online"].includes(quota.source)) return false;
   return mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) return { value: false, write: false };
     if (!quotaMatchesAccount(account, quota)) return { value: false, write: false };
     const learned = updateQuotaLearning(account, quota);
+    const nextSnapshot = buildAccountQuotaSnapshot(quota, account.quotaSnapshot);
     const previous = JSON.stringify(account.quotaSnapshot ?? null);
     const next = JSON.stringify(nextSnapshot);
     if (previous === next && !learned) return { value: false, write: false };
@@ -2847,7 +3185,48 @@ async function saveAccountQuotaSnapshot(accountId, quota) {
 function quotaMatchesAccount(account, quota) {
   const accountPlan = account?.identity?.planType;
   const quotaPlan = quota?.planType;
-  return !accountPlan || !quotaPlan || String(accountPlan).toLowerCase() === String(quotaPlan).toLowerCase();
+  return planTypesMatch(accountPlan, quotaPlan);
+}
+
+function quotaWindowHasDisplayData(window) {
+  if (!window) return false;
+  const hasNumber = (value) => value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value));
+  return (
+    hasNumber(window.usedPercent) ||
+    hasNumber(window.resetsAt) ||
+    hasNumber(window.windowMinutes)
+  );
+}
+
+function mergeAccountQuotaWindow(nextWindow, previousWindow) {
+  if (quotaWindowHasDisplayData(nextWindow)) return nextWindow;
+  return quotaWindowHasDisplayData(previousWindow) ? previousWindow : nextWindow ?? null;
+}
+
+function buildAccountQuotaSnapshot(quota, previousSnapshot = null) {
+  const canReusePrevious =
+    previousSnapshot &&
+    planTypesMatch(previousSnapshot.planType, quota.planType) &&
+    (quotaWindowHasDisplayData(previousSnapshot.session) || quotaWindowHasDisplayData(previousSnapshot.weekly));
+  const session = canReusePrevious ? mergeAccountQuotaWindow(quota.session, previousSnapshot.session) : quota.session ?? null;
+  const weekly = canReusePrevious ? mergeAccountQuotaWindow(quota.weekly, previousSnapshot.weekly) : quota.weekly ?? null;
+  const reusedWindow =
+    canReusePrevious &&
+    ((!quotaWindowHasDisplayData(quota.session) && quotaWindowHasDisplayData(previousSnapshot.session)) ||
+      (!quotaWindowHasDisplayData(quota.weekly) && quotaWindowHasDisplayData(previousSnapshot.weekly)));
+  const hasFreshWindow = quotaWindowHasDisplayData(quota.session) || quotaWindowHasDisplayData(quota.weekly);
+  return {
+    source: quota.source,
+    checkedAt: hasFreshWindow ? quota.checkedAt : previousSnapshot?.checkedAt ?? quota.checkedAt,
+    planType: quota.planType ?? previousSnapshot?.planType ?? null,
+    session,
+    weekly,
+    review: quota.review ?? previousSnapshot?.review ?? null,
+    additional: Array.isArray(quota.additional) ? quota.additional : previousSnapshot?.additional ?? [],
+    credits: quota.credits ?? previousSnapshot?.credits ?? null,
+    error: quota.error ?? (reusedWindow ? "本次本地日志未写入完整额度窗口，保留此账号上次可用快照。" : null),
+    estimate: quota.estimate ?? null,
+  };
 }
 
 function windowLearningSample(previousSnapshot, nextQuota, kind) {
@@ -2888,7 +3267,7 @@ function updateLearningWindow(existing, sample) {
     Number.isFinite(predictedDelta) &&
     Number.isFinite(actualDelta) &&
     actualDelta > 0 &&
-    predictedDelta > actualDelta * 2;
+    (predictedDelta > actualDelta * 2 || actualDelta > predictedDelta * 1.5);
   const sampleWeight = needsFastCorrection ? 0.55 : 0.2;
   const coefficient = Number.isFinite(previous) && previous > 0
     ? previous * (1 - sampleWeight) + sample.coefficient * sampleWeight
@@ -2911,6 +3290,7 @@ function updateQuotaLearning(account, nextQuota) {
   if (!sessionSample && !weeklySample) return false;
   account.quotaCalibration = {
     ...currentLearning,
+    algorithm: QUOTA_ESTIMATE_ALGORITHM,
     session: updateLearningWindow(currentLearning.session, sessionSample),
     weekly: updateLearningWindow(currentLearning.weekly, weeklySample),
   };
@@ -2944,7 +3324,7 @@ function resolveQuota(scope, latestQuota) {
     };
   }
   const compatibleLatest =
-    latestQuota && scope.accountPlanType && latestQuota.planType && latestQuota.planType !== scope.accountPlanType
+    latestQuota && scope.accountPlanType && latestQuota.planType && !planTypesMatch(latestQuota.planType, scope.accountPlanType)
       ? null
       : latestQuota;
   const cachedQuota =
@@ -2973,29 +3353,65 @@ function resolveQuota(scope, latestQuota) {
   );
 }
 
-async function getQuota() {
-  const scope = await dashboardScope();
-  if (!scope.hasCurrentAuth) {
-    return { quota: resolveQuota(scope, null), scope, checkedAt: new Date().toISOString() };
-  }
-  const files = await walkSessionFiles(sessionsDir());
-  const latestQuota = newerQuota(
+async function readBestLocalQuota(scope, files) {
+  return newerQuota(
     newerQuota(
       await readLatestLocalQuota({ since: scope.since, files }),
       await readLatestSqliteRateLimitQuota({ since: scope.since })
     ),
     await readLatestUsageLimitQuota({ since: scope.since })
   );
+}
+
+async function resolveQuotaWithMode(scope, files, usage = null) {
+  const quotaMode = normalizeSettings(scope.settings).quotaMode;
+  if (quotaMode === QUOTA_MODE_ONLINE) {
+    try {
+      const onlineQuota = await readOnlineQuota(scope);
+      const resolvedOnlineQuota = resolveQuota(scope, onlineQuota);
+      if (scope.accountId) {
+        await saveAccountQuotaSnapshot(scope.accountId, resolvedOnlineQuota);
+      }
+      return resolvedOnlineQuota;
+    } catch (error) {
+      const latestQuota = await readBestLocalQuota(scope, files);
+      const baseQuota = latestQuota ?? usage?.latestQuota ?? null;
+      const quotaEstimate = await readQuotaEstimate({
+        since: scope.since,
+        files,
+        baseQuota,
+        calibration: scope.accountQuotaCalibration,
+      });
+      const fallbackQuota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
+      return {
+        ...fallbackQuota,
+        error: `联网读取失败，已回退本地估算：${error.message}`,
+      };
+    }
+  }
+
+  const latestQuota = await readBestLocalQuota(scope, files);
+  const baseQuota = latestQuota ?? usage?.latestQuota ?? null;
   const quotaEstimate = await readQuotaEstimate({
     since: scope.since,
     files,
-    baseQuota: latestQuota,
+    baseQuota,
     calibration: scope.accountQuotaCalibration,
   });
-  const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate);
+  const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
   if (latestQuota && scope.accountId) {
     await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
   }
+  return resolvedQuota;
+}
+
+async function getQuota() {
+  const scope = await dashboardScope();
+  if (!scope.hasCurrentAuth) {
+    return { quota: resolveQuota(scope, null), scope, checkedAt: new Date().toISOString() };
+  }
+  const files = await walkSessionFiles(sessionsDir());
+  const resolvedQuota = await resolveQuotaWithMode(scope, files);
   return {
     quota: resolvedQuota,
     scope,
@@ -3009,26 +3425,56 @@ async function getDashboard() {
     return { quota: resolveQuota(scope, null), usage: emptyLocalUsage(scope.since), scope };
   }
   const files = await walkSessionFiles(sessionsDir());
-  const latestQuota = newerQuota(
-    newerQuota(
-      await readLatestLocalQuota({ since: scope.since, files }),
-      await readLatestSqliteRateLimitQuota({ since: scope.since })
-    ),
-    await readLatestUsageLimitQuota({ since: scope.since })
-  );
   const usage = await readLocalUsage({ since: scope.since, files });
-  const baseQuota = latestQuota ?? usage.latestQuota;
-  const quotaEstimate = await readQuotaEstimate({
-    since: scope.since,
-    files,
-    baseQuota,
-    calibration: scope.accountQuotaCalibration,
-  });
-  const quota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
-  if (latestQuota && scope.accountId) {
-    await saveAccountQuotaSnapshot(scope.accountId, quota);
-  }
+  const quota = await resolveQuotaWithMode(scope, files, usage);
   return { quota, usage, scope };
+}
+
+async function getAllAccountsQuotaSummary() {
+  await waitForIndexMutations();
+  const index = await readIndex();
+  let currentIdentityKey = null;
+  try {
+    const auth = await readCurrentAuth();
+    currentIdentityKey = identityKey(auth.identity);
+  } catch {
+    currentIdentityKey = null;
+  }
+
+  const accounts = index.accounts.map((account) => {
+    const key = identityKey(account.identity ?? {});
+    const isActive = account.id === index.activeAccountId || (!!currentIdentityKey && key === currentIdentityKey);
+    const snapshot = normalizePublicQuotaSnapshot(account.quotaSnapshot);
+    return {
+      id: account.id,
+      displayName: account.displayName,
+      planType: account.identity?.planType ?? null,
+      isActive,
+      quotaSnapshot: snapshot
+        ? {
+            checkedAt: snapshot.checkedAt,
+            session: snapshot.session
+              ? {
+                  usedPercent: snapshot.session.usedPercent ?? null,
+                  remainingPercent: snapshot.session.estimatedRemainingPercent ?? (snapshot.session.usedPercent != null ? Math.max(0, 100 - snapshot.session.usedPercent) : null),
+                  windowMinutes: snapshot.session.windowMinutes ?? null,
+                  resetsAt: snapshot.session.resetsAt ?? null,
+                }
+              : null,
+            weekly: snapshot.weekly
+              ? {
+                  usedPercent: snapshot.weekly.usedPercent ?? null,
+                  remainingPercent: snapshot.weekly.estimatedRemainingPercent ?? (snapshot.weekly.usedPercent != null ? Math.max(0, 100 - snapshot.weekly.usedPercent) : null),
+                  windowMinutes: snapshot.weekly.windowMinutes ?? null,
+                  resetsAt: snapshot.weekly.resetsAt ?? null,
+                }
+              : null,
+          }
+        : null,
+    };
+  });
+
+  return { accounts, checkedAt: new Date().toISOString() };
 }
 
 function createWindow() {
@@ -3562,9 +4008,16 @@ function registerIpc() {
     broadcastStateChanged();
     return result;
   });
+  ipcMain.handle("settings:update", async (_event, patch) => {
+    const result = await updateSettings(patch);
+    broadcastStateChanged();
+    return result;
+  });
   ipcMain.handle("codex:restart", () => restartCodexApp());
   ipcMain.handle("quota:get", () => getQuota());
   ipcMain.handle("dashboard:get", () => getDashboard());
+  ipcMain.handle("dashboard:all-accounts", () => getAllAccountsQuotaSummary());
+  ipcMain.handle("dashboard:all-usage", () => readLocalUsage({ since: null, scanLimit: 200 }));
   ipcMain.handle("path:open", (_event, targetPath) => openPath(targetPath));
   ipcMain.handle("window:show-main", () => {
     showMainWindow();

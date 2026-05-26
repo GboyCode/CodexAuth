@@ -86,7 +86,24 @@
               <p class="label">额度与用量</p>
               <h2>当前账号概览</h2>
             </div>
-            <button id="statsRefreshBtn" class="ghost-btn">刷新额度</button>
+            <div class="section-head-actions">
+              <div class="scope-tabs" role="tablist" aria-label="Usage scope">
+                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true">当前账号</button>
+                <button id="scopeAllBtn" class="scope-tab" type="button" role="tab" aria-selected="false">全部本地</button>
+              </div>
+              <button id="statsRefreshBtn" class="ghost-btn">刷新</button>
+            </div>
+          </div>
+
+          <div class="quota-mode-panel">
+            <div>
+              <strong>额度读取模式</strong>
+              <p id="quotaModeHint">本地预估：只读取本机 Codex 日志，不联网。</p>
+            </div>
+            <div class="mode-switch" role="group" aria-label="Quota mode">
+              <button id="quotaLocalModeBtn" class="mode-switch-btn active" type="button">本地预估</button>
+              <button id="quotaOnlineModeBtn" class="mode-switch-btn" type="button">联网精准</button>
+            </div>
           </div>
 
           <div class="quota-grid">
@@ -116,6 +133,11 @@
             </article>
           </div>
 
+          <section id="extraQuotaSection" class="extra-quota-section" hidden>
+            <p class="usage-title">更多额度</p>
+            <div id="extraQuotaGrid" class="extra-quota-grid"></div>
+          </section>
+
           <div class="usage-grid">
             <article class="metric-card">
               <span>Total Tokens</span>
@@ -142,6 +164,16 @@
             <div class="daily-bars" id="dailyBars"></div>
             <div class="recent-sessions" id="recentSessions"></div>
           </div>
+
+          <div class="usage-detail" style="margin-top: 12px">
+            <div class="daily-bars" id="projectStats"></div>
+            <div class="recent-sessions" id="modelStats"></div>
+          </div>
+
+          <section class="all-accounts-section" id="allAccountsSection">
+            <p class="usage-title">全部账号额度总览</p>
+            <div class="all-accounts-grid" id="allAccountsGrid"></div>
+          </section>
         </section>
       </section>
     </main>

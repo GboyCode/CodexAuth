@@ -1,6 +1,8 @@
 const api = window.codexAuth;
 const REFRESH_MS = 5000;
 const OPACITY_KEY = "codex-auth-widget-opacity";
+const ACCOUNT_POPOVER_CLOSE_DELAY_MS = 320;
+const ACCOUNT_POPOVER_SAFE_GAP_PX = 28;
 
 const els = {
   currentIdentity: document.querySelector("#currentIdentity"),
@@ -38,6 +40,7 @@ let latestSnapshot = null;
 let expandedAccountId = null;
 let accountPopover = null;
 let accountPopoverTimer = null;
+let accountPopoverPointer = { x: Number.NaN, y: Number.NaN };
 
 function identityLabel(accountLike) {
   if (!accountLike) return "未检测到登录";
@@ -89,6 +92,7 @@ function quotaFreshnessLabel(quota) {
   if (seconds < 60) return `快照 ${time} · ${seconds} 秒前${estimate}`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 5) return `快照 ${time} · ${minutes} 分钟前${estimate}`;
+  if (quota?.source === "online") return `快照 ${time} · 可手动刷新联网额度`;
   return `快照 ${time} · 等待 Codex 写入${estimate}`;
 }
 
@@ -143,6 +147,24 @@ function displayUsedPercent(quotaWindow) {
   const delta = Number(quotaWindow?.estimatedDeltaPercent);
   if (estimated !== null && Number.isFinite(delta) && delta > 0) return estimated;
   return clampPercent(quotaWindow?.usedPercent) ?? 0;
+}
+
+function paceLabel(quotaWindow) {
+  if (!quotaWindow?.resetsAt || !quotaWindow?.windowMinutes) return "";
+  const used = displayUsedPercent(quotaWindow);
+  if (!Number.isFinite(used) || used <= 0) return " · 速度宽松";
+  const resetsAtMs = Number(quotaWindow.resetsAt) * 1000;
+  const periodMs = Number(quotaWindow.windowMinutes) * 60 * 1000;
+  if (!Number.isFinite(resetsAtMs) || !Number.isFinite(periodMs) || periodMs <= 0) return "";
+  const startMs = resetsAtMs - periodMs;
+  const elapsedMs = Date.now() - startMs;
+  if (elapsedMs <= 0 || Date.now() >= resetsAtMs) return "";
+  const elapsedFraction = elapsedMs / periodMs;
+  if (elapsedFraction < 0.05 && used < 100) return "";
+  const projectedUsed = (used / elapsedMs) * periodMs;
+  if (projectedUsed <= 80) return " · 速度宽松";
+  if (projectedUsed <= 100) return " · 速度正常";
+  return " · 会提前用完";
 }
 
 function quotaWindowLabel(kind, quotaWindow) {
@@ -237,7 +259,7 @@ function renderWindow(kind, quotaWindow) {
   meterEl.style.width = `${remainingPercent}%`;
   resetEl.textContent = `已用 ${Math.round(usedPercent)}%${estimateRemainingLabel(
     quotaWindow
-  )} · ${relativeReset(quotaWindow.resetsAt)}`;
+  )} · ${relativeReset(quotaWindow.resetsAt)}${paceLabel(quotaWindow)}`;
 }
 
 function createAccountQuotaMetric(kind, quotaWindow) {
@@ -251,7 +273,7 @@ function createAccountQuotaMetric(kind, quotaWindow) {
   label.textContent = quotaWindowLabel(kind, quotaWindow);
 
   const value = document.createElement("strong");
-  const remaining = remainingPercent(quotaWindow);
+  const remaining = displayRemainingPercent(quotaWindow);
   value.textContent = remaining === null ? "--" : `剩余 ${Math.round(remaining)}%`;
   line.append(label, value);
 
@@ -262,8 +284,10 @@ function createAccountQuotaMetric(kind, quotaWindow) {
   meter.append(fill);
 
   const foot = document.createElement("p");
-  const used = clampPercent(quotaWindow?.usedPercent);
-  foot.textContent = quotaWindow ? `已用 ${Math.round(used ?? 0)}% · ${relativeReset(quotaWindow.resetsAt)}` : "暂无数据";
+  const used = displayUsedPercent(quotaWindow);
+  foot.textContent = quotaWindow
+    ? `已用 ${Math.round(used)}%${estimateRemainingLabel(quotaWindow)} · ${relativeReset(quotaWindow.resetsAt)}${paceLabel(quotaWindow)}`
+    : "暂无数据";
 
   metric.append(line, meter, foot);
   return metric;
@@ -303,6 +327,37 @@ function clearAccountPopoverTimer() {
   accountPopoverTimer = null;
 }
 
+function trackAccountPopoverPointer(event) {
+  accountPopoverPointer = { x: event.clientX, y: event.clientY };
+}
+
+function pointerWithinRect(point, rect, padding = 0) {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+  return (
+    point.x >= rect.left - padding &&
+    point.x <= rect.right + padding &&
+    point.y >= rect.top - padding &&
+    point.y <= rect.bottom + padding
+  );
+}
+
+function pointerWithinPopoverZone(accountId) {
+  if (!accountPopover || accountPopover.accountId !== accountId) return false;
+  const rowRect = accountPopover.row.getBoundingClientRect();
+  const popoverRect = accountPopover.element.getBoundingClientRect();
+  const bridgeRect = {
+    left: Math.min(rowRect.left, popoverRect.left),
+    right: Math.max(rowRect.right, popoverRect.right),
+    top: Math.min(rowRect.top, popoverRect.top),
+    bottom: Math.max(rowRect.bottom, popoverRect.bottom),
+  };
+  return (
+    pointerWithinRect(accountPopoverPointer, rowRect, ACCOUNT_POPOVER_SAFE_GAP_PX) ||
+    pointerWithinRect(accountPopoverPointer, popoverRect, ACCOUNT_POPOVER_SAFE_GAP_PX) ||
+    pointerWithinRect(accountPopoverPointer, bridgeRect, 8)
+  );
+}
+
 function destroyAccountPopover() {
   clearAccountPopoverTimer();
   accountPopover?.row?.classList.remove("expanded");
@@ -316,8 +371,13 @@ function scheduleAccountPopoverClose(accountId) {
   if (expandedAccountId !== accountId) return;
   clearAccountPopoverTimer();
   accountPopoverTimer = window.setTimeout(() => {
-    if (expandedAccountId === accountId) destroyAccountPopover();
-  }, 120);
+    if (expandedAccountId !== accountId) return;
+    if (pointerWithinPopoverZone(accountId)) {
+      scheduleAccountPopoverClose(accountId);
+      return;
+    }
+    destroyAccountPopover();
+  }, ACCOUNT_POPOVER_CLOSE_DELAY_MS);
 }
 
 function positionAccountPopover(popover, row) {
@@ -512,6 +572,7 @@ function wireEvents() {
     }
   });
   window.addEventListener("resize", destroyAccountPopover);
+  window.addEventListener("mousemove", trackAccountPopoverPointer, { passive: true });
   window.addEventListener("mouseenter", () => api.widgetPointerEnter?.().catch(() => {}));
   window.addEventListener("mouseleave", () => api.widgetPointerLeave?.().catch(() => {}));
   els.accountList.addEventListener("scroll", destroyAccountPopover);

@@ -12,6 +12,8 @@ const state = {
   quotaLoading: false,
   quotaRefreshQueued: false,
   dashboardRefreshTimer: null,
+  allAccountsRequestId: 0,
+  usageScope: "current", // "current" or "all"
 };
 
 const els = {
@@ -31,6 +33,11 @@ const els = {
   accountList: document.querySelector("#accountList"),
   restartAfterSwitch: document.querySelector("#restartAfterSwitch"),
   statsRefreshBtn: document.querySelector("#statsRefreshBtn"),
+  scopeCurrentBtn: document.querySelector("#scopeCurrentBtn"),
+  scopeAllBtn: document.querySelector("#scopeAllBtn"),
+  quotaLocalModeBtn: document.querySelector("#quotaLocalModeBtn"),
+  quotaOnlineModeBtn: document.querySelector("#quotaOnlineModeBtn"),
+  quotaModeHint: document.querySelector("#quotaModeHint"),
   sessionWindowTitle: document.querySelector("#sessionWindowTitle"),
   sessionPercent: document.querySelector("#sessionPercent"),
   sessionMeter: document.querySelector("#sessionMeter"),
@@ -42,12 +49,17 @@ const els = {
   planType: document.querySelector("#planType"),
   quotaSource: document.querySelector("#quotaSource"),
   creditsInfo: document.querySelector("#creditsInfo"),
+  extraQuotaSection: document.querySelector("#extraQuotaSection"),
+  extraQuotaGrid: document.querySelector("#extraQuotaGrid"),
   totalTokens: document.querySelector("#totalTokens"),
   inputTokens: document.querySelector("#inputTokens"),
   outputTokens: document.querySelector("#outputTokens"),
   sessionCount: document.querySelector("#sessionCount"),
   dailyBars: document.querySelector("#dailyBars"),
   recentSessions: document.querySelector("#recentSessions"),
+  projectStats: document.querySelector("#projectStats"),
+  modelStats: document.querySelector("#modelStats"),
+  allAccountsGrid: document.querySelector("#allAccountsGrid"),
   toast: document.querySelector("#toast"),
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
@@ -120,6 +132,7 @@ function windowTitle(kind, quotaWindow) {
 }
 
 function quotaSourceLabel(source) {
+  if (source === "online") return "来自 ChatGPT 联网额度接口";
   if (source === "official") return "来自本地保存的额度快照";
   if (source === "local") return "来自本地 Codex 日志";
   if (source === "local-error") return "来自本地 Codex 限额日志";
@@ -148,6 +161,7 @@ function quotaFreshnessLabel(quota) {
   if (seconds < 60) return `快照 ${time} · ${seconds} 秒前`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 5) return `快照 ${time} · ${minutes} 分钟前`;
+  if (quota?.source === "online") return `快照 ${time} · 可手动刷新联网额度`;
   return `快照 ${time} · 等待 Codex 写入下一条额度记录`;
 }
 
@@ -187,6 +201,24 @@ function displayUsedPercent(window) {
   const delta = Number(window?.estimatedDeltaPercent);
   if (estimated !== null && Number.isFinite(delta) && delta > 0) return estimated;
   return clampPercent(window?.usedPercent) ?? 0;
+}
+
+function paceLabel(window) {
+  if (!window?.resetsAt || !window?.windowMinutes) return "";
+  const used = displayUsedPercent(window);
+  if (!Number.isFinite(used) || used <= 0) return " · 消耗速度宽松";
+  const resetsAtMs = Number(window.resetsAt) * 1000;
+  const periodMs = Number(window.windowMinutes) * 60 * 1000;
+  if (!Number.isFinite(resetsAtMs) || !Number.isFinite(periodMs) || periodMs <= 0) return "";
+  const startMs = resetsAtMs - periodMs;
+  const elapsedMs = Date.now() - startMs;
+  if (elapsedMs <= 0 || Date.now() >= resetsAtMs) return "";
+  const elapsedFraction = elapsedMs / periodMs;
+  if (elapsedFraction < 0.05 && used < 100) return "";
+  const projectedUsed = (used / elapsedMs) * periodMs;
+  if (projectedUsed <= 80) return " · 消耗速度宽松";
+  if (projectedUsed <= 100) return " · 消耗速度正常";
+  return " · 按当前速度会提前用完";
 }
 
 function quotaWindowLabel(kind, window) {
@@ -274,6 +306,57 @@ function setActivePage(page) {
   }
 }
 
+function setUsageScope(scope) {
+  state.usageScope = scope;
+  const isCurrent = scope === "current";
+  els.scopeCurrentBtn.classList.toggle("active", isCurrent);
+  els.scopeAllBtn.classList.toggle("active", !isCurrent);
+  els.scopeCurrentBtn.setAttribute("aria-selected", String(isCurrent));
+  els.scopeAllBtn.setAttribute("aria-selected", String(!isCurrent));
+  els.scopeCurrentBtn.disabled = true;
+  els.scopeAllBtn.disabled = true;
+  // Show loading state immediately
+  els.totalTokens.textContent = "...";
+  els.inputTokens.textContent = "...";
+  els.outputTokens.textContent = "...";
+  els.sessionCount.textContent = "...";
+  state.dashboardLoaded = false;
+  loadDashboard(true, { busy: false }).catch((error) => showToast(error.message)).finally(() => {
+    els.scopeCurrentBtn.disabled = false;
+    els.scopeAllBtn.disabled = false;
+  });
+}
+
+function renderSettings(snapshot) {
+  const quotaMode = snapshot?.settings?.quotaMode === "online" ? "online" : "local";
+  const online = quotaMode === "online";
+  els.quotaLocalModeBtn.classList.toggle("active", !online);
+  els.quotaOnlineModeBtn.classList.toggle("active", online);
+  els.quotaLocalModeBtn.setAttribute("aria-pressed", String(!online));
+  els.quotaOnlineModeBtn.setAttribute("aria-pressed", String(online));
+  els.quotaModeHint.textContent = online
+    ? "联网精准：用当前账号 token 读取 ChatGPT 后端额度；失败时回退本地估算。"
+    : "本地预估：只读取本机 Codex 日志，不联网。";
+}
+
+async function setQuotaMode(mode) {
+  const nextMode = mode === "online" ? "online" : "local";
+  if (state.snapshot?.settings?.quotaMode === nextMode) return;
+  if (nextMode === "online") {
+    const ok = window.confirm(
+      "开启联网精准后，应用会用当前 Codex 登录 token 请求 ChatGPT 额度接口。\n\n不会自动刷新 token；读取失败会回退本地估算。是否开启？"
+    );
+    if (!ok) return;
+  }
+  const snapshot = await api.updateSettings({ quotaMode: nextMode });
+  render(snapshot);
+  if (state.activePage === "usage") {
+    state.dashboardLoaded = false;
+    await loadDashboard(true, { busy: false });
+  }
+  showToast(nextMode === "online" ? "已切换到联网精准" : "已切换到本地预估");
+}
+
 function renderStatus(snapshot) {
   const current = snapshot.current;
   if (current?.exists && !current.error) {
@@ -300,7 +383,7 @@ function createAccountQuotaMetric(kind, window) {
   label.textContent = quotaWindowLabel(kind, window);
 
   const value = document.createElement("strong");
-  const remaining = remainingPercent(window);
+  const remaining = displayRemainingPercent(window);
   value.textContent = remaining === null ? "--" : `剩余 ${Math.round(remaining)}%`;
   head.append(label, value);
 
@@ -315,8 +398,8 @@ function createAccountQuotaMetric(kind, window) {
   if (!window) {
     foot.textContent = "暂无数据";
   } else {
-    const used = clampPercent(window.usedPercent) ?? 0;
-    foot.textContent = `已用 ${Math.round(used)}% · ${relativeReset(window.resetsAt)}`;
+    const used = displayUsedPercent(window);
+    foot.textContent = `已用 ${Math.round(used)}%${estimateRemainingLabel(window)} · ${relativeReset(window.resetsAt)}${paceLabel(window)}`;
   }
 
   metric.append(head, meter, foot);
@@ -482,7 +565,7 @@ function renderQuotaWindow(kind, window) {
   meterEl.style.width = `${remainingPercent}%`;
   resetEl.textContent = `已用 ${Math.round(usedPercent)}%${estimateRemainingLabel(window)} · ${relativeReset(
     window.resetsAt
-  )}`;
+  )}${paceLabel(window)}`;
 }
 
 function renderQuotaPanel(dashboard) {
@@ -500,9 +583,46 @@ function renderQuotaPanel(dashboard) {
       : "余额 --";
 }
 
+function extraQuotaCard(label, quotaWindow) {
+  const card = document.createElement("article");
+  card.className = "extra-quota-card";
+  const head = document.createElement("div");
+  head.className = "extra-quota-head";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const value = document.createElement("strong");
+  const remaining = displayRemainingPercent(quotaWindow);
+  value.textContent = remaining === null ? "--" : `剩余 ${Math.round(remaining)}%`;
+  head.append(title, value);
+  const meter = document.createElement("div");
+  meter.className = "extra-quota-meter";
+  const fill = document.createElement("span");
+  fill.style.width = remaining === null ? "0%" : `${Math.round(remaining)}%`;
+  meter.append(fill);
+  const foot = document.createElement("p");
+  foot.textContent = quotaWindow
+    ? `已用 ${Math.round(displayUsedPercent(quotaWindow))}% · ${relativeReset(quotaWindow.resetsAt)}${paceLabel(quotaWindow)}`
+    : "暂无数据";
+  card.append(head, meter, foot);
+  return card;
+}
+
+function renderExtraQuota(quota) {
+  els.extraQuotaGrid.replaceChildren();
+  const cards = [];
+  if (quota?.review) cards.push(extraQuotaCard("Reviews", quota.review));
+  for (const entry of quota?.additional || []) {
+    if (entry.session) cards.push(extraQuotaCard(entry.label, entry.session));
+    if (entry.weekly) cards.push(extraQuotaCard(`${entry.label} Weekly`, entry.weekly));
+  }
+  els.extraQuotaSection.hidden = cards.length === 0;
+  cards.forEach((card) => els.extraQuotaGrid.append(card));
+}
+
 function renderDashboard(dashboard) {
   state.dashboardLoaded = true;
   renderQuotaPanel(dashboard);
+  renderExtraQuota(dashboard?.quota);
 
   const usage = dashboard?.usage;
   const tokenUsage = usage?.tokenUsage || {};
@@ -512,6 +632,9 @@ function renderDashboard(dashboard) {
   els.sessionCount.textContent = String(usage?.sessionsAnalyzed ?? 0);
   renderDailyBars(usage?.daily || []);
   renderRecentSessions(usage?.recentSessions || []);
+  renderProjectStats(usage?.projects || []);
+  renderModelStats(usage?.models || []);
+  renderAllAccountsQuota();
 }
 
 function renderDailyBars(days) {
@@ -577,8 +700,151 @@ function renderRecentSessions(sessions) {
   els.recentSessions.append(list);
 }
 
+function renderProjectStats(projects) {
+  els.projectStats.replaceChildren();
+  const title = document.createElement("p");
+  title.className = "usage-title";
+  title.textContent = "按项目统计";
+  els.projectStats.append(title);
+
+  if (!projects || !projects.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "未找到项目数据。";
+    els.projectStats.append(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "project-list";
+  projects.slice(0, 8).forEach((project) => {
+    const row = document.createElement("div");
+    row.className = "project-row";
+    const name = document.createElement("strong");
+    name.textContent = project.project;
+    const sub = document.createElement("small");
+    sub.textContent = `${compactNumber(project.tokenUsage?.totalTokens)} tokens · ${project.sessions} 次会话`;
+    row.append(name, sub);
+    list.append(row);
+  });
+  els.projectStats.append(list);
+}
+
+function renderModelStats(models) {
+  els.modelStats.replaceChildren();
+  const title = document.createElement("p");
+  title.className = "usage-title";
+  title.textContent = "按模型统计";
+  els.modelStats.append(title);
+
+  if (!models || !models.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "未找到模型数据。";
+    els.modelStats.append(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "model-list";
+  models.slice(0, 6).forEach((model) => {
+    const row = document.createElement("div");
+    row.className = "model-row";
+    const left = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = model.model;
+    const sessions = document.createElement("small");
+    sessions.textContent = ` · ${model.sessions} 次会话`;
+    left.append(name, sessions);
+    const right = document.createElement("div");
+    right.className = "model-tokens";
+    right.textContent = compactNumber(model.tokenUsage?.totalTokens);
+    row.append(left, right);
+    list.append(row);
+  });
+  els.modelStats.append(list);
+}
+
+function createAllAccountQuotaMeter(kind, quotaWindow) {
+  const row = document.createElement("div");
+  row.className = "all-account-meter-row";
+
+  const head = document.createElement("div");
+  head.className = "all-account-meter-head";
+  const label = document.createElement("span");
+  label.textContent = kind === "weekly" ? "周额度" : quotaWindow?.windowMinutes === 300 ? "5 小时" : "会话";
+  const value = document.createElement("strong");
+  const remaining =
+    quotaWindow?.remainingPercent ?? (quotaWindow?.usedPercent != null ? Math.max(0, 100 - quotaWindow.usedPercent) : null);
+  value.textContent = remaining != null ? `剩余 ${Math.round(remaining)}%` : "--";
+  head.append(label, value);
+
+  const meter = document.createElement("div");
+  meter.className = "all-account-meter";
+  const fill = document.createElement("span");
+  fill.style.width = remaining != null ? `${Math.round(Math.max(0, Math.min(100, remaining)))}%` : "0%";
+  meter.append(fill);
+
+  const foot = document.createElement("p");
+  foot.className = "all-account-meter-foot";
+  if (!quotaWindow) {
+    foot.textContent = "暂无快照";
+  } else {
+    const used = quotaWindow.usedPercent != null ? Math.round(quotaWindow.usedPercent) : "--";
+    foot.textContent = `已用 ${used}% · ${relativeReset(quotaWindow.resetsAt)}`;
+  }
+
+  row.append(head, meter, foot);
+  return row;
+}
+
+async function renderAllAccountsQuota() {
+  try {
+    const requestId = ++state.allAccountsRequestId;
+    const data = await api.getAllAccountsQuota();
+    if (requestId !== state.allAccountsRequestId) return;
+    if (!data?.accounts) return;
+    els.allAccountsGrid.replaceChildren();
+    for (const account of data.accounts) {
+      const card = document.createElement("article");
+      card.className = account.isActive ? "all-account-card active" : "all-account-card";
+
+      const head = document.createElement("div");
+      head.className = "all-account-head";
+      const name = document.createElement("strong");
+      name.textContent = account.displayName;
+      const badge = document.createElement("span");
+      badge.className = "plan-badge";
+      badge.textContent = formatPlanType(account.planType);
+      head.append(name, badge);
+
+      card.append(head);
+
+      if (account.quotaSnapshot) {
+        const meters = document.createElement("div");
+        meters.className = "all-account-meters";
+        meters.append(
+          createAllAccountQuotaMeter("session", account.quotaSnapshot.session),
+          createAllAccountQuotaMeter("weekly", account.quotaSnapshot.weekly)
+        );
+        card.append(meters);
+      } else {
+        const noData = document.createElement("p");
+        noData.className = "all-account-no-data";
+        noData.textContent = "暂无额度数据";
+        card.append(noData);
+      }
+
+      els.allAccountsGrid.append(card);
+    }
+  } catch {
+    // Non-critical; silently skip if the API is unavailable.
+  }
+}
+
 function render(snapshot) {
   state.snapshot = snapshot;
+  renderSettings(snapshot);
   renderStatus(snapshot);
   renderAccounts(snapshot);
 }
@@ -617,9 +883,14 @@ async function readDashboard(silent) {
   if (state.dashboardLoading) return;
   state.dashboardLoading = true;
   try {
-    const dashboard = await api.getDashboard();
-    renderDashboard(dashboard);
-    if (!silent) showToast("额度与用量已刷新");
+    if (state.usageScope === "all") {
+      const usage = await api.getAllUsage();
+      renderDashboard({ quota: null, usage, scope: null });
+    } else {
+      const dashboard = await api.getDashboard();
+      renderDashboard(dashboard);
+    }
+    if (!silent) showToast("已刷新");
   } finally {
     state.dashboardLoading = false;
   }
@@ -719,6 +990,10 @@ function wireEvents() {
   els.refreshBtn.addEventListener("click", () => refresh(false).catch((error) => showToast(error.message)));
   els.widgetBtn.addEventListener("click", () => api.showWidget().catch((error) => showToast(error.message)));
   els.statsRefreshBtn.addEventListener("click", () => loadDashboard(false).catch((error) => showToast(error.message)));
+  els.scopeCurrentBtn.addEventListener("click", () => setUsageScope("current"));
+  els.scopeAllBtn.addEventListener("click", () => setUsageScope("all"));
+  els.quotaLocalModeBtn.addEventListener("click", () => setQuotaMode("local").catch((error) => showToast(error.message)));
+  els.quotaOnlineModeBtn.addEventListener("click", () => setQuotaMode("online").catch((error) => showToast(error.message)));
   els.importBtn.addEventListener("click", () => importCurrent());
   els.restartBtn.addEventListener("click", () => restartCodex());
   els.storePath.addEventListener("click", () => api.openPath(state.snapshot.storeRoot));
