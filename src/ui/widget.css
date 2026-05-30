@@ -111,6 +111,10 @@ button {
   gap: 10px;
 }
 
+.brand > div {
+  min-width: 0;
+}
+
 .mark {
   flex: 0 0 auto;
   width: 30px;
@@ -128,7 +132,7 @@ button {
 .brand strong {
   display: block;
   overflow: hidden;
-  max-width: 210px;
+  max-width: 178px;
   font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -166,6 +170,19 @@ button {
 
 .head-actions button:active {
   transform: translateY(0);
+}
+
+.head-actions button.active {
+  color: #fff;
+  border-color: rgba(79, 108, 255, 0.12);
+  background: var(--gradient);
+  box-shadow: 0 12px 24px -18px rgba(79, 108, 255, 0.86);
+}
+
+.head-actions button.active:hover {
+  color: #fff;
+  border-color: rgba(79, 108, 255, 0.16);
+  background: linear-gradient(135deg, #9185ff 0%, #617eff 46%, #3950f0 100%);
 }
 
 .head-actions svg {

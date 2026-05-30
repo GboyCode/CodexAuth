@@ -63,6 +63,7 @@ let mainWindow;
 let widgetWindow;
 let tray;
 let isQuitting = false;
+let widgetAlwaysOnTop = false;
 let widgetManualSize = false;
 let widgetResizeSession = null;
 let widgetDockState = {
@@ -3609,7 +3610,7 @@ function createWidgetWindow() {
     resizable: false,
     maximizable: false,
     minimizable: false,
-    alwaysOnTop: true,
+    alwaysOnTop: widgetAlwaysOnTop,
     skipTaskbar: true,
     transparent: true,
     backgroundColor: "#00000000",
@@ -3622,7 +3623,7 @@ function createWidgetWindow() {
     },
   });
   hardenWindowNavigation(widgetWindow);
-  widgetWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false });
+  widgetWindow.setVisibleOnAllWorkspaces(widgetAlwaysOnTop, { visibleOnFullScreen: false });
   widgetWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -3634,6 +3635,14 @@ function createWidgetWindow() {
   widgetWindow.on("hide", () => rebuildTrayMenu().catch(() => {}));
   widgetWindow.loadFile(path.join(__dirname, "ui", "widget.html"));
   return widgetWindow;
+}
+
+function setWidgetTopmost(pinned) {
+  widgetAlwaysOnTop = pinned === true;
+  const win = createWidgetWindow();
+  win.setAlwaysOnTop(widgetAlwaysOnTop);
+  win.setVisibleOnAllWorkspaces(widgetAlwaysOnTop, { visibleOnFullScreen: false });
+  return { ok: true, pinned: widgetAlwaysOnTop };
 }
 
 function resizeWidgetForAccounts(accountCount) {
@@ -4118,6 +4127,8 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle("window:resize-widget", (_event, accountCount) => resizeWidgetForAccounts(accountCount));
+  ipcMain.handle("window:get-widget-topmost", () => ({ ok: true, pinned: widgetAlwaysOnTop }));
+  ipcMain.handle("window:set-widget-topmost", (_event, pinned) => setWidgetTopmost(pinned));
   ipcMain.handle("window:resize-widget-start", (_event, edge) => startWidgetResize(edge));
   ipcMain.handle("window:resize-widget-update", () => updateWidgetResize());
   ipcMain.handle("window:resize-widget-end", () => finishWidgetResize());

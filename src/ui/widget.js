@@ -18,6 +18,7 @@ const els = {
   refreshBtn: document.querySelector("#refreshBtn"),
   restartBtn: document.querySelector("#restartBtn"),
   mainBtn: document.querySelector("#mainBtn"),
+  pinBtn: document.querySelector("#pinBtn"),
   settingsBtn: document.querySelector("#settingsBtn"),
   settingsPanel: document.querySelector("#settingsPanel"),
   opacityRange: document.querySelector("#opacityRange"),
@@ -229,6 +230,22 @@ function loadWidgetOpacity() {
 function setSettingsOpen(open) {
   els.settingsPanel.hidden = !open;
   els.settingsBtn.setAttribute("aria-expanded", String(open));
+}
+
+function applyPinState(pinned) {
+  els.pinBtn.classList.toggle("active", pinned);
+  els.pinBtn.setAttribute("aria-pressed", String(pinned));
+  els.pinBtn.title = pinned ? "取消固定" : "固定在最前";
+  els.pinBtn.setAttribute("aria-label", pinned ? "取消固定" : "固定在最前");
+}
+
+async function loadPinState() {
+  try {
+    const result = await api.getWidgetTopmost?.();
+    applyPinState(result?.pinned === true);
+  } catch {
+    applyPinState(false);
+  }
 }
 
 function resetRestartConfirm() {
@@ -555,6 +572,19 @@ async function reauthAccount(accountId, button) {
 
 function wireEvents() {
   els.refreshBtn.addEventListener("click", () => refresh(false));
+  els.pinBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const nextPinned = els.pinBtn.getAttribute("aria-pressed") !== "true";
+    applyPinState(nextPinned);
+    try {
+      const result = await api.setWidgetTopmost?.(nextPinned);
+      applyPinState(result?.pinned === true);
+      showToast(result?.pinned ? "浮窗已固定在最前" : "浮窗已取消固定");
+    } catch (error) {
+      applyPinState(!nextPinned);
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  });
   els.settingsBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     setSettingsOpen(els.settingsPanel.hidden);
@@ -657,6 +687,7 @@ function wireResizeHandles() {
 wireEvents();
 wireResizeHandles();
 loadWidgetOpacity();
+loadPinState();
 refresh(true);
 window.setInterval(() => {
   refresh(true);

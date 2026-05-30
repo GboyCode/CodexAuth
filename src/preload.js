@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("codexAuth", {
   hideWidget: () => ipcRenderer.invoke("window:hide-widget"),
   toggleWidget: () => ipcRenderer.invoke("window:toggle-widget"),
   resizeWidget: (accountCount) => ipcRenderer.invoke("window:resize-widget", accountCount),
+  getWidgetTopmost: () => ipcRenderer.invoke("window:get-widget-topmost"),
+  setWidgetTopmost: (pinned) => ipcRenderer.invoke("window:set-widget-topmost", pinned),
   startWidgetResize: (edge) => ipcRenderer.invoke("window:resize-widget-start", edge),
   updateWidgetResize: () => ipcRenderer.invoke("window:resize-widget-update"),
   endWidgetResize: () => ipcRenderer.invoke("window:resize-widget-end"),

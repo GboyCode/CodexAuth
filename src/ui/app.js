@@ -97,9 +97,9 @@ function formatDate(value) {
 
 function compactNumber(value) {
   const number = Number(value || 0);
-  if (number >= 1_000_000_000) return `${(number / 1_000_000_000).toFixed(1)}B`;
-  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
-  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+  const trim = (text) => text.replace(/\.0$/, "");
+  if (number >= 100_000_000) return `${trim((number / 100_000_000).toFixed(1))}亿`;
+  if (number >= 10_000) return `${trim((number / 10_000).toFixed(1))}万`;
   return String(Math.round(number));
 }
 
@@ -641,7 +641,7 @@ function renderDailyBars(days) {
   els.dailyBars.replaceChildren();
   const title = document.createElement("p");
   title.className = "usage-title";
-  title.textContent = "每日 Tokens";
+  title.textContent = "每日用量";
   els.dailyBars.append(title);
 
   if (!days.length) {
@@ -693,7 +693,7 @@ function renderRecentSessions(sessions) {
     const main = document.createElement("span");
     main.textContent = session.title || "会话";
     const sub = document.createElement("small");
-    sub.textContent = `${compactNumber(session.tokenUsage?.totalTokens)} tokens · ${session.model || "未知模型"} · ${formatDate(session.updatedAt)}`;
+    sub.textContent = `${compactNumber(session.tokenUsage?.totalTokens)} Token · ${session.model || "未知模型"} · ${formatDate(session.updatedAt)}`;
     row.append(main, sub);
     list.append(row);
   });
@@ -723,7 +723,7 @@ function renderProjectStats(projects) {
     const name = document.createElement("strong");
     name.textContent = project.project;
     const sub = document.createElement("small");
-    sub.textContent = `${compactNumber(project.tokenUsage?.totalTokens)} tokens · ${project.sessions} 次会话`;
+    sub.textContent = `${compactNumber(project.tokenUsage?.totalTokens)} Token · ${project.sessions} 次会话`;
     row.append(name, sub);
     list.append(row);
   });
