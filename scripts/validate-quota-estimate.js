@@ -80,9 +80,10 @@ function quotaSpeedMultiplier(model, serviceTier = null) {
   const value = String(model || "").toLowerCase();
   const tier = String(serviceTier || "").toLowerCase();
   const isFast =
-    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
+    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy|turbo|accelerated/.test(value) ||
     tier === "fast" ||
-    tier === "priority";
+    tier === "priority" ||
+    tier === "turbo";
   return isFast ? codexRateCard(model).fastMultiplier : 1;
 }
 

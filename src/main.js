@@ -1545,9 +1545,10 @@ function quotaSpeedMultiplier(model, serviceTier = null) {
   const value = String(model || "").toLowerCase();
   const tier = String(serviceTier || "").toLowerCase();
   const isFast =
-    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy/.test(value) ||
+    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy|turbo|accelerated/.test(value) ||
     tier === "fast" ||
-    tier === "priority";
+    tier === "priority" ||
+    tier === "turbo";
   return isFast ? codexRateCard(model).fastMultiplier : 1;
 }
 
@@ -1923,6 +1924,7 @@ async function readLatestSqliteRateLimitQuota(options = {}) {
   const effectiveSinceSeconds = Number.isFinite(sinceMs)
     ? Math.floor(sinceMs / 1000)
     : Math.floor(Date.now() / 1000) - 14 * 24 * 60 * 60;
+  const accountFilter = normalizeAccountFilter(options.accountIdentity);
   if (!(await pathExists(logsDbPath()))) return null;
   let DatabaseSync;
   try {
@@ -1943,7 +1945,7 @@ async function readLatestSqliteRateLimitQuota(options = {}) {
          limit 1000`
       )
       .all(effectiveSinceSeconds);
-    for (const row of rows) {
+    for (const row of filterRowsByAccount(rows, accountFilter)) {
       const quota = quotaFromCodexRateLimitsMessage(extractCodexLogMessage(row.feedback_log_body), row.ts);
       if (quota) return quota;
     }
@@ -1964,6 +1966,7 @@ async function readLatestUsageLimitQuota(options = {}) {
   const effectiveSinceSeconds = Number.isFinite(sinceMs)
     ? Math.floor(sinceMs / 1000)
     : Math.floor(Date.now() / 1000) - 14 * 24 * 60 * 60;
+  const accountFilter = normalizeAccountFilter(options.accountIdentity);
   if (!(await pathExists(logsDbPath()))) return null;
   let DatabaseSync;
   try {
@@ -1984,7 +1987,7 @@ async function readLatestUsageLimitQuota(options = {}) {
          limit 1000`
       )
       .all(effectiveSinceSeconds);
-    for (const row of rows) {
+    for (const row of filterRowsByAccount(rows, accountFilter)) {
       const quota = quotaFromUsageLimitMessage(extractCodexLogMessage(row.feedback_log_body), row.ts);
       if (quota) return quota;
     }
@@ -2144,6 +2147,10 @@ async function parseLatestRateLimitFile(file, sinceMs) {
     }
     if (entry.type !== "event_msg" || entry.payload?.type !== "token_count") continue;
     if (!entry.payload?.rate_limits) continue;
+    serviceTier =
+      entry.payload?.service_tier ?? entry.payload?.serviceTier ??
+      entry.payload?.rate_limits?.service_tier ?? entry.payload?.rate_limits?.serviceTier ??
+      serviceTier;
     const timestamp = entry.timestamp ?? new Date(file.mtimeMs).toISOString();
     const eventMs = new Date(timestamp).getTime();
     const info = entry.payload?.info ?? {};
@@ -2221,6 +2228,10 @@ async function parseQuotaEventFile(file) {
       const ms = dateMs(timestamp);
       if (!Number.isFinite(ms)) continue;
       const info = entry.payload?.info ?? {};
+      const eventServiceTier =
+        entry.payload?.service_tier ?? entry.payload?.serviceTier ??
+        entry.payload?.rate_limits?.service_tier ?? entry.payload?.rate_limits?.serviceTier ??
+        serviceTier;
       events.push({
         filePath: file.path,
         sessionId: sessionId ?? file.path,
@@ -2228,7 +2239,7 @@ async function parseQuotaEventFile(file) {
         timestamp,
         ms,
         model,
-        serviceTier,
+        serviceTier: eventServiceTier,
         tokenUsage: normalizeTokenUsage(info.total_token_usage ?? info.totalTokenUsage),
         rateLimits: entry.payload?.rate_limits ?? null,
       });
@@ -2266,6 +2277,45 @@ function numberField(fields, key) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function normalizeAccountFilter(identity) {
+  const ids = new Set();
+  const emails = new Set();
+  for (const value of [identity?.userId, identity?.accountUserId, identity?.chatgptUserId, identity?.subject]) {
+    const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (text) ids.add(text);
+  }
+  const email = typeof identity?.email === "string" ? identity.email.trim().toLowerCase() : "";
+  if (email) emails.add(email);
+  return ids.size || emails.size ? { ids, emails } : null;
+}
+
+function responseEventAccountMatch(event, accountFilter) {
+  if (!accountFilter) return "match";
+  const accountId = typeof event?.accountId === "string" ? event.accountId.trim().toLowerCase() : "";
+  const email = typeof event?.email === "string" ? event.email.trim().toLowerCase() : "";
+  if (!accountId && !email) return "unknown";
+  if (accountId && accountFilter.ids.has(accountId)) return "match";
+  if (email && accountFilter.emails.has(email)) return "match";
+  return "mismatch";
+}
+
+function filterRowsByAccount(rows, accountFilter) {
+  if (!accountFilter) return rows;
+  const parsed = rows.map((row) => {
+    const fields = parseLogKeyValues(row?.feedback_log_body);
+    return {
+      row,
+      accountId: fields["user.account_id"] || null,
+      email: fields["user.email"] || null,
+    };
+  });
+  const hasTaggedRows = parsed.some((entry) => entry.accountId || entry.email);
+  if (!hasTaggedRows) return rows;
+  return parsed
+    .filter((entry) => responseEventAccountMatch(entry, accountFilter) === "match")
+    .map((entry) => entry.row);
+}
+
 function responseCompletedEventFromLogRow(row) {
   const message = extractCodexLogMessage(row?.feedback_log_body);
   if (message?.type === "response.completed" && message.response?.usage) {
@@ -2296,6 +2346,8 @@ function responseCompletedEventFromLogRow(row) {
       serviceTier,
       tokenUsage,
       signature,
+      accountId: null,
+      email: null,
     };
   }
 
@@ -2312,8 +2364,10 @@ function responseCompletedEventFromLogRow(row) {
   const outputTokens = numberField(fields, "output_token_count");
   const cachedInputTokens = numberField(fields, "cached_token_count");
   const reasoningOutputTokens = numberField(fields, "reasoning_token_count");
+  const toolTokenCount = numberField(fields, "tool_token_count");
   const totalTokens = Math.max(0, inputTokens + outputTokens);
-  if (totalTokens <= 0) return null;
+  const eventTotalTokens = totalTokens > 0 ? totalTokens : toolTokenCount;
+  if (eventTotalTokens <= 0) return null;
 
   const conversationId = fields["conversation.id"] || row?.thread_id || `sqlite-row-${row?.id ?? ms}`;
   const model = fields.slug || fields.model || null;
@@ -2330,7 +2384,7 @@ function responseCompletedEventFromLogRow(row) {
       cachedInputTokens,
       outputTokens,
       reasoningOutputTokens,
-      totalTokens,
+      totalTokens: eventTotalTokens,
     },
     signature: [
       Math.floor(ms / 1000),
@@ -2340,6 +2394,8 @@ function responseCompletedEventFromLogRow(row) {
       cachedInputTokens,
       reasoningOutputTokens,
     ].join("|"),
+    accountId: fields["user.account_id"] || null,
+    email: fields["user.email"] || null,
   };
 }
 
@@ -2354,11 +2410,16 @@ async function readSqliteResponseCompletedEvents(options = {}) {
 
   const sinceMs = Number.isFinite(options.sinceMs) ? options.sinceMs : Date.now() - 6 * 60 * 60 * 1000;
   const sinceSeconds = Math.max(0, Math.floor((sinceMs - 5 * 60 * 1000) / 1000));
+  const accountFilter = normalizeAccountFilter(options.accountIdentity);
+  const accountCacheKey = accountFilter
+    ? `${Array.from(accountFilter.ids).join(",")}|${Array.from(accountFilter.emails).join(",")}`
+    : "all";
   const cacheKey = [
     await fileCachePart(logsDbPath()),
     await fileCachePart(logsDbWalPath()),
     await fileCachePart(logsDbShmPath()),
     sinceSeconds,
+    accountCacheKey,
   ].join(":");
   if (sqliteResponseEventCache.has(cacheKey)) return sqliteResponseEventCache.get(cacheKey);
 
@@ -2382,11 +2443,24 @@ async function readSqliteResponseCompletedEvents(options = {}) {
       )
       .all(sinceSeconds);
 
-    const seen = new Set();
-    const rawEvents = [];
+    const parsedEvents = [];
+    let hasAccountTaggedEvents = false;
     for (const row of rows) {
       const event = responseCompletedEventFromLogRow(row);
-      if (!event || seen.has(event.signature)) continue;
+      if (!event) continue;
+      if (event.accountId || event.email) hasAccountTaggedEvents = true;
+      parsedEvents.push(event);
+    }
+
+    const filteredEvents =
+      accountFilter && hasAccountTaggedEvents
+        ? parsedEvents.filter((event) => responseEventAccountMatch(event, accountFilter) === "match")
+        : parsedEvents;
+
+    const seen = new Set();
+    const rawEvents = [];
+    for (const event of filteredEvents) {
+      if (seen.has(event.signature)) continue;
       seen.add(event.signature);
       rawEvents.push(event);
     }
@@ -2778,7 +2852,10 @@ async function readQuotaEstimate(options = {}) {
 
   const sqliteSinceMs =
     effectiveSinceMs && Number.isFinite(effectiveSinceMs) ? Math.min(effectiveSinceMs, earliestBaseMs) : earliestBaseMs;
-  const sqliteEvents = await readSqliteResponseCompletedEvents({ sinceMs: sqliteSinceMs });
+  const sqliteEvents = await readSqliteResponseCompletedEvents({
+    sinceMs: sqliteSinceMs,
+    accountIdentity: options.accountIdentity,
+  });
   const events = [...sessionEvents, ...sqliteEvents];
   if (!events.length) return quotaEstimateUnavailable("\u672a\u627e\u5230\u672c\u5730 token \u8bb0\u5f55");
   events.sort((a, b) => a.ms - b.ms);
@@ -2855,10 +2932,13 @@ async function readQuotaEstimate(options = {}) {
     sessionDelta?.weightedTokens >= 100
       ? buildWindowEstimate(baseQuota.session, sessionEstimateCoefficient, sessionDelta.weightedTokens, calibration.sessionSamples)
       : null;
-  // Weekly quota moves slowly and local Codex logs normally include the latest
-  // weekly rate_limit snapshot. Estimating between snapshots tends to be more
-  // confusing than useful, so keep weekly display pinned to the observed value.
-  const weeklyEstimate = null;
+  const weeklyEstimateCoefficient = seededWeeklyDelta
+    ? Math.min(tunedWeeklyCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "weekly").max)
+    : tunedWeeklyCoefficient.coefficient;
+  const weeklyEstimate =
+    weeklyDelta?.weightedTokens >= 500
+      ? buildWindowEstimate(baseQuota.weekly, weeklyEstimateCoefficient, weeklyDelta.weightedTokens, calibration.weeklySamples)
+      : null;
 
   if (!sessionEstimate && !weeklyEstimate) return quotaEstimateUnavailable("\u7b49\u5f85\u5386\u53f2\u6821\u51c6\u6837\u672c");
   return {
@@ -3268,7 +3348,7 @@ function updateLearningWindow(existing, sample) {
     Number.isFinite(actualDelta) &&
     actualDelta > 0 &&
     (predictedDelta > actualDelta * 2 || actualDelta > predictedDelta * 1.5);
-  const sampleWeight = needsFastCorrection ? 0.55 : 0.2;
+  const sampleWeight = needsFastCorrection ? 0.7 : 0.35;
   const coefficient = Number.isFinite(previous) && previous > 0
     ? previous * (1 - sampleWeight) + sample.coefficient * sampleWeight
     : sample.coefficient;
@@ -3357,9 +3437,9 @@ async function readBestLocalQuota(scope, files) {
   return newerQuota(
     newerQuota(
       await readLatestLocalQuota({ since: scope.since, files }),
-      await readLatestSqliteRateLimitQuota({ since: scope.since })
+      await readLatestSqliteRateLimitQuota({ since: scope.since, accountIdentity: scope.account })
     ),
-    await readLatestUsageLimitQuota({ since: scope.since })
+    await readLatestUsageLimitQuota({ since: scope.since, accountIdentity: scope.account })
   );
 }
 
@@ -3381,6 +3461,7 @@ async function resolveQuotaWithMode(scope, files, usage = null) {
         files,
         baseQuota,
         calibration: scope.accountQuotaCalibration,
+        accountIdentity: scope.account,
       });
       const fallbackQuota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
       return {
@@ -3397,6 +3478,7 @@ async function resolveQuotaWithMode(scope, files, usage = null) {
     files,
     baseQuota,
     calibration: scope.accountQuotaCalibration,
+    accountIdentity: scope.account,
   });
   const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
   if (latestQuota && scope.accountId) {
