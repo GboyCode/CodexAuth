@@ -89,7 +89,7 @@ let localLogRefreshInFlight = false;
 let localLogRefreshPending = false;
 let sessionsWatcher;
 let sessionsPollingInterval;
-let lastKnownLogsMtimeMs = 0;
+let lastKnownLocalQuotaMtimeMs = 0;
 let indexMutationQueue = Promise.resolve();
 const sessionParseCache = new Map();
 const quotaEventParseCache = new Map();
@@ -860,15 +860,16 @@ async function refreshQuotaSnapshotFromLocalLog() {
       const latestQuota = newerQuota(
         newerQuota(
           await readLatestLocalQuota({ since: scope.since, files }),
-          await readLatestSqliteRateLimitQuota({ since: scope.since })
+          await readLatestSqliteRateLimitQuota({ since: scope.since, accountIdentity: scope.account })
         ),
-        await readLatestUsageLimitQuota({ since: scope.since })
+        await readLatestUsageLimitQuota({ since: scope.since, accountIdentity: scope.account })
       );
       const quotaEstimate = await readQuotaEstimate({
         since: scope.since,
         files,
         baseQuota: latestQuota,
         calibration: scope.accountQuotaCalibration,
+        accountIdentity: scope.account,
       });
       const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate);
       const changed = await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
@@ -910,10 +911,9 @@ async function startSessionsWatcher() {
   }
 }
 
-// Periodic polling fallback: checks if the sqlite log file has been updated
+// Periodic polling fallback: checks if sqlite logs or session files changed
 // since the last check. This catches writes that the filesystem watcher may
-// miss (e.g. WAL checkpoints, or when Codex flushes records in the background
-// without triggering a visible fs event on the parent directory).
+// miss (e.g. WAL checkpoints, or when Codex writes nested rollout JSONL files).
 // Runs every 15 seconds — low enough frequency to avoid any risk of triggering
 // rate-limiting or appearing as automated API access.
 async function startSessionsPolling() {
@@ -931,8 +931,12 @@ async function startSessionsPolling() {
           // File may not exist yet.
         }
       }
-      if (latestMtime > lastKnownLogsMtimeMs) {
-        lastKnownLogsMtimeMs = latestMtime;
+      const files = await walkSessionFiles(sessionsDir());
+      for (const file of files.slice(0, 8)) {
+        if (file.mtimeMs > latestMtime) latestMtime = file.mtimeMs;
+      }
+      if (latestMtime > lastKnownLocalQuotaMtimeMs) {
+        lastKnownLocalQuotaMtimeMs = latestMtime;
         scheduleLocalLogRefresh();
       }
     } catch {
@@ -2529,12 +2533,12 @@ function rateLimitsMatchPlan(rateLimits, planType) {
 function fallbackQuotaCreditUnitsPerPercent(planType, kind) {
   const plan = normalizePlanType(planType);
   if (kind === "weekly") {
-    if (plan === "business" || plan === "enterprise") return 137000;
-    if (plan === "plus") return 180000;
+    if (plan === "business" || plan === "enterprise") return 158000;
+    if (plan === "plus") return 258000;
     return 100000;
   }
-  if (plan === "business" || plan === "enterprise") return 24000;
-  if (plan === "plus") return 36000;
+  if (plan === "business" || plan === "enterprise") return 29400;
+  if (plan === "plus") return 43900;
   return 22000;
 }
 
@@ -2747,6 +2751,13 @@ function coefficientFromCalibration(calibration, kind, planType) {
   return value;
 }
 
+function calibrationWindowFromLearning(calibration, kind, planType) {
+  if (calibration?.algorithm !== QUOTA_ESTIMATE_ALGORITHM) return null;
+  const window = calibration?.[kind];
+  const value = Number(window?.coefficient);
+  return isReasonableQuotaCoefficient(value, planType, kind) ? window : null;
+}
+
 function fallbackQuotaCoefficient(planType, kind) {
   return 1 / fallbackQuotaCreditUnitsPerPercent(planType, kind);
 }
@@ -2778,7 +2789,7 @@ function selectQuotaCoefficient(kind, planType, historicalCoefficient, historica
   return { coefficient: fallback, source: "fallback" };
 }
 
-function blendLearnedCoefficient(kind, selected, learnedCoefficient, planType) {
+function blendLearnedCoefficient(kind, selected, learnedCoefficient, planType, learnedWindow = null) {
   if (!Number.isFinite(learnedCoefficient) || learnedCoefficient <= 0) return selected;
   if (!isReasonableQuotaCoefficient(learnedCoefficient, planType, kind)) return selected;
   const base = Number(selected?.coefficient);
@@ -2786,8 +2797,18 @@ function blendLearnedCoefficient(kind, selected, learnedCoefficient, planType) {
   const min = base * 0.5;
   const max = base * 2;
   const bounded = Math.max(min, Math.min(max, learnedCoefficient));
+  const samples = Number(learnedWindow?.samples || 0);
+  const errorRatio = Number(learnedWindow?.lastSample?.errorRatio);
+  const selectedSource = String(selected?.source || "");
+  let learnedWeight = samples >= 5 ? 0.72 : samples >= 2 ? 0.64 : 0.55;
+  if (Number.isFinite(errorRatio) && errorRatio > 0 && (errorRatio >= 1.25 || errorRatio <= 0.8)) {
+    learnedWeight = Math.max(learnedWeight, 0.82);
+  }
+  if (selectedSource.startsWith("active-session") && samples < 3) {
+    learnedWeight = Math.min(learnedWeight, Number.isFinite(errorRatio) && (errorRatio >= 1.35 || errorRatio <= 0.7) ? 0.62 : 0.45);
+  }
   return {
-    coefficient: bounded * 0.4 + base * 0.6,
+    coefficient: bounded * learnedWeight + base * (1 - learnedWeight),
     source: selected?.source ? `learned-${selected.source}` : "learned",
   };
 }
@@ -2914,17 +2935,21 @@ async function readQuotaEstimate(options = {}) {
     activeSessionCalibration.weeklySamples
   );
   const learned = options.calibration;
+  const learnedSessionWindow = calibrationWindowFromLearning(learned, "session", baseQuota.planType);
+  const learnedWeeklyWindow = calibrationWindowFromLearning(learned, "weekly", baseQuota.planType);
   const tunedSessionCoefficient = blendLearnedCoefficient(
     "session",
     sessionCoefficient,
     coefficientFromCalibration(learned, "session", baseQuota.planType),
-    baseQuota.planType
+    baseQuota.planType,
+    learnedSessionWindow
   );
   const tunedWeeklyCoefficient = blendLearnedCoefficient(
     "weekly",
     weeklyCoefficient,
     coefficientFromCalibration(learned, "weekly", baseQuota.planType),
-    baseQuota.planType
+    baseQuota.planType,
+    learnedWeeklyWindow
   );
   const sessionEstimateCoefficient = seededSessionDelta
     ? Math.min(tunedSessionCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "session").max)
@@ -3329,10 +3354,13 @@ function windowLearningSample(previousSnapshot, nextQuota, kind) {
   if (!Number.isFinite(actualDelta) || actualDelta <= 0 || actualDelta > 40) return null;
   const coefficient = actualDelta / previousEstimateTokens;
   if (!Number.isFinite(coefficient) || coefficient <= 0 || coefficient >= 0.01) return null;
+  const predictedDelta = Number(estimate);
+  const errorRatio = predictedDelta > 0 ? actualDelta / predictedDelta : null;
   return {
     coefficient,
     actualDelta: Math.round(actualDelta * 10) / 10,
     predictedDelta: Math.round(estimate * 10) / 10,
+    errorRatio: Number.isFinite(errorRatio) && errorRatio > 0 ? Math.round(errorRatio * 100) / 100 : null,
     weightedTokens: Math.round(previousEstimateTokens),
     observedAt: nextQuota.checkedAt ?? new Date().toISOString(),
   };
@@ -3348,8 +3376,13 @@ function updateLearningWindow(existing, sample) {
     Number.isFinite(predictedDelta) &&
     Number.isFinite(actualDelta) &&
     actualDelta > 0 &&
+    (predictedDelta > actualDelta * 1.35 || actualDelta > predictedDelta * 1.25);
+  const severeMiss =
+    Number.isFinite(predictedDelta) &&
+    Number.isFinite(actualDelta) &&
+    actualDelta > 0 &&
     (predictedDelta > actualDelta * 2 || actualDelta > predictedDelta * 1.5);
-  const sampleWeight = needsFastCorrection ? 0.7 : 0.35;
+  const sampleWeight = severeMiss ? 0.85 : needsFastCorrection ? 0.65 : 0.42;
   const coefficient = Number.isFinite(previous) && previous > 0
     ? previous * (1 - sampleWeight) + sample.coefficient * sampleWeight
     : sample.coefficient;
@@ -3362,7 +3395,7 @@ function updateLearningWindow(existing, sample) {
 }
 
 function updateQuotaLearning(account, nextQuota) {
-  if (!account?.quotaSnapshot || !nextQuota || nextQuota.source !== "local") return false;
+  if (!account?.quotaSnapshot || !nextQuota || !["local", "online"].includes(nextQuota.source)) return false;
   const currentLearning = account.quotaCalibration && typeof account.quotaCalibration === "object"
     ? account.quotaCalibration
     : {};

@@ -116,12 +116,12 @@ function rawUsedPercent(rateLimits, kind) {
 function fallbackQuotaCreditUnitsPerPercent(planType, kind) {
   const plan = normalizePlanType(planType);
   if (kind === "weekly") {
-    if (plan === "business" || plan === "enterprise") return 137000;
-    if (plan === "plus") return 180000;
+    if (plan === "business" || plan === "enterprise") return 158000;
+    if (plan === "plus") return 258000;
     return 100000;
   }
-  if (plan === "business" || plan === "enterprise") return 24000;
-  if (plan === "plus") return 36000;
+  if (plan === "business" || plan === "enterprise") return 29400;
+  if (plan === "plus") return 43900;
   return 22000;
 }
 
