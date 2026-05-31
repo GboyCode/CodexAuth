@@ -1082,17 +1082,13 @@ $ErrorActionPreference = 'Stop'
 $targets = Get-Process -Name 'Codex' -ErrorAction SilentlyContinue
 if ($targets) { $targets | Stop-Process -Force }
 Start-Sleep -Milliseconds 850
-$pkg = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($pkg -and $pkg.InstallLocation) {
-  $candidate = Join-Path $pkg.InstallLocation 'app\\Codex.exe'
-  if (Test-Path $candidate) {
-    Start-Process -FilePath $candidate
-    exit 0
-  }
+$startApp = Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex_*!App' } | Select-Object -First 1
+if ($startApp -and $startApp.AppID) {
+  Start-Process -FilePath "shell:AppsFolder\\$($startApp.AppID)"
+  exit 0
 }
 $candidates = @(
-  "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\Codex.exe",
-  "$env:ProgramFiles\\WindowsApps\\OpenAI.Codex_2p2nqsd0c76g0\\app\\Codex.exe"
+  "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\Codex.exe"
 )
 foreach ($candidate in $candidates) {
   if ($candidate -and (Test-Path $candidate)) {
