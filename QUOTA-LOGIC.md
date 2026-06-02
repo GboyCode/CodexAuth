@@ -40,6 +40,16 @@ Codex App 将 WebSocket 通信日志写入此数据库。其中包含 `codex.rat
 - 每个事件都附带 `rate_limits`，但**值只在新 turn 开始时从服务器更新**
 - 同一个 turn 内，`rate_limits` 保持不变，`total_token_usage` 持续累加
 
+### 3. 本地 token ledger（`%APPDATA%/codex-auth-switcher/local-token-ledger.json`）
+
+应用会把 session 文件里的 `token_count` 事件整理成本地索引。这个文件只保存：
+
+- session 文件路径、大小、修改时间
+- token 计数、模型、service tier、事件时间
+- rate-limit 快照
+
+它不保存 prompt、回答内容、工具输出、access token 或 refresh token。索引用来跳过未变化的 session 文件，减少重复扫描，并让进行中对话的本地额度预估更稳定。
+
 ---
 
 ## 额度计算流程

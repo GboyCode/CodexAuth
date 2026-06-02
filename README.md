@@ -6,7 +6,7 @@
 
 CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
 
-它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。默认模式只操作本机文件；如果手动开启“联网精准”额度模式，应用会用当前 Codex 登录 token 请求 `chatgpt.com` 的额度接口。应用不会上传 Codex 会话历史。
+它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。应用只操作本机文件，额度和用量来自本地 Codex 日志解析，不请求远程额度接口，也不会上传 Codex 会话历史。
 
 一句话定位：**CodexAuth Switch 是一个本地优先的 Codex App 多账号切换工具，支持 `auth.json` 快照管理、Windows DPAPI 加密、额度查看和 token 用量统计。**
 
@@ -18,11 +18,11 @@ CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex Ap
 - 想快速切换 OpenAI Codex / Codex App 当前账号。
 - 想安全保存和恢复本地 `%USERPROFILE%\.codex\auth.json` 登录快照。
 - 想查看 Codex 本地额度、5 小时额度、周额度、Reviews、模型级额度、token 用量和最近会话。
-- 想默认使用本地日志估算，也希望可选启用联网精准额度读取。
+- 想坚持本地日志估算，不把 token、账号信息或会话历史发到远程额度接口。
 
 ## 常见搜索词
 
-Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows 桌面工具、Codex DPAPI 加密、Codex 本地预估、Codex 联网精准额度、Codex 本地历史只读。
+Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows 桌面工具、Codex DPAPI 加密、Codex 本地预估、Codex 本地额度估算、Codex 本地历史只读。
 
 ## 功能
 
@@ -32,10 +32,10 @@ Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账
 - 使用 Windows DPAPI 加密保存账号凭据，仅当前 Windows 用户可解密。
 - 切换、重新登录、删除当前账号前自动备份原始 `auth.json`。
 - 提供主窗口、系统托盘菜单和悬浮快捷窗。
-- 默认从本地 Codex 日志读取额度和 token 使用情况。
-- 可选使用当前登录 token 联网读取 ChatGPT 后端额度，失败时回退本地估算。
+- 从本地 Codex 日志读取额度和 token 使用情况。
+- 使用本地 token 事件索引辅助额度预估，减少重复扫描并提升刷新稳定性。
 - 显示额度消耗 pace 提示、Reviews 和模型级额度。
-- 渲染页面禁用网络请求；只有用户开启联网精准模式时，主进程才会发起额度读取请求。
+- 渲染页面禁用网络请求；额度读取路径也保持本地-only。
 
 ## 界面截图
 
@@ -75,10 +75,10 @@ CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和
 - 不修改 Codex 会话历史。
 - 不删除 `%USERPROFILE%\.codex\sessions`。
 - 不写入 `logs_2.sqlite`。
-- 默认不上传 token、账号信息、会话日志或用量记录。
-- 联网精准额度模式只会把当前 access token 用作 `chatgpt.com` 额度接口认证，不上传本地会话历史。
+- 不上传 token、账号信息、会话日志或用量记录。
+- 不使用当前 access token 请求远程额度接口。
 - 不自行刷新 OpenAI token。
-- 默认不调用远程额度接口；联网精准模式需要用户手动开启。
+- 不调用远程额度接口。
 
 会影响 Codex App 当前运行状态的功能只有：切换账号、重新登录、删除当前账号、重启 Codex App。这些操作可能会替换或移除当前 `auth.json`，并重启 Codex App，让新的本地登录状态生效。
 
@@ -140,12 +140,7 @@ DataProtectionScope.CurrentUser
 
 ### 额度读取模式
 
-额度面板支持两种模式：
-
-- 本地预估：默认模式，只读取 Codex App 已经写到本机的日志。
-- 联网精准：手动开启后，使用当前 `auth.json` 里的 access token 请求 `https://chatgpt.com/backend-api/wham/usage`，读取官方返回的 5 小时、周额度、Reviews、模型级额度和 credits；读取失败会回退本地估算。
-
-联网精准模式不会自动刷新 OpenAI token，也不会写回 `auth.json`。
+额度面板采用本地预估模式，只读取 Codex App 已经写到本机的日志，不请求 `chatgpt.com` 或其他远程额度接口。
 
 ### 本地额度和用量统计
 
@@ -154,6 +149,7 @@ DataProtectionScope.CurrentUser
 - session JSONL 文件里的 `codex.rate_limits`。
 - `logs_2.sqlite` 里的 `codex.rate_limits` 和 usage-limit 记录。
 - session 文件里的 `token_count` 事件。
+- 应用本地目录里的 `local-token-ledger.json`，只保存 token 计数、模型、时间、rate-limit 快照和文件状态，用于增量去重和更稳定的本地估算。
 
 应用会监听本地日志文件变化，并用短延迟防抖刷新显示；同时用低频轮询检查 SQLite 文件更新时间，避免文件监听漏事件。
 
@@ -189,7 +185,7 @@ ws://
 wss://
 ```
 
-这些限制用于确保渲染页面保持本地工具属性，避免账号信息或本地历史被上传。联网精准额度模式的请求由主进程在用户手动开启后发起。
+这些限制用于确保渲染页面保持本地工具属性，避免账号信息或本地历史被上传。额度读取同样保持本地-only。
 
 ## 使用方法
 
@@ -285,7 +281,6 @@ QUOTA-LOGIC.md                      额度估算逻辑说明
 - 凭据加密依赖 Windows DPAPI。
 - 目标是 Codex App 本地登录切换，不是 Codex CLI-only 工作流。
 - 本地预估模式来自本地日志解析，属于本地近似展示。
-- 联网精准模式依赖 `chatgpt.com` 额度接口，接口字段可能随 Codex 后端变化。
 - Codex 没有写入新的本地 rate-limit 记录时，额度快照可能暂时不更新。
 - 不要跨机器或跨 Windows 用户共享已保存的凭据快照。
 

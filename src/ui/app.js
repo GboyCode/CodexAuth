@@ -36,7 +36,6 @@ const els = {
   scopeCurrentBtn: document.querySelector("#scopeCurrentBtn"),
   scopeAllBtn: document.querySelector("#scopeAllBtn"),
   quotaLocalModeBtn: document.querySelector("#quotaLocalModeBtn"),
-  quotaOnlineModeBtn: document.querySelector("#quotaOnlineModeBtn"),
   quotaModeHint: document.querySelector("#quotaModeHint"),
   sessionWindowTitle: document.querySelector("#sessionWindowTitle"),
   sessionPercent: document.querySelector("#sessionPercent"),
@@ -328,33 +327,22 @@ function setUsageScope(scope) {
 }
 
 function renderSettings(snapshot) {
-  const quotaMode = snapshot?.settings?.quotaMode === "online" ? "online" : "local";
-  const online = quotaMode === "online";
-  els.quotaLocalModeBtn.classList.toggle("active", !online);
-  els.quotaOnlineModeBtn.classList.toggle("active", online);
-  els.quotaLocalModeBtn.setAttribute("aria-pressed", String(!online));
-  els.quotaOnlineModeBtn.setAttribute("aria-pressed", String(online));
-  els.quotaModeHint.textContent = online
-    ? "联网精准：用当前账号 token 读取 ChatGPT 后端额度；失败时回退本地估算。"
-    : "本地预估：只读取本机 Codex 日志，不联网。";
+  els.quotaLocalModeBtn.classList.add("active");
+  els.quotaLocalModeBtn.setAttribute("aria-pressed", "true");
+  els.quotaModeHint.textContent = "本地预估：只读取本机 Codex 日志，不联网。";
 }
 
 async function setQuotaMode(mode) {
-  const nextMode = mode === "online" ? "online" : "local";
-  if (state.snapshot?.settings?.quotaMode === nextMode) return;
-  if (nextMode === "online") {
-    const ok = window.confirm(
-      "开启联网精准后，应用会用当前 Codex 登录 token 请求 ChatGPT 额度接口。\n\n不会自动刷新 token；读取失败会回退本地估算。是否开启？"
-    );
-    if (!ok) return;
+  if (mode !== "local") {
+    showToast("已保持本地预估，不联网。");
   }
-  const snapshot = await api.updateSettings({ quotaMode: nextMode });
+  const snapshot = await api.updateSettings({ quotaMode: "local" });
   render(snapshot);
   if (state.activePage === "usage") {
     state.dashboardLoaded = false;
     await loadDashboard(true, { busy: false });
   }
-  showToast(nextMode === "online" ? "已切换到联网精准" : "已切换到本地预估");
+  showToast("已切换到本地预估");
 }
 
 function renderStatus(snapshot) {
@@ -993,7 +981,6 @@ function wireEvents() {
   els.scopeCurrentBtn.addEventListener("click", () => setUsageScope("current"));
   els.scopeAllBtn.addEventListener("click", () => setUsageScope("all"));
   els.quotaLocalModeBtn.addEventListener("click", () => setQuotaMode("local").catch((error) => showToast(error.message)));
-  els.quotaOnlineModeBtn.addEventListener("click", () => setQuotaMode("online").catch((error) => showToast(error.message)));
   els.importBtn.addEventListener("click", () => importCurrent());
   els.restartBtn.addEventListener("click", () => restartCodex());
   els.storePath.addEventListener("click", () => api.openPath(state.snapshot.storeRoot));

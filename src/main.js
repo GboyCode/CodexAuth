@@ -46,8 +46,10 @@ const QUOTA_CONFLICT_WINDOW_MS = 5 * 60 * 1000;
 const QUOTA_ESTIMATE_ALGORITHM = 3;
 const QUOTA_MODE_LOCAL = "local";
 const QUOTA_MODE_ONLINE = "online";
-const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const LIVE_QUOTA_TIMEOUT_MS = 10000;
+const TOKEN_LEDGER_VERSION = 1;
+const TOKEN_LEDGER_SCAN_LIMIT = 120;
+const TOKEN_LEDGER_FILE_LIMIT = 180;
+const TOKEN_LEDGER_EVENT_LIMIT = 25000;
 const QUOTA_RATE_CARD_BASE_INPUT_CREDITS = 125;
 const CODEX_RATE_CARDS = [
   { pattern: /gpt[-_\s]?5\.5/, input: 125, cachedInput: 12.5, output: 750, fastMultiplier: 2.5 },
@@ -91,6 +93,8 @@ let sessionsWatcher;
 let sessionsPollingInterval;
 let lastKnownLocalQuotaMtimeMs = 0;
 let indexMutationQueue = Promise.resolve();
+let accountOperationQueue = Promise.resolve();
+let tokenLedgerQueue = Promise.resolve();
 const sessionParseCache = new Map();
 const quotaEventParseCache = new Map();
 const sqliteResponseEventCache = new Map();
@@ -153,6 +157,10 @@ function backupsDir() {
   return path.join(storeRoot(), "backups");
 }
 
+function tokenLedgerPath() {
+  return path.join(storeRoot(), "local-token-ledger.json");
+}
+
 function appIconPngPath() {
   return path.join(__dirname, "ui", "assets", "codex-color.png");
 }
@@ -212,10 +220,10 @@ function defaultSettings() {
 }
 
 function normalizeSettings(settings) {
-  const quotaMode = settings?.quotaMode === QUOTA_MODE_ONLINE ? QUOTA_MODE_ONLINE : QUOTA_MODE_LOCAL;
   return {
     ...defaultSettings(),
-    quotaMode,
+    ...settings,
+    quotaMode: QUOTA_MODE_LOCAL,
   };
 }
 
@@ -259,6 +267,34 @@ async function mutateIndex(mutator) {
       await writeIndex(index);
     }
     return result.value;
+  } finally {
+    release();
+  }
+}
+
+async function runAccountOperation(task) {
+  const previous = accountOperationQueue;
+  let release;
+  accountOperationQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+async function runTokenLedgerOperation(task) {
+  const previous = tokenLedgerQueue;
+  let release;
+  tokenLedgerQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => {});
+  try {
+    return await task();
   } finally {
     release();
   }
@@ -501,6 +537,7 @@ function stripWindowEstimate(window) {
 }
 
 function normalizePublicQuotaSnapshot(snapshot) {
+  if (snapshot?.source === QUOTA_MODE_ONLINE) return null;
   if (!snapshot?.estimate || snapshot.estimate.algorithm === QUOTA_ESTIMATE_ALGORITHM) return snapshot ?? null;
   return {
     ...snapshot,
@@ -947,6 +984,10 @@ async function startSessionsPolling() {
 }
 
 async function switchAccount(accountId, options = {}) {
+  return runAccountOperation(() => switchAccountLocked(accountId, options));
+}
+
+async function switchAccountLocked(accountId, options = {}) {
   let reauthCheck = null;
   await mutateIndex(async (index) => {
     const target = index.accounts.find((account) => account.id === accountId);
@@ -996,6 +1037,10 @@ async function switchAccount(accountId, options = {}) {
 }
 
 async function startAccountReauth(accountId) {
+  return runAccountOperation(() => startAccountReauthLocked(accountId));
+}
+
+async function startAccountReauthLocked(accountId) {
   await mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) throw new Error("Account not found.");
@@ -1035,6 +1080,10 @@ async function updateAccount(accountId, patch) {
 }
 
 async function deleteAccount(accountId) {
+  return runAccountOperation(() => deleteAccountLocked(accountId));
+}
+
+async function deleteAccountLocked(accountId) {
   const result = await mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) throw new Error("Account not found.");
@@ -1071,6 +1120,10 @@ async function deleteAccount(accountId) {
     await restartCodexApp().catch(() => {});
   }
   return currentState();
+}
+
+async function restartCodexAppQueued() {
+  return runAccountOperation(() => restartCodexApp());
 }
 
 async function restartCodexApp() {
@@ -1192,7 +1245,7 @@ async function rebuildTrayMenu() {
       },
       { type: "separator" },
       { label: "切换账号并重启", submenu: accountItems },
-      { label: "重启 Codex App", click: () => restartCodexApp().catch(() => {}) },
+      { label: "重启 Codex App", click: () => restartCodexAppQueued().catch(() => {}) },
       { type: "separator" },
       {
         label: "退出",
@@ -1280,55 +1333,6 @@ function numericValue(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function normalizeLiveRateWindow(window, checkedAt, fallbackWindowMinutes, usedPercentOverride = null) {
-  if (!window && usedPercentOverride === null) return null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const windowMinutes = numericValue(window?.window_minutes);
-  const seconds = numericValue(window?.limit_window_seconds) ?? (windowMinutes !== null ? windowMinutes * 60 : null);
-  const resetAt = numericValue(window?.reset_at ?? window?.resets_at);
-  const resetAfter = numericValue(window?.reset_after_seconds);
-  const resetsAt = resetAt ?? (resetAfter !== null ? nowSec + resetAfter : null);
-  const rawUsed = usedPercentOverride ?? numericValue(window?.used_percent);
-  return {
-    usedPercent: rawUsed !== null ? Math.max(0, Math.min(100, Math.round(rawUsed))) : null,
-    windowMinutes: Number.isFinite(seconds) ? Math.round(seconds / 60) : fallbackWindowMinutes,
-    resetsAt,
-    checkedAt,
-    estimateBaseAt: checkedAt,
-  };
-}
-
-function normalizeLiveAdditionalRateLimits(entries, checkedAt) {
-  if (!Array.isArray(entries)) return [];
-  return entries
-    .map((entry) => {
-      const limitName = typeof entry?.limit_name === "string" ? entry.limit_name : "";
-      const label = limitName.replace(/^GPT-[\d.]+-Codex-/, "") || limitName || "模型额度";
-      const rateLimit = entry?.rate_limit ?? null;
-      const sessionWindow = rateLimit?.primary_window ?? null;
-      const weeklyWindow = rateLimit?.secondary_window ?? null;
-      return {
-        label,
-        session: normalizeLiveRateWindow(sessionWindow, checkedAt, 300),
-        weekly: normalizeLiveRateWindow(weeklyWindow, checkedAt, 7 * 24 * 60),
-      };
-    })
-    .filter((entry) => entry.session || entry.weekly);
-}
-
-function numberHeader(headers, name) {
-  const value = headers?.[name.toLowerCase()];
-  if (value === undefined || value === null || value === "") return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
-function boolHeader(headers, name) {
-  const value = headers?.[name.toLowerCase()];
-  if (value === undefined || value === null || value === "") return null;
-  return String(value).toLowerCase() === "true";
-}
-
 function normalizePlanType(planType) {
   const value = String(planType || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   if (!value) return null;
@@ -1348,91 +1352,6 @@ function planTypesMatch(left, right) {
   const leftPlan = normalizePlanType(left);
   const rightPlan = normalizePlanType(right);
   return !leftPlan || !rightPlan || leftPlan === rightPlan;
-}
-
-function normalizeHeaderMap(headers) {
-  const normalized = {};
-  for (const [key, value] of Object.entries(headers ?? {})) {
-    normalized[String(key).toLowerCase()] = value;
-  }
-  return normalized;
-}
-
-async function fetchJsonWithTimeout(url, options = {}, timeoutMs = LIVE_QUOTA_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    const text = await response.text();
-    const headers = {};
-    response.headers.forEach((value, key) => {
-      headers[String(key).toLowerCase()] = value;
-    });
-    let body = null;
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = null;
-      }
-    }
-    return { status: response.status, ok: response.ok, headers, body, text };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function readOnlineQuota(scope) {
-  const auth = await readCurrentAuth();
-  const accessToken = auth.parsed?.tokens?.access_token;
-  if (!accessToken) {
-    throw new Error("当前 auth.json 没有 access_token，无法联网读取额度。");
-  }
-
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    Accept: "application/json",
-    "User-Agent": APP_NAME,
-  };
-  const accountId = auth.parsed?.tokens?.account_id ?? auth.identity?.userId ?? null;
-  if (accountId) headers["ChatGPT-Account-Id"] = accountId;
-
-  const response = await fetchJsonWithTimeout(WHAM_USAGE_URL, { method: "GET", headers });
-  if (response.status === 401 || response.status === 403) {
-    throw new Error("联网额度读取未授权，请在 Codex App 重新登录后再试。");
-  }
-  if (!response.ok) {
-    throw new Error(`联网额度读取失败：HTTP ${response.status}`);
-  }
-  if (!response.body || typeof response.body !== "object") {
-    throw new Error("联网额度响应不是有效 JSON。");
-  }
-
-  const checkedAt = new Date().toISOString();
-  const data = response.body;
-  const rateLimit = data.rate_limit ?? null;
-  const primaryWindow = rateLimit?.primary_window ?? null;
-  const secondaryWindow = rateLimit?.secondary_window ?? null;
-  const reviewWindow = data.code_review_rate_limit?.primary_window ?? null;
-  const headerPrimary = numberHeader(response.headers, "x-codex-primary-used-percent");
-  const headerSecondary = numberHeader(response.headers, "x-codex-secondary-used-percent");
-  const creditsBalance = numericValue(data.credits?.balance) ?? numberHeader(response.headers, "x-codex-credits-balance");
-
-  return {
-    source: "online",
-    checkedAt,
-    planType: data.plan_type ?? scope.accountPlanType ?? auth.identity?.planType ?? null,
-    session: normalizeLiveRateWindow(primaryWindow, checkedAt, 300, headerPrimary),
-    weekly: normalizeLiveRateWindow(secondaryWindow, checkedAt, 7 * 24 * 60, headerSecondary),
-    review: normalizeLiveRateWindow(reviewWindow, checkedAt, 7 * 24 * 60),
-    additional: normalizeLiveAdditionalRateLimits(data.additional_rate_limits, checkedAt),
-    credits: data.credits
-      ? normalizeCredits({ ...data.credits, balance: creditsBalance ?? data.credits.balance })
-      : creditsBalance !== null
-        ? { hasCredits: true, unlimited: null, balance: creditsBalance }
-        : null,
-    error: null,
-  };
 }
 
 async function walkSessionFiles(dir) {
@@ -2262,6 +2181,144 @@ async function parseQuotaEventFileCached(file) {
   return parsed;
 }
 
+function normalizeLedgerEvent(raw, fallbackPath) {
+  const ms = Number(raw?.ms);
+  const timestamp = raw?.timestamp ?? (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
+  const resolvedMs = Number.isFinite(ms) ? ms : dateMs(timestamp);
+  if (!Number.isFinite(resolvedMs)) return null;
+  return {
+    filePath: raw?.filePath ?? fallbackPath ?? null,
+    sessionId: raw?.sessionId ?? fallbackPath ?? null,
+    startedAtMs: Number.isFinite(Number(raw?.startedAtMs)) ? Number(raw.startedAtMs) : null,
+    timestamp: timestamp ?? new Date(resolvedMs).toISOString(),
+    ms: resolvedMs,
+    model: raw?.model ?? null,
+    serviceTier: raw?.serviceTier ?? null,
+    tokenUsage: cloneTokenUsage(raw?.tokenUsage),
+    rateLimits: raw?.rateLimits ?? null,
+  };
+}
+
+function compactQuotaEventForLedger(event) {
+  return normalizeLedgerEvent(
+    {
+      filePath: event.filePath,
+      sessionId: event.sessionId,
+      startedAtMs: event.startedAtMs,
+      timestamp: event.timestamp,
+      ms: event.ms,
+      model: event.model,
+      serviceTier: event.serviceTier,
+      tokenUsage: event.tokenUsage,
+      rateLimits: event.rateLimits,
+    },
+    event.filePath
+  );
+}
+
+function normalizeTokenLedger(raw) {
+  const files = {};
+  const sourceFiles = raw?.version === TOKEN_LEDGER_VERSION && raw.files && typeof raw.files === "object" ? raw.files : {};
+  for (const [filePath, entry] of Object.entries(sourceFiles)) {
+    const pathKey = typeof entry?.path === "string" && entry.path ? entry.path : filePath;
+    const events = Array.isArray(entry?.events)
+      ? entry.events.map((event) => normalizeLedgerEvent(event, pathKey)).filter(Boolean)
+      : [];
+    files[pathKey] = {
+      path: pathKey,
+      size: Number.isFinite(Number(entry?.size)) ? Number(entry.size) : 0,
+      mtimeMs: Number.isFinite(Number(entry?.mtimeMs)) ? Number(entry.mtimeMs) : 0,
+      latestAt: entry?.latestAt ?? events.at(-1)?.timestamp ?? null,
+      eventCount: events.length,
+      events,
+    };
+  }
+  return {
+    version: TOKEN_LEDGER_VERSION,
+    updatedAt: raw?.updatedAt ?? null,
+    files,
+  };
+}
+
+async function readLocalTokenLedger() {
+  return normalizeTokenLedger(await readJson(tokenLedgerPath(), { version: TOKEN_LEDGER_VERSION, files: {} }));
+}
+
+function pruneTokenLedgerFiles(filesByPath) {
+  const sorted = Object.values(filesByPath)
+    .filter((entry) => entry?.path)
+    .sort((a, b) => Number(b.mtimeMs || 0) - Number(a.mtimeMs || 0));
+  const kept = {};
+  let eventCount = 0;
+  for (const entry of sorted) {
+    if (Object.keys(kept).length >= TOKEN_LEDGER_FILE_LIMIT) break;
+    if (eventCount >= TOKEN_LEDGER_EVENT_LIMIT) break;
+    kept[entry.path] = entry;
+    eventCount += Array.isArray(entry.events) ? entry.events.length : 0;
+  }
+  return kept;
+}
+
+function ledgerFileUnchanged(entry, file) {
+  return (
+    entry &&
+    Number(entry.size) === Number(file.size) &&
+    Math.round(Number(entry.mtimeMs || 0)) === Math.round(Number(file.mtimeMs || 0))
+  );
+}
+
+async function readLocalTokenLedgerEvents(files, options = {}) {
+  return runTokenLedgerOperation(async () => {
+    const scanLimit = Number.isFinite(options.scanLimit) ? options.scanLimit : TOKEN_LEDGER_SCAN_LIMIT;
+    const recentFiles = files.slice(0, scanLimit);
+    const ledger = await readLocalTokenLedger();
+    let changed = false;
+
+    for (const file of recentFiles) {
+      const existing = ledger.files[file.path];
+      if (ledgerFileUnchanged(existing, file)) continue;
+      try {
+        const events = (await parseQuotaEventFile(file)).map(compactQuotaEventForLedger).filter(Boolean);
+        ledger.files[file.path] = {
+          path: file.path,
+          size: file.size,
+          mtimeMs: file.mtimeMs,
+          latestAt: events.at(-1)?.timestamp ?? null,
+          eventCount: events.length,
+          events,
+        };
+        changed = true;
+      } catch {
+        if (!existing) {
+          ledger.files[file.path] = {
+            path: file.path,
+            size: file.size,
+            mtimeMs: file.mtimeMs,
+            latestAt: null,
+            eventCount: 0,
+            events: [],
+          };
+          changed = true;
+        }
+      }
+    }
+
+    const prunedFiles = pruneTokenLedgerFiles(ledger.files);
+    const pruned = Object.keys(prunedFiles).length !== Object.keys(ledger.files).length;
+    ledger.files = prunedFiles;
+    ledger.updatedAt = new Date().toISOString();
+    if (changed || pruned) {
+      await writeJsonAtomic(tokenLedgerPath(), ledger);
+    }
+
+    const allowed = new Set(recentFiles.map((file) => file.path));
+    return Object.values(ledger.files)
+      .filter((entry) => allowed.has(entry.path))
+      .flatMap((entry) => entry.events.map((event) => normalizeLedgerEvent(event, entry.path)).filter(Boolean))
+      .sort((a, b) => a.ms - b.ms);
+  });
+}
+
 function parseLogKeyValues(text) {
   const fields = {};
   const source = String(text ?? "");
@@ -2859,13 +2916,20 @@ async function readQuotaEstimate(options = {}) {
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
   const files = options.files ?? (await walkSessionFiles(sessionsDir()));
   const recentFiles = files.slice(0, 40);
-  const sessionEvents = [];
+  let sessionEvents = [];
+  try {
+    sessionEvents = await readLocalTokenLedgerEvents(files, { scanLimit: Math.max(TOKEN_LEDGER_SCAN_LIMIT, recentFiles.length) });
+  } catch {
+    sessionEvents = [];
+  }
 
-  for (const file of recentFiles) {
-    try {
-      sessionEvents.push(...(await parseQuotaEventFileCached(file)));
-    } catch {
-      // A session file can be mid-write; skip it and try again on the next refresh.
+  if (!sessionEvents.length) {
+    for (const file of recentFiles) {
+      try {
+        sessionEvents.push(...(await parseQuotaEventFileCached(file)));
+      } catch {
+        // A session file can be mid-write; skip it and try again on the next refresh.
+      }
     }
   }
 
@@ -3236,6 +3300,10 @@ function emptyLocalUsage(since = null) {
   };
 }
 
+function localStoredQuotaSnapshot(snapshot) {
+  return snapshot?.source === QUOTA_MODE_ONLINE ? null : snapshot ?? null;
+}
+
 async function dashboardScope() {
   await waitForIndexMutations();
   const index = await readIndex();
@@ -3260,7 +3328,7 @@ async function dashboardScope() {
     accountId: account?.id ?? null,
     hasCurrentAuth: !!currentIdentityKey,
     accountPlanType: account?.identity?.planType ?? null,
-    accountQuotaSnapshot: account?.quotaSnapshot ?? null,
+    accountQuotaSnapshot: localStoredQuotaSnapshot(account?.quotaSnapshot),
     accountQuotaCalibration: account?.quotaCalibration ?? null,
     settings: normalizeSettings(index.settings),
     since: account?.lastSwitchedAt ?? null,
@@ -3269,7 +3337,7 @@ async function dashboardScope() {
 }
 
 async function saveAccountQuotaSnapshot(accountId, quota) {
-  if (!accountId || !quota || !["local", "local-error", "online"].includes(quota.source)) return false;
+  if (!accountId || !quota || !["local", "local-error"].includes(quota.source)) return false;
   return mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) return { value: false, write: false };
@@ -3307,6 +3375,7 @@ function mergeAccountQuotaWindow(nextWindow, previousWindow) {
 }
 
 function buildAccountQuotaSnapshot(quota, previousSnapshot = null) {
+  previousSnapshot = localStoredQuotaSnapshot(previousSnapshot);
   const canReusePrevious =
     previousSnapshot &&
     planTypesMatch(previousSnapshot.planType, quota.planType) &&
@@ -3392,7 +3461,7 @@ function updateLearningWindow(existing, sample) {
 }
 
 function updateQuotaLearning(account, nextQuota) {
-  if (!account?.quotaSnapshot || !nextQuota || !["local", "online"].includes(nextQuota.source)) return false;
+  if (!account?.quotaSnapshot || !nextQuota || nextQuota.source !== "local") return false;
   const currentLearning = account.quotaCalibration && typeof account.quotaCalibration === "object"
     ? account.quotaCalibration
     : {};
@@ -3412,7 +3481,10 @@ async function cleanupMismatchedQuotaSnapshots() {
   await mutateIndex(async (index) => {
     let changed = false;
     for (const account of index.accounts) {
-      if (account.quotaSnapshot && !quotaMatchesAccount(account, account.quotaSnapshot)) {
+      if (
+        account.quotaSnapshot &&
+        (account.quotaSnapshot.source === QUOTA_MODE_ONLINE || !quotaMatchesAccount(account, account.quotaSnapshot))
+      ) {
         delete account.quotaSnapshot;
         delete account.quotaSnapshotUpdatedAt;
         changed = true;
@@ -3475,33 +3547,6 @@ async function readBestLocalQuota(scope, files) {
 }
 
 async function resolveQuotaWithMode(scope, files, usage = null) {
-  const quotaMode = normalizeSettings(scope.settings).quotaMode;
-  if (quotaMode === QUOTA_MODE_ONLINE) {
-    try {
-      const onlineQuota = await readOnlineQuota(scope);
-      const resolvedOnlineQuota = resolveQuota(scope, onlineQuota);
-      if (scope.accountId) {
-        await saveAccountQuotaSnapshot(scope.accountId, resolvedOnlineQuota);
-      }
-      return resolvedOnlineQuota;
-    } catch (error) {
-      const latestQuota = await readBestLocalQuota(scope, files);
-      const baseQuota = latestQuota ?? usage?.latestQuota ?? null;
-      const quotaEstimate = await readQuotaEstimate({
-        since: scope.since,
-        files,
-        baseQuota,
-        calibration: scope.accountQuotaCalibration,
-        accountIdentity: scope.account,
-      });
-      const fallbackQuota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
-      return {
-        ...fallbackQuota,
-        error: `联网读取失败，已回退本地估算：${error.message}`,
-      };
-    }
-  }
-
   const latestQuota = await readBestLocalQuota(scope, files);
   const baseQuota = latestQuota ?? usage?.latestQuota ?? null;
   const quotaEstimate = await readQuotaEstimate({
@@ -4134,7 +4179,7 @@ function registerIpc() {
     broadcastStateChanged();
     return result;
   });
-  ipcMain.handle("codex:restart", () => restartCodexApp());
+  ipcMain.handle("codex:restart", () => restartCodexAppQueued());
   ipcMain.handle("quota:get", () => getQuota());
   ipcMain.handle("dashboard:get", () => getDashboard());
   ipcMain.handle("dashboard:all-accounts", () => getAllAccountsQuotaSummary());
