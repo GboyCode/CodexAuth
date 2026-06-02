@@ -1084,19 +1084,20 @@ if ($targets) { $targets | Stop-Process -Force }
 Start-Sleep -Milliseconds 850
 $startApp = Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex_*!App' } | Select-Object -First 1
 if ($startApp -and $startApp.AppID) {
-  Start-Process -FilePath "shell:AppsFolder\\$($startApp.AppID)"
+  Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\\$($startApp.AppID)"
   exit 0
 }
-$candidates = @(
-  "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\Codex.exe"
-)
-foreach ($candidate in $candidates) {
-  if ($candidate -and (Test-Path $candidate)) {
-    Start-Process -FilePath $candidate
-    exit 0
-  }
+$package = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+if ($package -and $package.PackageFamilyName) {
+  Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\\$($package.PackageFamilyName)!App"
+  exit 0
 }
-exit 0
+$alias = Join-Path $env:LOCALAPPDATA 'Microsoft\\WindowsApps\\Codex.exe'
+if (Test-Path $alias) {
+  Start-Process -FilePath $alias
+  exit 0
+}
+throw 'Cannot find Codex App launcher.'
 `;
   await runPowerShell(script);
   return { ok: true };
