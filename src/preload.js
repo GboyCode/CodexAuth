@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld("codexAuth", {
     return () => ipcRenderer.removeListener("widget:dock-hint", handler);
   },
   onStateChanged: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("state:changed", handler);
     return () => ipcRenderer.removeListener("state:changed", handler);
   },

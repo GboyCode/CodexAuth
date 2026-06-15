@@ -1,4 +1,5 @@
 const api = window.codexAuth;
+const q = window.CodexQuotaUI;
 const DASHBOARD_AUTO_REFRESH_MS = 8000;
 
 const state = {
@@ -35,7 +36,6 @@ const els = {
   statsRefreshBtn: document.querySelector("#statsRefreshBtn"),
   scopeCurrentBtn: document.querySelector("#scopeCurrentBtn"),
   scopeAllBtn: document.querySelector("#scopeAllBtn"),
-  quotaLocalModeBtn: document.querySelector("#quotaLocalModeBtn"),
   quotaModeHint: document.querySelector("#quotaModeHint"),
   sessionWindowTitle: document.querySelector("#sessionWindowTitle"),
   sessionPercent: document.querySelector("#sessionPercent"),
@@ -74,14 +74,6 @@ function identityLabel(accountLike) {
   return accountLike.email || accountLike.userId || accountLike.subject || "未知账号";
 }
 
-function formatPlanType(planType) {
-  const value = String(planType || "").trim();
-  if (!value) return "--";
-  const normalized = value.toLowerCase();
-  if (normalized === "team" || normalized === "business") return "Business";
-  return value.toUpperCase();
-}
-
 function formatDate(value) {
   if (!value) return "从未切换";
   const date = new Date(value);
@@ -102,43 +94,6 @@ function compactNumber(value) {
   return String(Math.round(number));
 }
 
-function relativeReset(value) {
-  if (!value) return "重置时间不可用";
-  const date = new Date(Number(value) * 1000);
-  if (Number.isNaN(date.getTime())) return "重置时间不可用";
-  if (date.getTime() <= Date.now()) return "已到重置时间";
-  const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1);
-  const time = new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-  if (date.toDateString() === now.toDateString()) return `${time} 重置`;
-  if (date.toDateString() === tomorrow.toDateString()) return `明天 ${time} 重置`;
-  const day = new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
-  return `${day} ${time} 重置`;
-}
-
-function windowTitle(kind, quotaWindow) {
-  if (kind === "weekly") return "周额度";
-  if (quotaWindow?.windowMinutes === 300) return "5 小时额度";
-  if (quotaWindow?.windowMinutes) return `${Math.round(quotaWindow.windowMinutes / 60)} 小时额度`;
-  return "会话额度";
-}
-
-function quotaSourceLabel(source) {
-  if (source === "online") return "来自 ChatGPT 联网额度接口";
-  if (source === "official") return "来自本地保存的额度快照";
-  if (source === "local") return "来自本地 Codex 日志";
-  if (source === "local-error") return "来自本地 Codex 限额日志";
-  if (source === "account-cache") return "此账号上次本地快照";
-  return "不可用";
-}
-
 function usageScopeLabel(scope, quota) {
   if (quota?.source === "account-cache") return "等待当前账号新快照";
   if (scope?.since) return `当前账号自 ${formatDate(scope.since)} 后`;
@@ -146,90 +101,11 @@ function usageScopeLabel(scope, quota) {
 }
 
 function quotaFreshnessLabel(quota) {
-  if (!quota?.checkedAt) return "快照时间未知";
-  const date = new Date(quota.checkedAt);
-  const diffMs = Date.now() - date.getTime();
-  if (!Number.isFinite(diffMs)) return "快照时间未知";
-  const seconds = Math.max(0, Math.round(diffMs / 1000));
-  const time = new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
-  if (seconds < 10) return `快照 ${time} · 刚写入`;
-  if (seconds < 60) return `快照 ${time} · ${seconds} 秒前`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 5) return `快照 ${time} · ${minutes} 分钟前`;
-  if (quota?.source === "online") return `快照 ${time} · 可手动刷新联网额度`;
-  return `快照 ${time} · 等待 Codex 写入下一条额度记录`;
-}
-
-function estimateRemainingLabel(window) {
-  const value = Number(window?.estimatedRemainingPercent);
-  const delta = Number(window?.estimatedDeltaPercent);
-  if (!Number.isFinite(value) || !Number.isFinite(delta) || delta <= 0) return "";
-  return ` · 预估剩余 ${Math.round(Math.max(0, Math.min(100, value)))}%`;
-}
-
-function quotaEstimateStatusLabel(quota) {
-  if (!quota?.estimate) return "";
-  if (quota.estimate.available) return " · 已按本地增量预估";
-  return ` · 预估等待：${quota.estimate.reason || "本地新记录"}`;
-}
-
-function clampPercent(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return Math.max(0, Math.min(100, number));
-}
-
-function remainingPercent(window) {
-  const used = clampPercent(window?.usedPercent);
-  return used === null ? null : Math.max(0, 100 - used);
-}
-
-function displayRemainingPercent(window) {
-  const estimated = clampPercent(window?.estimatedRemainingPercent);
-  const delta = Number(window?.estimatedDeltaPercent);
-  if (estimated !== null && Number.isFinite(delta) && delta > 0) return estimated;
-  return remainingPercent(window);
-}
-
-function displayUsedPercent(window) {
-  const estimated = clampPercent(window?.estimatedUsedPercent);
-  const delta = Number(window?.estimatedDeltaPercent);
-  if (estimated !== null && Number.isFinite(delta) && delta > 0) return estimated;
-  return clampPercent(window?.usedPercent) ?? 0;
-}
-
-function paceLabel(window) {
-  if (!window?.resetsAt || !window?.windowMinutes) return "";
-  const used = displayUsedPercent(window);
-  if (!Number.isFinite(used) || used <= 0) return " · 消耗速度宽松";
-  const resetsAtMs = Number(window.resetsAt) * 1000;
-  const periodMs = Number(window.windowMinutes) * 60 * 1000;
-  if (!Number.isFinite(resetsAtMs) || !Number.isFinite(periodMs) || periodMs <= 0) return "";
-  const startMs = resetsAtMs - periodMs;
-  const elapsedMs = Date.now() - startMs;
-  if (elapsedMs <= 0 || Date.now() >= resetsAtMs) return "";
-  const elapsedFraction = elapsedMs / periodMs;
-  if (elapsedFraction < 0.05 && used < 100) return "";
-  const projectedUsed = (used / elapsedMs) * periodMs;
-  if (projectedUsed <= 80) return " · 消耗速度宽松";
-  if (projectedUsed <= 100) return " · 消耗速度正常";
-  return " · 按当前速度会提前用完";
-}
-
-function quotaWindowLabel(kind, window) {
-  if (kind === "weekly") return "周额度";
-  if (window?.windowMinutes === 300) return "5 小时额度";
-  if (window?.windowMinutes) return `${Math.round(window.windowMinutes / 60)} 小时额度`;
-  return "会话额度";
+  return q.quotaFreshnessLabel(quota);
 }
 
 function snapshotTimeLabel(snapshot) {
-  if (!snapshot?.checkedAt) return "暂无快照时间";
-  return `快照 ${formatDate(snapshot.checkedAt)}`;
+  return q.formatSnapshotTime(snapshot?.checkedAt);
 }
 
 let toastTimer;
@@ -301,7 +177,7 @@ function setActivePage(page) {
   if (isUsage && !state.dashboardLoaded) {
     loadDashboard(true, { busy: false }).catch((error) => showToast(error.message));
   } else if (isUsage) {
-    readQuota(true).catch((error) => showToast(error.message));
+    loadDashboard(true, { busy: false }).catch((error) => showToast(error.message));
   }
 }
 
@@ -327,22 +203,10 @@ function setUsageScope(scope) {
 }
 
 function renderSettings(snapshot) {
-  els.quotaLocalModeBtn.classList.add("active");
-  els.quotaLocalModeBtn.setAttribute("aria-pressed", "true");
   els.quotaModeHint.textContent = "本地预估：只读取本机 Codex 日志，不联网。";
-}
-
-async function setQuotaMode(mode) {
-  if (mode !== "local") {
-    showToast("已保持本地预估，不联网。");
+  if (els.restartAfterSwitch) {
+    els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
-  const snapshot = await api.updateSettings({ quotaMode: "local" });
-  render(snapshot);
-  if (state.activePage === "usage") {
-    state.dashboardLoaded = false;
-    await loadDashboard(true, { busy: false });
-  }
-  showToast("已切换到本地预估");
 }
 
 function renderStatus(snapshot) {
@@ -368,16 +232,16 @@ function createAccountQuotaMetric(kind, window) {
   head.className = "account-quota-head";
 
   const label = document.createElement("span");
-  label.textContent = quotaWindowLabel(kind, window);
+  label.textContent = q.quotaWindowLabel(kind, window);
 
   const value = document.createElement("strong");
-  const remaining = displayRemainingPercent(window);
-  value.textContent = remaining === null ? "--" : `剩余 ${Math.round(remaining)}%`;
+  value.textContent = q.formatRemainingText(window);
   head.append(label, value);
 
   const meter = document.createElement("div");
-  meter.className = "account-quota-meter";
+  meter.className = q.isEstimatedWindow(window) ? "account-quota-meter estimated" : "account-quota-meter";
   const fill = document.createElement("span");
+  const remaining = q.displayRemainingPercent(window);
   fill.style.width = remaining === null ? "0%" : `${remaining}%`;
   meter.append(fill);
 
@@ -386,8 +250,7 @@ function createAccountQuotaMetric(kind, window) {
   if (!window) {
     foot.textContent = "暂无数据";
   } else {
-    const used = displayUsedPercent(window);
-    foot.textContent = `已用 ${Math.round(used)}%${estimateRemainingLabel(window)} · ${relativeReset(window.resetsAt)}${paceLabel(window)}`;
+    foot.textContent = q.formatUsedFootnote(window);
   }
 
   metric.append(head, meter, foot);
@@ -411,10 +274,10 @@ function createAccountQuotaDetails(account) {
   summary.className = "account-quota-summary";
 
   const source = document.createElement("span");
-  source.textContent = `${snapshotTimeLabel(snapshot)} · ${quotaSourceLabel(snapshot.source)}`;
+  source.textContent = `${snapshotTimeLabel(snapshot)} · ${q.quotaSourceLabel(snapshot.source)}`;
 
   const plan = document.createElement("strong");
-  plan.textContent = formatPlanType(snapshot.planType || account.planType);
+  plan.textContent = q.formatPlanType(snapshot.planType || account.planType);
   summary.append(source, plan);
 
   const grid = document.createElement("div");
@@ -466,7 +329,7 @@ function accountCard(account) {
   const meta = document.createElement("div");
   meta.className = "account-meta";
   const identity = document.createElement("span");
-  identity.textContent = account.planType ? `${identityLabel(account)} · ${formatPlanType(account.planType)}` : identityLabel(account);
+  identity.textContent = account.planType ? `${identityLabel(account)} · ${q.formatPlanType(account.planType)}` : identityLabel(account);
   const switched = document.createElement("span");
   switched.textContent = account.needsReauth
     ? account.reauthReason || "需要重新登录"
@@ -540,30 +403,31 @@ function renderQuotaWindow(kind, window) {
   const meterEl = kind === "session" ? els.sessionMeter : els.weeklyMeter;
   const resetEl = kind === "session" ? els.sessionReset : els.weeklyReset;
   const titleEl = kind === "session" ? els.sessionWindowTitle : els.weeklyWindowTitle;
-  titleEl.textContent = windowTitle(kind, window);
+  const cardEl = kind === "session" ? els.sessionPercent.closest(".quota-card") : els.weeklyPercent.closest(".quota-card");
+  titleEl.textContent = q.windowTitle(kind, window);
+  cardEl?.classList.toggle("estimated", q.isEstimatedWindow(window));
   if (!window) {
     percentEl.textContent = "--";
+    meterEl.parentElement?.classList.remove("estimated");
     meterEl.style.width = "0%";
     resetEl.textContent = "暂无数据";
     return;
   }
-  const usedPercent = displayUsedPercent(window);
-  const remainingPercent = displayRemainingPercent(window) ?? Math.max(0, Math.min(100, 100 - usedPercent));
-  percentEl.textContent = `剩余 ${Math.round(remainingPercent)}%`;
+  const remainingPercent = q.displayRemainingPercent(window) ?? Math.max(0, Math.min(100, 100 - q.displayUsedPercent(window)));
+  percentEl.textContent = q.formatRemainingText(window);
+  meterEl.parentElement?.classList.toggle("estimated", q.isEstimatedWindow(window));
   meterEl.style.width = `${remainingPercent}%`;
-  resetEl.textContent = `已用 ${Math.round(usedPercent)}%${estimateRemainingLabel(window)} · ${relativeReset(
-    window.resetsAt
-  )}${paceLabel(window)}`;
+  resetEl.textContent = q.formatUsedFootnote(window);
 }
 
 function renderQuotaPanel(dashboard) {
   const quota = dashboard?.quota;
   renderQuotaWindow("session", quota?.session);
   renderQuotaWindow("weekly", quota?.weekly);
-  els.planType.textContent = formatPlanType(quota?.planType);
-  const sourceText = `${quotaSourceLabel(quota?.source)} · ${usageScopeLabel(dashboard?.scope, quota)} · ${quotaFreshnessLabel(
+  els.planType.textContent = q.formatPlanType(quota?.planType);
+  const sourceText = `${q.quotaSourceLabel(quota?.source)} · ${usageScopeLabel(dashboard?.scope, quota)} · ${quotaFreshnessLabel(
     quota
-  )}${quotaEstimateStatusLabel(quota)}`;
+  )}${q.quotaEstimateStatusLabel(quota)}`;
   els.quotaSource.textContent = quota?.error ? `${sourceText} · ${quota.error}` : sourceText;
   els.creditsInfo.textContent =
     quota?.credits?.balance !== undefined && quota?.credits?.balance !== null
@@ -573,24 +437,22 @@ function renderQuotaPanel(dashboard) {
 
 function extraQuotaCard(label, quotaWindow) {
   const card = document.createElement("article");
-  card.className = "extra-quota-card";
+  card.className = q.isEstimatedWindow(quotaWindow) ? "extra-quota-card estimated" : "extra-quota-card";
   const head = document.createElement("div");
   head.className = "extra-quota-head";
   const title = document.createElement("span");
   title.textContent = label;
   const value = document.createElement("strong");
-  const remaining = displayRemainingPercent(quotaWindow);
-  value.textContent = remaining === null ? "--" : `剩余 ${Math.round(remaining)}%`;
+  value.textContent = q.formatRemainingText(quotaWindow);
   head.append(title, value);
   const meter = document.createElement("div");
-  meter.className = "extra-quota-meter";
+  meter.className = q.isEstimatedWindow(quotaWindow) ? "extra-quota-meter estimated" : "extra-quota-meter";
   const fill = document.createElement("span");
+  const remaining = q.displayRemainingPercent(quotaWindow);
   fill.style.width = remaining === null ? "0%" : `${Math.round(remaining)}%`;
   meter.append(fill);
   const foot = document.createElement("p");
-  foot.textContent = quotaWindow
-    ? `已用 ${Math.round(displayUsedPercent(quotaWindow))}% · ${relativeReset(quotaWindow.resetsAt)}${paceLabel(quotaWindow)}`
-    : "暂无数据";
+  foot.textContent = quotaWindow ? q.formatUsedFootnote(quotaWindow) : "暂无数据";
   card.append(head, meter, foot);
   return card;
 }
@@ -618,6 +480,11 @@ function renderDashboard(dashboard) {
   els.inputTokens.textContent = compactNumber(tokenUsage.inputTokens);
   els.outputTokens.textContent = compactNumber(tokenUsage.outputTokens);
   els.sessionCount.textContent = String(usage?.sessionsAnalyzed ?? 0);
+  if (usage?.totalFiles && usage.totalFiles > usage.scannedFiles) {
+    els.sessionCount.title = `已扫描最近 ${usage.scannedFiles} 个会话文件，本机共 ${usage.totalFiles} 个`;
+  } else {
+    els.sessionCount.title = "";
+  }
   renderDailyBars(usage?.daily || []);
   renderRecentSessions(usage?.recentSessions || []);
   renderProjectStats(usage?.projects || []);
@@ -762,14 +629,13 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
   const label = document.createElement("span");
   label.textContent = kind === "weekly" ? "周额度" : quotaWindow?.windowMinutes === 300 ? "5 小时" : "会话";
   const value = document.createElement("strong");
-  const remaining =
-    quotaWindow?.remainingPercent ?? (quotaWindow?.usedPercent != null ? Math.max(0, 100 - quotaWindow.usedPercent) : null);
-  value.textContent = remaining != null ? `剩余 ${Math.round(remaining)}%` : "--";
+  value.textContent = q.formatRemainingText(quotaWindow);
   head.append(label, value);
 
   const meter = document.createElement("div");
-  meter.className = "all-account-meter";
+  meter.className = q.isEstimatedWindow(quotaWindow) ? "all-account-meter estimated" : "all-account-meter";
   const fill = document.createElement("span");
+  const remaining = q.displayRemainingPercent(quotaWindow);
   fill.style.width = remaining != null ? `${Math.round(Math.max(0, Math.min(100, remaining)))}%` : "0%";
   meter.append(fill);
 
@@ -778,8 +644,7 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
   if (!quotaWindow) {
     foot.textContent = "暂无快照";
   } else {
-    const used = quotaWindow.usedPercent != null ? Math.round(quotaWindow.usedPercent) : "--";
-    foot.textContent = `已用 ${used}% · ${relativeReset(quotaWindow.resetsAt)}`;
+    foot.textContent = q.formatUsedFootnote(quotaWindow);
   }
 
   row.append(head, meter, foot);
@@ -803,10 +668,17 @@ async function renderAllAccountsQuota() {
       name.textContent = account.displayName;
       const badge = document.createElement("span");
       badge.className = "plan-badge";
-      badge.textContent = formatPlanType(account.planType);
+      badge.textContent = q.formatPlanType(account.planType);
       head.append(name, badge);
 
       card.append(head);
+
+      if (account.quotaSnapshot?.isCachedSnapshot) {
+        const note = document.createElement("p");
+        note.className = "all-account-no-data";
+        note.textContent = "上次切换时的本地快照";
+        card.append(note);
+      }
 
       if (account.quotaSnapshot) {
         const meters = document.createElement("div");
@@ -825,8 +697,12 @@ async function renderAllAccountsQuota() {
 
       els.allAccountsGrid.append(card);
     }
-  } catch {
-    // Non-critical; silently skip if the API is unavailable.
+  } catch (error) {
+    const empty = document.createElement("p");
+    empty.className = "all-account-no-data";
+    empty.textContent = "全部账号额度暂时不可用";
+    els.allAccountsGrid.append(empty);
+    if (error instanceof Error) console.warn(error.message);
   }
 }
 
@@ -980,7 +856,9 @@ function wireEvents() {
   els.statsRefreshBtn.addEventListener("click", () => loadDashboard(false).catch((error) => showToast(error.message)));
   els.scopeCurrentBtn.addEventListener("click", () => setUsageScope("current"));
   els.scopeAllBtn.addEventListener("click", () => setUsageScope("all"));
-  els.quotaLocalModeBtn.addEventListener("click", () => setQuotaMode("local").catch((error) => showToast(error.message)));
+  els.restartAfterSwitch?.addEventListener("change", () => {
+    api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked }).catch((error) => showToast(error.message));
+  });
   els.importBtn.addEventListener("click", () => importCurrent());
   els.restartBtn.addEventListener("click", () => restartCodex());
   els.storePath.addEventListener("click", () => api.openPath(state.snapshot.storeRoot));
@@ -1001,7 +879,13 @@ function wireEvents() {
     event.preventDefault();
     els.renameDialog.close("ok");
   });
-  api.onStateChanged(() => {
+  api.onStateChanged((payload) => {
+    const scope = payload?.scope || "accounts";
+    if (scope === "quota" && state.activePage === "usage") {
+      readQuota(true).catch((error) => showToast(error.message));
+      return;
+    }
+    if (scope === "quota") return;
     refresh(true).catch((error) => showToast(error.message));
   });
 }

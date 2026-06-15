@@ -32,7 +32,7 @@
     "start": "npm run icon:win && electron .",
     "dev": "npm run icon:win && electron .",
     "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",
-    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/ui/app.js && node --check src/ui/widget.js",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/quota/constants.js && node --check src/quota/token-math.js && node --check src/quota/local-data-cache.js && node --check src/ui/shared-quota.js && node --check src/ui/app.js && node --check src/ui/widget.js",
     "quota:validate": "node scripts\\validate-quota-estimate.js",
     "icon:win": "electron scripts\\generate-icon.js",
     "sidebar:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\generate-installer-sidebar.ps1",

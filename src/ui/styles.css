@@ -406,6 +406,18 @@ button:hover {
   transition: width 240ms ease;
 }
 
+.meter.estimated span,
+.account-quota-meter.estimated span,
+.all-account-meter.estimated span,
+.extra-quota-meter.estimated span {
+  background: linear-gradient(90deg, #7c3aed, #c4b5fd);
+}
+
+.quota-card.estimated .quota-title strong,
+.extra-quota-card.estimated .extra-quota-head strong {
+  color: #6d28d9;
+}
+
 .metric-card {
   padding: 15px;
 }

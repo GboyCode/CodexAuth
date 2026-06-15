@@ -16,9 +16,41 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
+const {
+  QUOTA_CONFLICT_WINDOW_MS,
+  QUOTA_ESTIMATE_ALGORITHM,
+  QUOTA_MODE_LOCAL,
+  QUOTA_MODE_ONLINE,
+  TOKEN_LEDGER_VERSION,
+  TOKEN_LEDGER_SCAN_LIMIT,
+  TOKEN_LEDGER_FILE_LIMIT,
+  TOKEN_LEDGER_EVENT_LIMIT,
+  SESSION_POLL_RECENT_FILE_LIMIT,
+  SESSION_POLL_RECENT_WINDOW_MS,
+} = require("./quota/constants");
+const {
+  emptyTokenUsage,
+  normalizeTokenUsage,
+  addTokenUsage,
+  subtractTokenUsage,
+  tokenUsageTotal,
+  codexRateCard,
+  quotaSpeedMultiplier,
+  weightedTokenUsage,
+  cloneTokenUsage,
+  dateMs,
+  median,
+  normalizePlanType,
+  fallbackQuotaCreditUnitsPerPercent,
+  fallbackQuotaCoefficient,
+  quotaCoefficientBounds,
+  isReasonableQuotaCoefficient,
+} = require("./quota/token-math");
+const { createLocalDataCache } = require("./quota/local-data-cache");
 
 const APP_NAME = "CodexAuth Switch";
 const APP_ID = "local.codexauth.switch";
+const STARTUP_ARG = "--codexauth-startup";
 const STORE_DIR_NAME = "codex-auth-switcher";
 const STORE_VERSION = 1;
 const isWindows = process.platform === "win32";
@@ -28,7 +60,7 @@ const WIDGET_MAX_WIDTH = 620;
 const WIDGET_BASE_HEIGHT = 420;
 const WIDGET_ACCOUNT_ROW_DELTA = 49;
 const WIDGET_MIN_ACCOUNT_ROWS = 2;
-const WIDGET_MAX_ACCOUNT_ROWS = 4;
+const WIDGET_MAX_ACCOUNT_ROWS = 2;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;
 const WIDGET_MAX_HEIGHT = 900;
 const VALID_RESIZE_EDGES = new Set(["n", "e", "s", "w", "ne", "se", "sw", "nw"]);
@@ -42,24 +74,7 @@ const WIDGET_DOCK_STRIP_GRACE = 4;
 const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
 const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
 const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
-const QUOTA_CONFLICT_WINDOW_MS = 5 * 60 * 1000;
-const QUOTA_ESTIMATE_ALGORITHM = 3;
-const QUOTA_MODE_LOCAL = "local";
-const QUOTA_MODE_ONLINE = "online";
-const TOKEN_LEDGER_VERSION = 1;
-const TOKEN_LEDGER_SCAN_LIMIT = 120;
-const TOKEN_LEDGER_FILE_LIMIT = 180;
-const TOKEN_LEDGER_EVENT_LIMIT = 25000;
-const QUOTA_RATE_CARD_BASE_INPUT_CREDITS = 125;
-const CODEX_RATE_CARDS = [
-  { pattern: /gpt[-_\s]?5\.5/, input: 125, cachedInput: 12.5, output: 750, fastMultiplier: 2.5 },
-  { pattern: /gpt[-_\s]?5\.4[-_\s]?mini/, input: 18.75, cachedInput: 1.875, output: 113, fastMultiplier: 1 },
-  { pattern: /gpt[-_\s]?5\.4/, input: 62.5, cachedInput: 6.25, output: 375, fastMultiplier: 2 },
-  { pattern: /gpt[-_\s]?5\.3[-_\s]?codex/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
-  { pattern: /gpt[-_\s]?5\.2/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
-  { pattern: /gpt[-_\s]?5[-_\s]?codex/, input: 43.75, cachedInput: 4.375, output: 350, fastMultiplier: 1 },
-];
-const DEFAULT_CODEX_RATE_CARD = CODEX_RATE_CARDS[0];
+const localDataCache = createLocalDataCache();
 
 let mainWindow;
 let widgetWindow;
@@ -68,6 +83,8 @@ let isQuitting = false;
 let widgetAlwaysOnTop = false;
 let widgetManualSize = false;
 let widgetResizeSession = null;
+let widgetBoundsSaveTimer;
+let runtimeSettings = null;
 let widgetDockState = {
   edge: null,
   expandedBounds: null,
@@ -104,7 +121,11 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    if (hasStartupArg(argv)) {
+      showWidgetWindow();
+      return;
+    }
     showMainWindow();
   });
 }
@@ -179,6 +200,21 @@ function widgetHeightForAccounts(accountCount) {
   return WIDGET_BASE_HEIGHT + (visibleRows - 1) * WIDGET_ACCOUNT_ROW_DELTA;
 }
 
+function normalizeWidgetBounds(bounds) {
+  if (!bounds || typeof bounds !== "object") return null;
+  const x = Math.round(Number(bounds.x));
+  const y = Math.round(Number(bounds.y));
+  const width = Math.round(Number(bounds.width));
+  const height = Math.round(Number(bounds.height));
+  if (![x, y, width, height].every(Number.isFinite)) return null;
+  return {
+    x,
+    y,
+    width: clamp(width, WIDGET_MIN_WIDTH, WIDGET_MAX_WIDTH),
+    height: clamp(height, WIDGET_MIN_HEIGHT, WIDGET_MAX_HEIGHT),
+  };
+}
+
 async function ensureStoreDirs() {
   await fs.mkdir(accountsDir(), { recursive: true });
   await fs.mkdir(backupsDir(), { recursive: true });
@@ -216,15 +252,66 @@ async function writeJsonAtomic(filePath, value) {
 function defaultSettings() {
   return {
     quotaMode: QUOTA_MODE_LOCAL,
+    launchAtLogin: false,
+    restartAfterSwitch: true,
+    widgetBounds: null,
   };
 }
 
 function normalizeSettings(settings) {
-  return {
+  const normalized = {
     ...defaultSettings(),
     ...settings,
     quotaMode: QUOTA_MODE_LOCAL,
   };
+  return {
+    ...normalized,
+    launchAtLogin: normalized.launchAtLogin === true,
+    restartAfterSwitch: normalized.restartAfterSwitch !== false,
+    widgetBounds: normalizeWidgetBounds(normalized.widgetBounds),
+  };
+}
+
+function loginItemIdentityOptions() {
+  const args = app.isPackaged ? [STARTUP_ARG] : [app.getAppPath(), STARTUP_ARG];
+  const options = {
+    name: APP_NAME,
+    path: process.execPath,
+    args,
+  };
+  return options;
+}
+
+function applyLaunchAtLogin(enabled) {
+  const openAtLogin = enabled === true;
+  app.setLoginItemSettings({
+    ...loginItemIdentityOptions(),
+    openAtLogin,
+    openAsHidden: true,
+  });
+  return openAtLogin;
+}
+
+function hasStartupArg(argv = process.argv) {
+  return Array.isArray(argv) && argv.includes(STARTUP_ARG);
+}
+
+function wasOpenedFromLoginItem() {
+  if (hasStartupArg()) return true;
+  try {
+    const loginSettings = app.getLoginItemSettings(loginItemIdentityOptions());
+    return loginSettings.wasOpenedAtLogin === true || loginSettings.wasOpenedAsHidden === true;
+  } catch {
+    return false;
+  }
+}
+
+function shouldStartWithWidgetOnly(settings) {
+  return settings?.launchAtLogin === true && wasOpenedFromLoginItem();
+}
+
+function normalizeSettingsForState(settings) {
+  return normalizeSettings(settings);
 }
 
 async function readIndex() {
@@ -537,14 +624,15 @@ function stripWindowEstimate(window) {
 }
 
 function normalizePublicQuotaSnapshot(snapshot) {
-  if (snapshot?.source === QUOTA_MODE_ONLINE) return null;
-  if (!snapshot?.estimate || snapshot.estimate.algorithm === QUOTA_ESTIMATE_ALGORITHM) return snapshot ?? null;
+  const localSnapshot = localStoredQuotaSnapshot(snapshot);
+  if (!localSnapshot) return null;
+  if (!localSnapshot.estimate || localSnapshot.estimate.algorithm === QUOTA_ESTIMATE_ALGORITHM) return localSnapshot;
   return {
-    ...snapshot,
-    session: stripWindowEstimate(snapshot.session),
-    weekly: stripWindowEstimate(snapshot.weekly),
+    ...localSnapshot,
+    session: stripWindowEstimate(localSnapshot.session),
+    weekly: stripWindowEstimate(localSnapshot.weekly),
     estimate: {
-      ...snapshot.estimate,
+      ...localSnapshot.estimate,
       available: false,
       reason: "等待新算法快照",
     },
@@ -608,7 +696,7 @@ async function currentState() {
     codexDir: codexDir(),
     authPath: authPath(),
     storeRoot: storeRoot(),
-    settings: normalizeSettings(index.settings),
+    settings: normalizeSettingsForState(index.settings),
     current,
     accounts: index.accounts.map((account) =>
       normalizePublicAccount(account, index.activeAccountId, currentIdentityKey)
@@ -617,12 +705,27 @@ async function currentState() {
 }
 
 async function updateSettings(patch) {
+  const nextPatch = { ...patch };
+  if (Object.prototype.hasOwnProperty.call(nextPatch, "launchAtLogin")) {
+    nextPatch.launchAtLogin = applyLaunchAtLogin(nextPatch.launchAtLogin === true);
+  }
+  let nextSettings = null;
   await mutateIndex(async (index) => {
     const previous = JSON.stringify(normalizeSettings(index.settings));
-    index.settings = normalizeSettings({ ...index.settings, ...patch });
+    index.settings = normalizeSettings({ ...index.settings, ...nextPatch });
+    nextSettings = index.settings;
     return previous === JSON.stringify(index.settings) ? { write: false } : {};
   });
+  runtimeSettings = normalizeSettings(nextSettings ?? runtimeSettings);
   return currentState();
+}
+
+async function syncLaunchAtLoginFromSettings() {
+  const index = await readIndex();
+  const settings = normalizeSettings(index.settings);
+  runtimeSettings = settings;
+  applyLaunchAtLogin(settings.launchAtLogin === true);
+  return settings;
 }
 
 async function importCurrentAccount(displayName) {
@@ -876,6 +979,7 @@ function scheduleLocalLogRefresh() {
   if (localLogRefreshTimer) return;
   localLogRefreshTimer = setTimeout(() => {
     localLogRefreshTimer = null;
+    localDataCache.invalidate();
     refreshQuotaSnapshotFromLocalLog().catch(() => {});
   }, 2500);
   localLogRefreshTimer.unref?.();
@@ -893,7 +997,7 @@ async function refreshQuotaSnapshotFromLocalLog() {
       localLogRefreshPending = false;
       const scope = await dashboardScope();
       if (!scope.hasCurrentAuth || !scope.accountId) continue;
-      const files = await walkSessionFiles(sessionsDir());
+      const files = await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
       const latestQuota = newerQuota(
         newerQuota(
           await readLatestLocalQuota({ since: scope.since, files }),
@@ -910,7 +1014,7 @@ async function refreshQuotaSnapshotFromLocalLog() {
       });
       const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate);
       const changed = await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
-      if (changed) broadcastStateChanged();
+      if (changed) broadcastStateChanged({ scope: "quota" });
     } while (localLogRefreshPending);
   } catch {
     // Codex can write the sqlite database in bursts; the next file event will retry.
@@ -968,8 +1072,12 @@ async function startSessionsPolling() {
           // File may not exist yet.
         }
       }
-      const files = await walkSessionFiles(sessionsDir());
-      for (const file of files.slice(0, 8)) {
+      const files = await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
+      const recentCutoff = Date.now() - SESSION_POLL_RECENT_WINDOW_MS;
+      const pollCandidates = files
+        .filter((file) => file.mtimeMs >= recentCutoff)
+        .slice(0, SESSION_POLL_RECENT_FILE_LIMIT);
+      for (const file of pollCandidates.length ? pollCandidates : files.slice(0, SESSION_POLL_RECENT_FILE_LIMIT)) {
         if (file.mtimeMs > latestMtime) latestMtime = file.mtimeMs;
       }
       if (latestMtime > lastKnownLocalQuotaMtimeMs) {
@@ -988,6 +1096,7 @@ async function switchAccount(accountId, options = {}) {
 }
 
 async function switchAccountLocked(accountId, options = {}) {
+  localDataCache.invalidate();
   let reauthCheck = null;
   await mutateIndex(async (index) => {
     const target = index.accounts.find((account) => account.id === accountId);
@@ -1167,6 +1276,14 @@ function identityLabel(accountLike) {
   return accountLike.email || accountLike.userId || accountLike.subject || "未知账号";
 }
 
+function trayMenuItem(label, options = {}) {
+  const { active = false, ...item } = options;
+  return {
+    label: `${active ? "\u25cf" : "\u2007"}  ${label}`,
+    ...item,
+  };
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
@@ -1200,10 +1317,11 @@ function toggleWidgetWindow() {
   showWidgetWindow();
 }
 
-function broadcastStateChanged() {
+function broadcastStateChanged(payload = { scope: "accounts" }) {
+  const message = payload && typeof payload === "object" ? payload : { scope: "accounts" };
   for (const win of [mainWindow, widgetWindow]) {
     if (win && !win.isDestroyed()) {
-      win.webContents.send("state:changed");
+      win.webContents.send("state:changed", message);
     }
   }
   rebuildTrayMenu().catch(() => {});
@@ -1219,41 +1337,50 @@ async function rebuildTrayMenu() {
   }
   const accounts = snapshot?.accounts ?? [];
   const currentLabel = snapshot?.current?.exists ? identityLabel(snapshot.current) : "未检测到登录";
+  const launchAtLogin = snapshot?.settings?.launchAtLogin === true;
+  const widgetVisible = widgetWindow && !widgetWindow.isDestroyed() && widgetWindow.isVisible();
   const accountItems = accounts.length
-    ? accounts.map((account) => ({
-        label: `${account.isActive ? "✓ " : ""}${account.displayName}`,
-        enabled: !account.isActive,
-        click: async () => {
-          await switchAccount(account.id, { restartCodex: true });
-          broadcastStateChanged();
-        },
-      }))
-    : [{ label: "暂无已保存账号", enabled: false }];
+    ? accounts.map((account) =>
+        trayMenuItem(account.displayName, {
+          active: account.isActive,
+          enabled: !account.isActive,
+          click: async () => {
+            await switchAccount(account.id, { restartCodex: true });
+            broadcastStateChanged();
+          },
+        })
+      )
+    : [trayMenuItem("暂无已保存账号", { enabled: false })];
 
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: APP_NAME, enabled: false },
-      { label: `当前：${currentLabel}`, enabled: false },
+      trayMenuItem(APP_NAME, { enabled: false }),
+      trayMenuItem(`当前：${currentLabel}`, { enabled: false }),
       { type: "separator" },
-      { label: "打开主窗口", click: () => showMainWindow() },
-      {
-        label: widgetWindow && !widgetWindow.isDestroyed() && widgetWindow.isVisible() ? "隐藏浮窗" : "显示浮窗",
+      trayMenuItem("打开主窗口", { click: () => showMainWindow() }),
+      trayMenuItem(widgetVisible ? "隐藏浮窗" : "显示浮窗", {
         click: () => {
           toggleWidgetWindow();
           rebuildTrayMenu().catch(() => {});
         },
-      },
+      }),
       { type: "separator" },
-      { label: "切换账号并重启", submenu: accountItems },
-      { label: "重启 Codex App", click: () => restartCodexAppQueued().catch(() => {}) },
+      trayMenuItem("切换账号并重启", { submenu: accountItems }),
+      trayMenuItem("重启 Codex App", { click: () => restartCodexAppQueued().catch(() => {}) }),
+      trayMenuItem("开机自启动", {
+        active: launchAtLogin,
+        click: async () => {
+          await updateSettings({ launchAtLogin: !launchAtLogin });
+          broadcastStateChanged();
+        },
+      }),
       { type: "separator" },
-      {
-        label: "退出",
+      trayMenuItem("退出", {
         click: () => {
           isQuitting = true;
           app.quit();
         },
-      },
+      }),
     ])
   );
 }
@@ -1294,11 +1421,53 @@ function hardenWindowNavigation(win) {
   });
 }
 
+function rateWindowSeconds(window) {
+  const direct = Number(window?.limit_window_seconds);
+  if (Number.isFinite(direct)) return direct;
+  const minutes = Number(window?.window_minutes ?? window?.windowMinutes);
+  return Number.isFinite(minutes) ? minutes * 60 : null;
+}
+
+function rateWindowResetsAt(window) {
+  const value = Number(window?.reset_at ?? window?.resets_at ?? window?.resetsAt);
+  return Number.isFinite(value) ? value : null;
+}
+
+function rateWindowUsedPercent(window) {
+  const value = Number(window?.used_percent ?? window?.usedPercent);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+}
+
+function rateWindowHasPositiveSpan(window) {
+  const seconds = rateWindowSeconds(window);
+  return !Number.isFinite(seconds) || seconds > 0;
+}
+
+function rateWindowHasDisplayData(window) {
+  if (!window || !rateWindowHasPositiveSpan(window)) return false;
+  return (
+    Number.isFinite(rateWindowUsedPercent(window)) ||
+    Number.isFinite(rateWindowSeconds(window)) ||
+    Number.isFinite(rateWindowResetsAt(window))
+  );
+}
+
+function rateWindowIsCurrent(window, checkedAt) {
+  if (!rateWindowHasDisplayData(window)) return false;
+  const resetAt = rateWindowResetsAt(window);
+  const checkedMs = checkedAt === undefined || checkedAt === null || checkedAt === "" ? Date.now() : dateMs(checkedAt);
+  const effectiveCheckedMs = Number.isFinite(checkedMs) ? checkedMs : Date.now();
+  return !Number.isFinite(resetAt) || resetAt * 1000 > effectiveCheckedMs;
+}
+
+function rateLimitsHaveCurrentWindow(rateLimits, checkedAt) {
+  return rateWindowIsCurrent(rateLimits?.primary, checkedAt) || rateWindowIsCurrent(rateLimits?.secondary, checkedAt);
+}
+
 function normalizeRateWindow(window, checkedAt = null, estimateBaseAt = checkedAt, estimateSeed = {}) {
-  if (!window) return null;
-  const seconds = Number(window.limit_window_seconds ?? window.window_minutes * 60);
-  const resetRaw = window.reset_at ?? window.resets_at;
-  const resetsAt = resetRaw ? Number(resetRaw) : null;
+  if (!rateWindowIsCurrent(window, checkedAt)) return null;
+  const seconds = rateWindowSeconds(window);
+  const resetsAt = rateWindowResetsAt(window);
   const seedWeightedTokens = Number(estimateSeed.estimateWeightedTokens);
   const seed =
     Number.isFinite(seedWeightedTokens) && seedWeightedTokens > 0
@@ -1309,7 +1478,7 @@ function normalizeRateWindow(window, checkedAt = null, estimateBaseAt = checkedA
         }
       : {};
   return {
-    usedPercent: Math.max(0, Math.min(100, Math.round(Number(window.used_percent ?? 0)))),
+    usedPercent: Math.round(rateWindowUsedPercent(window) ?? 0),
     windowMinutes: Number.isFinite(seconds) ? Math.round(seconds / 60) : null,
     resetsAt,
     checkedAt,
@@ -1331,21 +1500,6 @@ function numericValue(value) {
   if (value === undefined || value === null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
-}
-
-function normalizePlanType(planType) {
-  const value = String(planType || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  if (!value) return null;
-  if (value.includes("business") || value.includes("team")) return "business";
-  if (value.includes("enterprise")) return "enterprise";
-  if (value.includes("teacher") || value.includes("health") || value.includes("gov") || value.includes("edu")) {
-    return "enterprise";
-  }
-  if (value.includes("plus")) return "plus";
-  if (value.includes("pro")) return "pro";
-  if (value.includes("go")) return "go";
-  if (value.includes("free")) return "free";
-  return value;
 }
 
 function planTypesMatch(left, right) {
@@ -1396,118 +1550,6 @@ async function readSessionIndexMap() {
   return map;
 }
 
-function emptyTokenUsage() {
-  return {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0,
-  };
-}
-
-function normalizeTokenUsage(raw) {
-  return {
-    inputTokens: Number(raw?.input_tokens ?? raw?.inputTokens ?? 0),
-    cachedInputTokens: Number(
-      raw?.cached_input_tokens ?? raw?.cachedInputTokens ?? raw?.input_tokens_details?.cached_tokens ?? 0
-    ),
-    outputTokens: Number(raw?.output_tokens ?? raw?.outputTokens ?? 0),
-    reasoningOutputTokens: Number(
-      raw?.reasoning_output_tokens ?? raw?.reasoningOutputTokens ?? raw?.output_tokens_details?.reasoning_tokens ?? 0
-    ),
-    totalTokens: Number(raw?.total_tokens ?? raw?.totalTokens ?? 0),
-  };
-}
-
-function addTokenUsage(total, usage) {
-  total.inputTokens += usage.inputTokens;
-  total.cachedInputTokens += usage.cachedInputTokens;
-  total.outputTokens += usage.outputTokens;
-  total.reasoningOutputTokens += usage.reasoningOutputTokens;
-  total.totalTokens += usage.totalTokens;
-}
-
-function subtractTokenUsage(later, earlier) {
-  const left = later ?? emptyTokenUsage();
-  const right = earlier ?? emptyTokenUsage();
-  return {
-    inputTokens: Math.max(0, Number(left.inputTokens || 0) - Number(right.inputTokens || 0)),
-    cachedInputTokens: Math.max(0, Number(left.cachedInputTokens || 0) - Number(right.cachedInputTokens || 0)),
-    outputTokens: Math.max(0, Number(left.outputTokens || 0) - Number(right.outputTokens || 0)),
-    reasoningOutputTokens: Math.max(
-      0,
-      Number(left.reasoningOutputTokens || 0) - Number(right.reasoningOutputTokens || 0)
-    ),
-    totalTokens: Math.max(0, Number(left.totalTokens || 0) - Number(right.totalTokens || 0)),
-  };
-}
-
-function tokenUsageTotal(usage) {
-  const total = Number(usage?.totalTokens ?? 0);
-  if (Number.isFinite(total) && total > 0) return total;
-  const input = Number(usage?.inputTokens ?? 0);
-  const output = Number(usage?.outputTokens ?? 0);
-  const reasoning = Number(usage?.reasoningOutputTokens ?? 0);
-  return Math.max(
-    0,
-    (Number.isFinite(input) ? input : 0) +
-      (Number.isFinite(output) ? output : 0) +
-      (Number.isFinite(reasoning) ? reasoning : 0)
-  );
-}
-
-function codexRateCard(model) {
-  const value = String(model || "").toLowerCase();
-  return CODEX_RATE_CARDS.find((card) => card.pattern.test(value)) ?? DEFAULT_CODEX_RATE_CARD;
-}
-
-function quotaSpeedMultiplier(model, serviceTier = null) {
-  const value = String(model || "").toLowerCase();
-  const tier = String(serviceTier || "").toLowerCase();
-  const isFast =
-    /(^|[-_\s])fast($|[-_\s])|high[-_\s]?speed|speedy|turbo|accelerated/.test(value) ||
-    tier === "fast" ||
-    tier === "priority" ||
-    tier === "turbo";
-  return isFast ? codexRateCard(model).fastMultiplier : 1;
-}
-
-function weightedTokenUsage(usage, model, serviceTier = null) {
-  const input = Math.max(0, Number.isFinite(Number(usage?.inputTokens)) ? Number(usage.inputTokens) : 0);
-  const cachedInput = Math.max(
-    0,
-    Number.isFinite(Number(usage?.cachedInputTokens)) ? Number(usage.cachedInputTokens) : 0
-  );
-  const output = Math.max(0, Number.isFinite(Number(usage?.outputTokens)) ? Number(usage.outputTokens) : 0);
-  const hasBreakdown = [input, cachedInput, output].some((value) => Number.isFinite(value) && value > 0);
-  const effectiveCachedInput = Math.min(cachedInput, input);
-  const uncachedInput = Math.max(0, input - effectiveCachedInput);
-  const rateCard = codexRateCard(model);
-  const total = hasBreakdown
-    ? (uncachedInput * rateCard.input +
-        effectiveCachedInput * rateCard.cachedInput +
-        output * rateCard.output) /
-      QUOTA_RATE_CARD_BASE_INPUT_CREDITS
-    : tokenUsageTotal(usage);
-  return total * quotaSpeedMultiplier(model, serviceTier);
-}
-
-function cloneTokenUsage(usage) {
-  return {
-    inputTokens: Number(usage?.inputTokens ?? 0),
-    cachedInputTokens: Number(usage?.cachedInputTokens ?? 0),
-    outputTokens: Number(usage?.outputTokens ?? 0),
-    reasoningOutputTokens: Number(usage?.reasoningOutputTokens ?? 0),
-    totalTokens: Number(usage?.totalTokens ?? 0),
-  };
-}
-
-function dateMs(value) {
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
-
 async function fileCachePart(filePath) {
   try {
     const stat = await fs.stat(filePath);
@@ -1515,13 +1557,6 @@ async function fileCachePart(filePath) {
   } catch {
     return "missing";
   }
-}
-
-function median(values) {
-  const sorted = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
-  if (!sorted.length) return null;
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 function localDayKey(value) {
@@ -1733,31 +1768,35 @@ async function parseSessionFileFastCached(file, indexMap) {
 
 function quotaFromLocalRateLimits(rateLimits, checkedAt, windowCheckedAt = {}) {
   if (!rateLimits) return null;
+  const session = normalizeRateWindow(
+    rateLimits.primary,
+    windowCheckedAt.session ?? checkedAt,
+    windowCheckedAt.sessionEstimateBase ?? windowCheckedAt.session ?? checkedAt,
+    {
+      estimateTokenUsage: windowCheckedAt.sessionEstimateTokenUsage,
+      estimateWeightedTokens: windowCheckedAt.sessionEstimateWeightedTokens,
+      estimateLatestAt: windowCheckedAt.sessionEstimateLatestAt,
+    }
+  );
+  const weekly = normalizeRateWindow(
+    rateLimits.secondary,
+    windowCheckedAt.weekly ?? checkedAt,
+    windowCheckedAt.weeklyEstimateBase ?? windowCheckedAt.weekly ?? checkedAt,
+    {
+      estimateTokenUsage: windowCheckedAt.weeklyEstimateTokenUsage,
+      estimateWeightedTokens: windowCheckedAt.weeklyEstimateWeightedTokens,
+      estimateLatestAt: windowCheckedAt.weeklyEstimateLatestAt,
+    }
+  );
+  const credits = normalizeCredits(rateLimits.credits);
+  if (!session && !weekly && !credits) return null;
   return {
     source: "local",
     checkedAt,
     planType: rateLimits.plan_type ?? null,
-    session: normalizeRateWindow(
-      rateLimits.primary,
-      windowCheckedAt.session ?? checkedAt,
-      windowCheckedAt.sessionEstimateBase ?? windowCheckedAt.session ?? checkedAt,
-      {
-        estimateTokenUsage: windowCheckedAt.sessionEstimateTokenUsage,
-        estimateWeightedTokens: windowCheckedAt.sessionEstimateWeightedTokens,
-        estimateLatestAt: windowCheckedAt.sessionEstimateLatestAt,
-      }
-    ),
-    weekly: normalizeRateWindow(
-      rateLimits.secondary,
-      windowCheckedAt.weekly ?? checkedAt,
-      windowCheckedAt.weeklyEstimateBase ?? windowCheckedAt.weekly ?? checkedAt,
-      {
-        estimateTokenUsage: windowCheckedAt.weeklyEstimateTokenUsage,
-        estimateWeightedTokens: windowCheckedAt.weeklyEstimateWeightedTokens,
-        estimateLatestAt: windowCheckedAt.weeklyEstimateLatestAt,
-      }
-    ),
-    credits: normalizeCredits(rateLimits.credits),
+    session,
+    weekly,
+    credits,
     error: null,
   };
 }
@@ -1829,15 +1868,14 @@ function quotaFromUsageLimitMessage(message, timestampSeconds) {
 function quotaFromCodexRateLimitsMessage(message, timestampSeconds) {
   if (message?.type !== "codex.rate_limits" || !message.rate_limits) return null;
   const checkedAt = new Date(timestampSeconds * 1000).toISOString();
-  return {
-    source: "local",
-    checkedAt,
-    planType: message.plan_type ?? message.rate_limits?.plan_type ?? null,
-    session: normalizeRateWindow(message.rate_limits.primary, checkedAt),
-    weekly: normalizeRateWindow(message.rate_limits.secondary, checkedAt),
-    credits: normalizeCredits(message.credits),
-    error: null,
-  };
+  return quotaFromLocalRateLimits(
+    {
+      ...message.rate_limits,
+      plan_type: message.plan_type ?? message.rate_limits?.plan_type ?? null,
+      credits: message.credits ?? message.rate_limits?.credits,
+    },
+    checkedAt
+  );
 }
 
 async function readLatestSqliteRateLimitQuota(options = {}) {
@@ -1969,8 +2007,8 @@ function moreConstrainedNormalizedQuota(left, right) {
 
 function rawQuotaWindowIdentity(rateLimits, kind) {
   const window = quotaRawWindow(rateLimits, kind);
-  const resetAt = Number(window?.reset_at ?? window?.resets_at);
-  const seconds = Number(window?.limit_window_seconds ?? window?.window_minutes * 60);
+  const resetAt = rateWindowResetsAt(window);
+  const seconds = rateWindowSeconds(window);
   return {
     resetAt: Number.isFinite(resetAt) ? resetAt : null,
     seconds: Number.isFinite(seconds) ? seconds : null,
@@ -2016,7 +2054,12 @@ function moreConstrainedRawQuota(left, right) {
 
 function selectBestLocalQuotaCandidate(candidates) {
   const valid = candidates
-    .filter((candidate) => candidate?.rateLimits && Number.isFinite(dateMs(candidate.timestamp)))
+    .filter(
+      (candidate) =>
+        candidate?.rateLimits &&
+        Number.isFinite(dateMs(candidate.timestamp)) &&
+        rateLimitsHaveCurrentWindow(candidate.rateLimits, candidate.timestamp)
+    )
     .sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp));
   const latest = valid[0];
   if (!latest) return null;
@@ -2575,41 +2618,12 @@ function quotaRawWindow(rateLimits, kind) {
 }
 
 function rawUsedPercent(rateLimits, kind) {
-  const value = Number(quotaRawWindow(rateLimits, kind)?.used_percent);
-  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+  return rateWindowUsedPercent(quotaRawWindow(rateLimits, kind));
 }
 
 function rateLimitsMatchPlan(rateLimits, planType) {
   const eventPlan = rateLimits?.plan_type ?? null;
   return planTypesMatch(eventPlan, planType);
-}
-
-function fallbackQuotaCreditUnitsPerPercent(planType, kind) {
-  const plan = normalizePlanType(planType);
-  if (kind === "weekly") {
-    if (plan === "business" || plan === "enterprise") return 158000;
-    if (plan === "plus") return 258000;
-    return 100000;
-  }
-  if (plan === "business" || plan === "enterprise") return 29400;
-  if (plan === "plus") return 43900;
-  return 22000;
-}
-
-function quotaCoefficientBounds(planType, kind) {
-  const fallbackUnits = fallbackQuotaCreditUnitsPerPercent(planType, kind);
-  const minUnits = kind === "weekly" ? 25000 : 8000;
-  const maxUnits = kind === "weekly" ? 4000000 : 1500000;
-  return {
-    min: Math.min(1 / maxUnits, 1 / (fallbackUnits * 25)),
-    max: Math.max(1 / minUnits, 25 / fallbackUnits),
-  };
-}
-
-function isReasonableQuotaCoefficient(coefficient, planType, kind) {
-  if (!Number.isFinite(coefficient) || coefficient <= 0) return false;
-  const bounds = quotaCoefficientBounds(planType, kind);
-  return coefficient >= bounds.min && coefficient <= bounds.max;
 }
 
 function addCalibrationSample(samples, percentDelta, weightedTokens, planType, kind) {
@@ -2812,10 +2826,6 @@ function calibrationWindowFromLearning(calibration, kind, planType) {
   return isReasonableQuotaCoefficient(value, planType, kind) ? window : null;
 }
 
-function fallbackQuotaCoefficient(planType, kind) {
-  return 1 / fallbackQuotaCreditUnitsPerPercent(planType, kind);
-}
-
 function selectQuotaCoefficient(kind, planType, historicalCoefficient, historicalSamples, activeCoefficient, activeSamples) {
   const fallback = fallbackQuotaCoefficient(planType, kind);
   const hasHistorical = Number.isFinite(historicalCoefficient) && Number(historicalSamples || 0) >= 3;
@@ -2902,9 +2912,17 @@ function tokenDeltaFromEstimateSeed(window) {
 }
 
 async function readQuotaEstimate(options = {}) {
-  const baseQuota = options.baseQuota;
-  if (!baseQuota || baseQuota.source !== "local") {
+  const rawBaseQuota = options.baseQuota;
+  if (!rawBaseQuota || rawBaseQuota.source !== "local") {
     return quotaEstimateUnavailable("\u7b49\u5f85\u672c\u5730\u989d\u5ea6\u5feb\u7167");
+  }
+  const baseQuota = {
+    ...rawBaseQuota,
+    session: rateWindowIsCurrent(rawBaseQuota.session) ? rawBaseQuota.session : null,
+    weekly: rateWindowIsCurrent(rawBaseQuota.weekly) ? rawBaseQuota.weekly : null,
+  };
+  if (!baseQuota.session && !baseQuota.weekly) {
+    return quotaEstimateUnavailable("\u7b49\u5f85\u65b0\u7684\u672c\u5730\u989d\u5ea6\u5feb\u7167");
   }
   const sessionBaseMs = dateMs(baseQuota.session?.estimateBaseAt ?? baseQuota.session?.checkedAt ?? baseQuota.checkedAt);
   const weeklyBaseMs = dateMs(baseQuota.weekly?.estimateBaseAt ?? baseQuota.weekly?.checkedAt ?? baseQuota.checkedAt);
@@ -3205,17 +3223,14 @@ async function readLatestLocalQuota(options = {}) {
 async function readLocalUsage(options = {}) {
   const sinceMs = options.since ? new Date(options.since).getTime() : null;
   const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
-  const files = options.files ?? (await walkSessionFiles(sessionsDir()));
+  const files =
+    options.files ?? (await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles));
   const indexMap = await readSessionIndexMap();
   const scanLimit = Number.isFinite(options.scanLimit) ? options.scanLimit : 80;
   const recentFiles = files.slice(0, scanLimit);
   const sessions = [];
   let latestQuota = null;
-
-  // Use fast tail-based parser for usage statistics. The token_count events
-  // contain cumulative totals, so reading only the tail gives us the final
-  // values without streaming through hundreds of MB of JSONL.
-  const useFastParser = true;
+  const useFastParser = !effectiveSinceMs;
 
   for (const file of recentFiles) {
     let parsed;
@@ -3227,11 +3242,6 @@ async function readLocalUsage(options = {}) {
       continue;
     }
     if (!parsed) continue;
-    // When using fast parser with a since filter, skip sessions that ended before since
-    if (effectiveSinceMs && useFastParser) {
-      const updatedMs = new Date(parsed.updatedAt).getTime();
-      if (Number.isFinite(updatedMs) && updatedMs < effectiveSinceMs) continue;
-    }
     sessions.push(parsed);
     if (!latestQuota && parsed.rateLimits) {
       latestQuota = quotaFromLocalRateLimits(parsed.rateLimits, parsed.rateLimitsAt ?? parsed.updatedAt);
@@ -3242,6 +3252,7 @@ async function readLocalUsage(options = {}) {
   const total = emptyTokenUsage();
   const byModel = new Map();
   const byDay = new Map();
+  const byProject = new Map();
 
   for (const session of sessions) {
     addTokenUsage(total, session.tokenUsage);
@@ -3256,13 +3267,11 @@ async function readLocalUsage(options = {}) {
     const dayEntry = byDay.get(day);
     dayEntry.sessions += 1;
     addTokenUsage(dayEntry.tokenUsage, session.tokenUsage);
-  }
 
-  // Per-project aggregation using session cwd
-  const byProject = new Map();
-  for (const session of sessions) {
     const project = session.cwd ? path.basename(session.cwd) || session.cwd : "未知项目";
-    if (!byProject.has(project)) byProject.set(project, { project, cwd: session.cwd, sessions: 0, tokenUsage: emptyTokenUsage() });
+    if (!byProject.has(project)) {
+      byProject.set(project, { project, cwd: session.cwd, sessions: 0, tokenUsage: emptyTokenUsage() });
+    }
     const projectEntry = byProject.get(project);
     projectEntry.sessions += 1;
     addTokenUsage(projectEntry.tokenUsage, session.tokenUsage);
@@ -3301,7 +3310,25 @@ function emptyLocalUsage(since = null) {
 }
 
 function localStoredQuotaSnapshot(snapshot) {
-  return snapshot?.source === QUOTA_MODE_ONLINE ? null : snapshot ?? null;
+  if (!snapshot || snapshot.source === QUOTA_MODE_ONLINE) return null;
+  const session = rateWindowHasDisplayData(snapshot.session) ? snapshot.session : null;
+  const weekly = rateWindowHasDisplayData(snapshot.weekly) ? snapshot.weekly : null;
+  const strippedSession = !!snapshot.session && !session;
+  const strippedWeekly = !!snapshot.weekly && !weekly;
+  if (!session && !weekly && !snapshot.credits) return null;
+  return {
+    ...snapshot,
+    session,
+    weekly,
+    estimate:
+      strippedSession || strippedWeekly
+        ? {
+            ...snapshot.estimate,
+            available: false,
+            reason: "\u7b49\u5f85\u65b0\u7684\u672c\u5730\u989d\u5ea6\u5feb\u7167",
+          }
+        : snapshot.estimate ?? null,
+  };
 }
 
 async function dashboardScope() {
@@ -3330,7 +3357,7 @@ async function dashboardScope() {
     accountPlanType: account?.identity?.planType ?? null,
     accountQuotaSnapshot: localStoredQuotaSnapshot(account?.quotaSnapshot),
     accountQuotaCalibration: account?.quotaCalibration ?? null,
-    settings: normalizeSettings(index.settings),
+    settings: normalizeSettingsForState(index.settings),
     since: account?.lastSwitchedAt ?? null,
     mode: account?.lastSwitchedAt ? "since-account-switch" : "all-local",
   };
@@ -3360,13 +3387,7 @@ function quotaMatchesAccount(account, quota) {
 }
 
 function quotaWindowHasDisplayData(window) {
-  if (!window) return false;
-  const hasNumber = (value) => value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value));
-  return (
-    hasNumber(window.usedPercent) ||
-    hasNumber(window.resetsAt) ||
-    hasNumber(window.windowMinutes)
-  );
+  return rateWindowHasDisplayData(window);
 }
 
 function mergeAccountQuotaWindow(nextWindow, previousWindow) {
@@ -3568,13 +3589,15 @@ async function getQuota() {
   if (!scope.hasCurrentAuth) {
     return { quota: resolveQuota(scope, null), scope, checkedAt: new Date().toISOString() };
   }
-  const files = await walkSessionFiles(sessionsDir());
-  const resolvedQuota = await resolveQuotaWithMode(scope, files);
-  return {
-    quota: resolvedQuota,
-    scope,
-    checkedAt: new Date().toISOString(),
-  };
+  return localDataCache.cached(localDataCache.buildQuotaKey(scope), async () => {
+    const files = await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
+    const resolvedQuota = await resolveQuotaWithMode(scope, files);
+    return {
+      quota: resolvedQuota,
+      scope,
+      checkedAt: new Date().toISOString(),
+    };
+  });
 }
 
 async function getDashboard() {
@@ -3582,10 +3605,12 @@ async function getDashboard() {
   if (!scope.hasCurrentAuth) {
     return { quota: resolveQuota(scope, null), usage: emptyLocalUsage(scope.since), scope };
   }
-  const files = await walkSessionFiles(sessionsDir());
-  const usage = await readLocalUsage({ since: scope.since, files });
-  const quota = await resolveQuotaWithMode(scope, files, usage);
-  return { quota, usage, scope };
+  return localDataCache.cached(localDataCache.buildDashboardKey(scope), async () => {
+    const files = await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
+    const usage = await readLocalUsage({ since: scope.since, files });
+    const quota = await resolveQuotaWithMode(scope, files, usage);
+    return { quota, usage, scope };
+  });
 }
 
 async function getAllAccountsQuotaSummary() {
@@ -3611,10 +3636,15 @@ async function getAllAccountsQuotaSummary() {
       quotaSnapshot: snapshot
         ? {
             checkedAt: snapshot.checkedAt,
+            isCachedSnapshot: !isActive,
             session: snapshot.session
               ? {
                   usedPercent: snapshot.session.usedPercent ?? null,
-                  remainingPercent: snapshot.session.estimatedRemainingPercent ?? (snapshot.session.usedPercent != null ? Math.max(0, 100 - snapshot.session.usedPercent) : null),
+                  estimatedUsedPercent: snapshot.session.estimatedUsedPercent ?? null,
+                  estimatedRemainingPercent:
+                    snapshot.session.estimatedRemainingPercent ??
+                    (snapshot.session.usedPercent != null ? Math.max(0, 100 - snapshot.session.usedPercent) : null),
+                  estimatedDeltaPercent: snapshot.session.estimatedDeltaPercent ?? null,
                   windowMinutes: snapshot.session.windowMinutes ?? null,
                   resetsAt: snapshot.session.resetsAt ?? null,
                 }
@@ -3622,7 +3652,11 @@ async function getAllAccountsQuotaSummary() {
             weekly: snapshot.weekly
               ? {
                   usedPercent: snapshot.weekly.usedPercent ?? null,
-                  remainingPercent: snapshot.weekly.estimatedRemainingPercent ?? (snapshot.weekly.usedPercent != null ? Math.max(0, 100 - snapshot.weekly.usedPercent) : null),
+                  estimatedUsedPercent: snapshot.weekly.estimatedUsedPercent ?? null,
+                  estimatedRemainingPercent:
+                    snapshot.weekly.estimatedRemainingPercent ??
+                    (snapshot.weekly.usedPercent != null ? Math.max(0, 100 - snapshot.weekly.usedPercent) : null),
+                  estimatedDeltaPercent: snapshot.weekly.estimatedDeltaPercent ?? null,
                   windowMinutes: snapshot.weekly.windowMinutes ?? null,
                   resetsAt: snapshot.weekly.resetsAt ?? null,
                 }
@@ -3665,20 +3699,75 @@ function createWindow() {
   return mainWindow;
 }
 
-function createWidgetWindow() {
-  if (widgetWindow && !widgetWindow.isDestroyed()) return widgetWindow;
+function defaultWidgetBounds() {
   const workArea = screen.getPrimaryDisplay().workArea;
   const width = WIDGET_WIDTH;
   const height = widgetHeightForAccounts(1);
-  widgetWindow = new BrowserWindow({
+  return {
+    x: Math.max(workArea.x + 12, workArea.x + workArea.width - width - 24),
+    y: workArea.y + 72,
     width,
     height,
+  };
+}
+
+function clampWidgetBoundsToDisplay(bounds) {
+  const normalized = normalizeWidgetBounds(bounds);
+  if (!normalized) return defaultWidgetBounds();
+  const workArea = screen.getDisplayMatching(normalized).workArea;
+  const width = Math.min(normalized.width, workArea.width);
+  const height = Math.min(normalized.height, workArea.height);
+  return {
+    x: clamp(normalized.x, workArea.x, workArea.x + workArea.width - width),
+    y: clamp(normalized.y, workArea.y, workArea.y + workArea.height - height),
+    width,
+    height,
+  };
+}
+
+function currentWidgetBoundsForPersistence() {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return null;
+  if (widgetDockState.collapsed && widgetDockState.expandedBounds) return widgetDockState.expandedBounds;
+  return widgetWindow.getBounds();
+}
+
+async function saveWidgetBoundsNow() {
+  const bounds = normalizeWidgetBounds(currentWidgetBoundsForPersistence());
+  if (!bounds) return;
+  const serializedBounds = JSON.stringify(bounds);
+  widgetManualSize = true;
+  runtimeSettings = normalizeSettings({ ...(runtimeSettings ?? defaultSettings()), widgetBounds: bounds });
+  await mutateIndex(async (index) => {
+    const previousBounds = JSON.stringify(normalizeSettings(index.settings).widgetBounds);
+    if (previousBounds === serializedBounds) return { write: false };
+    index.settings = normalizeSettings({ ...index.settings, widgetBounds: bounds });
+    return {};
+  });
+}
+
+function scheduleWidgetBoundsSave(delayMs = 350) {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  if (widgetBoundsSaveTimer) clearTimeout(widgetBoundsSaveTimer);
+  widgetBoundsSaveTimer = setTimeout(() => {
+    widgetBoundsSaveTimer = null;
+    saveWidgetBoundsNow().catch(() => {});
+  }, delayMs);
+}
+
+function createWidgetWindow() {
+  if (widgetWindow && !widgetWindow.isDestroyed()) return widgetWindow;
+  const savedBounds = normalizeWidgetBounds(runtimeSettings?.widgetBounds);
+  const bounds = clampWidgetBoundsToDisplay(savedBounds);
+  if (savedBounds) widgetManualSize = true;
+  widgetWindow = new BrowserWindow({
+    width: bounds.width,
+    height: bounds.height,
     minWidth: WIDGET_MIN_WIDTH,
     minHeight: WIDGET_MIN_HEIGHT,
     maxWidth: WIDGET_MAX_WIDTH,
     maxHeight: WIDGET_MAX_HEIGHT,
-    x: Math.max(workArea.x + 12, workArea.x + workArea.width - width - 24),
-    y: workArea.y + 72,
+    x: bounds.x,
+    y: bounds.y,
     title: "Codex Quick View",
     icon: appIconIcoPath(),
     frame: false,
@@ -3704,8 +3793,15 @@ function createWidgetWindow() {
     event.preventDefault();
     widgetWindow.hide();
   });
-  widgetWindow.on("move", () => scheduleWidgetDockCheck());
-  widgetWindow.on("moved", () => scheduleWidgetDockCheck());
+  widgetWindow.on("move", () => {
+    scheduleWidgetDockCheck();
+    scheduleWidgetBoundsSave();
+  });
+  widgetWindow.on("moved", () => {
+    scheduleWidgetDockCheck();
+    scheduleWidgetBoundsSave(120);
+  });
+  widgetWindow.on("resize", () => scheduleWidgetBoundsSave());
   widgetWindow.on("show", () => rebuildTrayMenu().catch(() => {}));
   widgetWindow.on("hide", () => rebuildTrayMenu().catch(() => {}));
   widgetWindow.loadFile(path.join(__dirname, "ui", "widget.html"));
@@ -4130,6 +4226,7 @@ function finishWidgetResize() {
       resetWidgetDockState();
     }
   }
+  scheduleWidgetBoundsSave(120);
   return { ok: true, bounds };
 }
 
@@ -4183,7 +4280,11 @@ function registerIpc() {
   ipcMain.handle("quota:get", () => getQuota());
   ipcMain.handle("dashboard:get", () => getDashboard());
   ipcMain.handle("dashboard:all-accounts", () => getAllAccountsQuotaSummary());
-  ipcMain.handle("dashboard:all-usage", () => readLocalUsage({ since: null, scanLimit: 200 }));
+  ipcMain.handle("dashboard:all-usage", () =>
+    localDataCache.cached(localDataCache.buildUsageKey({ since: null, scanLimit: 200 }), () =>
+      readLocalUsage({ since: null, scanLimit: 200 })
+    )
+  );
   ipcMain.handle("path:open", (_event, targetPath) => openPath(targetPath));
   ipcMain.handle("window:show-main", () => {
     showMainWindow();
@@ -4220,13 +4321,18 @@ if (hasSingleInstanceLock) {
     }
     Menu.setApplicationMenu(null);
     await ensureStoreDirs();
+    const settings = await syncLaunchAtLoginFromSettings();
     await migratePlaintextBackups();
     await hydrateStoredAccountMetadata();
     await cleanupMismatchedQuotaSnapshots();
     registerIpc();
     installNetworkGuards();
-    createWindow();
     createTray();
+    if (shouldStartWithWidgetOnly(settings)) {
+      showWidgetWindow();
+    } else {
+      createWindow();
+    }
     await startAuthWatcher();
     await startLocalLogWatcher();
     await startSessionsWatcher();
@@ -4244,6 +4350,11 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  if (widgetBoundsSaveTimer) {
+    clearTimeout(widgetBoundsSaveTimer);
+    widgetBoundsSaveTimer = null;
+    saveWidgetBoundsNow().catch(() => {});
+  }
   if (authSyncTimer) clearTimeout(authSyncTimer);
   if (authSyncInterval) clearInterval(authSyncInterval);
   if (authWatcher) authWatcher.close();

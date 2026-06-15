@@ -246,7 +246,7 @@ button {
 
 .accounts {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
@@ -296,27 +296,41 @@ button {
   transition: width 180ms ease;
 }
 
+.quota-card.estimated .quota-line strong,
+.quota-card.estimated .quota-line.weekly strong {
+  color: #8b5cf6;
+}
+
+.meter.estimated span,
+.account-quota-meter.estimated span {
+  background: linear-gradient(90deg, #7c3aed, #c4b5fd);
+}
+
 .quota-card p {
+  overflow: hidden;
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quota-card .freshness {
-  display: grid;
-  justify-items: center;
-  gap: 3px;
+  display: block;
+  height: 29px;
+  line-height: 20px;
+  max-width: 100%;
   padding-top: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
   border-top: 1px solid var(--line);
   text-align: center;
+  white-space: nowrap;
+  scrollbar-width: none;
 }
 
-.quota-card .freshness span {
-  display: block;
-}
-
-.quota-card .freshness .estimate-line {
-  color: #506078;
+.quota-card .freshness::-webkit-scrollbar {
+  display: none;
 }
 
 .quick-actions {
@@ -377,10 +391,13 @@ button {
 .account-list {
   --account-row-height: 42px;
   --visible-account-rows: 2;
+  --account-list-height: calc(var(--account-row-height) * var(--visible-account-rows) + 7px);
   display: grid;
-  flex: 1 1 auto;
+  flex: 0 0 var(--account-list-height);
   gap: 7px;
-  min-height: calc(var(--account-row-height) * 2 + 7px);
+  height: var(--account-list-height);
+  min-height: var(--account-list-height);
+  max-height: var(--account-list-height);
   margin-top: 5px;
   overflow-x: hidden;
   overflow-y: auto;
