@@ -10,3 +10,9 @@ build/installer-sidebar.bmp
 Thumbs.db
 .DS_Store
 .vscode/
+.claude/settings.local.json
+.codex/
+auth.json
+*.dpapi
+*.sqlite
+*.sqlite-*
