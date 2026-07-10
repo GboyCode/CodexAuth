@@ -52,6 +52,9 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 - `%USERPROFILE%\.codex\auth.json`
   - The active local login file used by Codex App.
   - During account switching, the app replaces this file with a saved account snapshot.
+- `%USERPROFILE%\.codex\config.toml`
+  - Ensures the top-level setting contains `cli_auth_credentials_store = "file"` so current Codex releases continue using switchable `auth.json` credentials.
+  - Creates a timestamped `config.toml.codexauth-backup-*` copy in the same directory before changing the file.
 - `%APPDATA%\codex-auth-switcher\accounts.json`
   - Account metadata for this app.
 - `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`
@@ -80,7 +83,7 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 - It does not refresh OpenAI tokens by itself.
 - It does not call remote quota endpoints.
 
-The only features that intentionally affect Codex App runtime state are account switching, reauth, deleting the active account, and restarting Codex App. These actions may replace or remove the current `auth.json` and restart Codex App so the new local login state takes effect.
+The only features that intentionally affect Codex App runtime state are account switching, reauth, deleting the active account, and restarting Codex App. These actions may update `config.toml`, replace or remove the current `auth.json`, and restart Codex App so the new local login state takes effect.
 
 ## How It Works
 
@@ -125,6 +128,8 @@ When switching accounts, the app:
 7. Restarts Codex App if the user chooses to do so.
 
 The temporary-file plus atomic-rename approach reduces the chance that Codex App reads a partially written `auth.json`.
+
+In current Codex releases, the desktop shell runs as `ChatGPT.exe` while the local app server runs as `codex.exe`. Restart now stops the full process group belonging to the Codex installation, waits for it to exit, and then launches the desktop app again. This avoids the misleading “ChatGPT crashed” screen caused by terminating only the app server.
 
 ### Reauth Flow
 
@@ -222,7 +227,7 @@ npm run dev:hidden
 2. Click switch.
 3. Restart Codex App if needed.
 
-If Codex App has already loaded the old login into memory, the new account usually takes effect after restarting Codex App.
+The app pins current Codex releases to file-backed credentials and fully restarts the desktop app when “restart after switch” is enabled, so the selected account takes effect after relaunch.
 
 ### Reauth A Saved Account
 

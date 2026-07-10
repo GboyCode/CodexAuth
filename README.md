@@ -52,6 +52,9 @@ CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和
 - `%USERPROFILE%\.codex\auth.json`
   - Codex App 当前使用的本地登录文件。
   - 切换账号时，应用会用已保存的账号快照替换这个文件。
+- `%USERPROFILE%\.codex\config.toml`
+  - 自动确保顶层配置包含 `cli_auth_credentials_store = "file"`，让新版 Codex 继续使用可切换的 `auth.json` 文件凭据。
+  - 修改前会在同目录生成带时间戳的 `config.toml.codexauth-backup-*` 备份。
 - `%APPDATA%\codex-auth-switcher\accounts.json`
   - 本应用的账号元数据。
 - `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`
@@ -80,7 +83,7 @@ CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和
 - 不自行刷新 OpenAI token。
 - 不调用远程额度接口。
 
-会影响 Codex App 当前运行状态的功能只有：切换账号、重新登录、删除当前账号、重启 Codex App。这些操作可能会替换或移除当前 `auth.json`，并重启 Codex App，让新的本地登录状态生效。
+会影响 Codex App 当前运行状态的功能只有：切换账号、重新登录、删除当前账号、重启 Codex App。这些操作可能会更新 `config.toml`、替换或移除当前 `auth.json`，并重启 Codex App，让新的本地登录状态生效。
 
 ## 实现方法
 
@@ -125,6 +128,8 @@ DataProtectionScope.CurrentUser
 7. 根据用户选择重启 Codex App。
 
 使用临时文件加原子替换，是为了避免 Codex App 读到写入一半的 `auth.json`。
+
+新版 Codex 的桌面外壳进程名是 `ChatGPT.exe`，本地 app-server 才是 `codex.exe`。重启时应用会结束属于 Codex 安装目录的整组进程并等待完全退出，再重新启动桌面应用，避免只终止 app-server 后出现误导性的“ChatGPT 崩溃”页面。
 
 ### 重新登录流程
 
@@ -222,7 +227,7 @@ npm run dev:hidden
 2. 点击切换。
 3. 如果 Codex App 仍显示旧账号，重启 Codex App。
 
-如果 Codex App 已经把旧登录加载进内存，通常需要重启 Codex App 后，新账号才会生效。
+应用会把新版 Codex 固定为文件凭据模式，并在启用“切换后重启”时完整重启桌面应用；新账号会在重新启动后生效。
 
 ### 重新登录已保存账号
 

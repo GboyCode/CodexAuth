@@ -16,6 +16,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
+const { fileCredentialStoreConfig, resolveCodexHome } = require("./codex-config");
 const {
   QUOTA_CONFLICT_WINDOW_MS,
   QUOTA_ESTIMATE_ALGORITHM,
@@ -131,11 +132,15 @@ if (!hasSingleInstanceLock) {
 }
 
 function codexDir() {
-  return path.join(os.homedir(), ".codex");
+  return resolveCodexHome(process.env, os.homedir());
 }
 
 function authPath() {
   return path.join(codexDir(), "auth.json");
+}
+
+function codexConfigPath() {
+  return path.join(codexDir(), "config.toml");
 }
 
 function sessionsDir() {
@@ -247,6 +252,36 @@ async function writeJsonAtomic(filePath, value) {
   const content = `${JSON.stringify(value, null, 2)}\n`;
   await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
   await fs.rename(temp, filePath);
+}
+
+async function writeTextAtomic(filePath, content) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const temp = `${filePath}.tmp-${crypto.randomUUID()}`;
+  await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(temp, filePath);
+}
+
+async function ensureCodexFileCredentialStore() {
+  const configFile = codexConfigPath();
+  let current = "";
+  let existed = true;
+  try {
+    current = await fs.readFile(configFile, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    existed = false;
+  }
+
+  const next = fileCredentialStoreConfig(current);
+  if (!next.changed) return { changed: false, path: configFile };
+
+  await fs.mkdir(codexDir(), { recursive: true });
+  if (existed) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await fs.copyFile(configFile, `${configFile}.codexauth-backup-${stamp}`);
+  }
+  await writeTextAtomic(configFile, next.content);
+  return { changed: true, path: configFile };
 }
 
 function defaultSettings() {
@@ -1097,6 +1132,7 @@ async function switchAccount(accountId, options = {}) {
 
 async function switchAccountLocked(accountId, options = {}) {
   localDataCache.invalidate();
+  await ensureCodexFileCredentialStore();
   let reauthCheck = null;
   await mutateIndex(async (index) => {
     const target = index.accounts.find((account) => account.id === accountId);
@@ -1150,6 +1186,7 @@ async function startAccountReauth(accountId) {
 }
 
 async function startAccountReauthLocked(accountId) {
+  await ensureCodexFileCredentialStore();
   await mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) throw new Error("Account not found.");
@@ -1241,15 +1278,43 @@ async function restartCodexApp() {
   }
   const script = `
 $ErrorActionPreference = 'Stop'
-$targets = Get-Process -Name 'Codex' -ErrorAction SilentlyContinue
-if ($targets) { $targets | Stop-Process -Force }
-Start-Sleep -Milliseconds 850
+$package = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+$installRoot = if ($package -and $package.InstallLocation) { [IO.Path]::GetFullPath($package.InstallLocation).TrimEnd('\\') } else { $null }
+
+function Get-CodexAppProcesses {
+  Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    try {
+      $processPath = $_.Path
+      if (-not $processPath) { return $false }
+      $fullPath = [IO.Path]::GetFullPath($processPath)
+      if ($installRoot -and $fullPath.StartsWith($installRoot + '\\', [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+      return ($_.ProcessName -in @('ChatGPT', 'Codex')) -and ($fullPath -like '*\\OpenAI\\Codex\\*')
+    } catch {
+      return $false
+    }
+  }
+}
+
+$targets = @(Get-CodexAppProcesses)
+if ($targets.Count -gt 0) {
+  $targets | Stop-Process -Force -ErrorAction SilentlyContinue
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  do {
+    Start-Sleep -Milliseconds 150
+    $remaining = @(Get-CodexAppProcesses)
+  } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
+  if ($remaining.Count -gt 0) {
+    throw 'Codex App did not fully exit before restart.'
+  }
+}
+Start-Sleep -Milliseconds 300
 $startApp = Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex_*!App' } | Select-Object -First 1
 if ($startApp -and $startApp.AppID) {
   Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\\$($startApp.AppID)"
   exit 0
 }
-$package = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
 if ($package -and $package.PackageFamilyName) {
   Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\\$($package.PackageFamilyName)!App"
   exit 0
@@ -4321,6 +4386,7 @@ if (hasSingleInstanceLock) {
     }
     Menu.setApplicationMenu(null);
     await ensureStoreDirs();
+    await ensureCodexFileCredentialStore();
     const settings = await syncLaunchAtLoginFromSettings();
     await migratePlaintextBackups();
     await hydrateStoredAccountMetadata();
