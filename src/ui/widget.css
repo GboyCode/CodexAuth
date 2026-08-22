@@ -246,7 +246,7 @@ button {
 
 .accounts {
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
@@ -390,19 +390,18 @@ button {
 
 .account-list {
   --account-row-height: 42px;
-  --visible-account-rows: 2;
-  --account-list-height: calc(var(--account-row-height) * var(--visible-account-rows) + 7px);
+  --account-row-gap: 7px;
+  --account-list-min-height: calc(var(--account-row-height) * 2 + var(--account-row-gap));
   display: grid;
-  flex: 0 0 var(--account-list-height);
-  gap: 7px;
-  height: var(--account-list-height);
-  min-height: var(--account-list-height);
-  max-height: var(--account-list-height);
+  flex: 1 1 var(--account-list-min-height);
+  grid-auto-rows: var(--account-row-height);
+  align-content: start;
+  gap: var(--account-row-gap);
+  min-height: var(--account-list-min-height);
   margin-top: 5px;
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 0;
-  padding-bottom: 2px;
   scrollbar-color: rgba(79, 108, 255, 0.42) transparent;
   scrollbar-gutter: auto;
   scrollbar-width: none;
@@ -445,12 +444,31 @@ button {
   border: 1px solid rgba(231, 235, 241, 0);
   border-radius: 10px;
   padding: 5px 7px;
-  cursor: pointer;
+  cursor: grab;
   outline: none;
+  user-select: none;
   transition:
     border-color 140ms ease,
     background 140ms ease,
     box-shadow 140ms ease;
+}
+
+.account-row:active {
+  cursor: grabbing;
+}
+
+.account-list.reordering .account-row {
+  transition:
+    transform 110ms ease,
+    border-color 110ms ease,
+    background 110ms ease,
+    opacity 110ms ease;
+}
+
+.account-row.dragging {
+  border-color: rgba(79, 108, 255, 0.32);
+  background: rgba(233, 238, 255, 0.9);
+  opacity: 0.42;
 }
 
 .account-row:hover,

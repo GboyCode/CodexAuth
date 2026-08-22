@@ -115,6 +115,10 @@ Backups created before operating on the active login are stored in:
 %APPDATA%\codex-auth-switcher\backups
 ```
 
+The app does not call an OpenAI token-refresh endpoint itself. Codex refreshes access and refresh tokens during actual use; CodexAuth Switch watches the current `auth.json` and re-encrypts updated contents into the matching account snapshot. An expired access token alone does not mean the login is invalid—reauth is needed only when Codex can no longer refresh it.
+
+The newest 60 encrypted backups are retained. Atomic-write temporary files older than one hour are cleaned at startup so long-running switching and usage tracking do not create unbounded cache growth.
+
 ### Account Switching Flow
 
 When switching accounts, the app:
@@ -159,6 +163,8 @@ Local estimate mode reads:
 The app watches local log file changes with a short debounce and uses a low-frequency SQLite modification-time polling fallback to avoid missed filesystem events.
 
 Quota snapshots are saved only into this app's own account metadata. They are not written back to Codex log files.
+
+Multi-account statistics use the most recent account-switch time as their boundary. A session that continues across a switch is attributed through adjacent token-snapshot deltas, and quota calibration combines only post-switch events with that account's own saved learning so same-plan accounts do not leak into each other.
 
 ### Quota Pace Hints
 

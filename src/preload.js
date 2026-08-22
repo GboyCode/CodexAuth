@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("codexAuth", {
   getState: () => ipcRenderer.invoke("state:get"),
   importCurrent: (displayName) => ipcRenderer.invoke("account:import-current", displayName),
   switchAccount: (accountId, options) => ipcRenderer.invoke("account:switch", accountId, options),
+  reorderAccounts: (accountIds) => ipcRenderer.invoke("account:reorder", accountIds),
   reauthAccount: (accountId) => ipcRenderer.invoke("account:reauth", accountId),
   updateAccount: (accountId, patch) => ipcRenderer.invoke("account:update", accountId, patch),
   deleteAccount: (accountId) => ipcRenderer.invoke("account:delete", accountId),

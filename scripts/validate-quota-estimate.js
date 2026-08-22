@@ -1,3 +1,4 @@
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -15,6 +16,12 @@ const {
 } = require("../src/quota/token-math");
 
 const sessionsRoot = process.argv[2] || path.join(os.homedir(), ".codex", "sessions");
+
+assert.ok(Number.isFinite(fallbackQuotaCoefficient("plus", "session")));
+assert.ok(Number.isFinite(fallbackQuotaCoefficient("team", "weekly")));
+assert.equal(fallbackQuotaCoefficient("pro", "session"), null);
+assert.equal(fallbackQuotaCoefficient("enterprise", "weekly"), null);
+assert.equal(fallbackQuotaCoefficient("free", "session"), null);
 
 function percentile(values, p) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
@@ -160,10 +167,12 @@ function validateKind(samples, kind) {
     const plan = sample.planType || "unknown";
     const coefficients = coefficientsByPlan.get(plan) ?? [];
     const coeff = median(coefficients) ?? fallbackQuotaCoefficient(plan, kind);
-    const error = Math.abs(coeff * sample.weightedTokens - sample.percentDelta);
-    errors.push(error);
-    if (!errorsByPlan.has(plan)) errorsByPlan.set(plan, []);
-    errorsByPlan.get(plan).push(error);
+    if (Number.isFinite(coeff)) {
+      const error = Math.abs(coeff * sample.weightedTokens - sample.percentDelta);
+      errors.push(error);
+      if (!errorsByPlan.has(plan)) errorsByPlan.set(plan, []);
+      errorsByPlan.get(plan).push(error);
+    }
     coefficients.push(sample.coefficient);
     coefficientsByPlan.set(plan, coefficients);
   }

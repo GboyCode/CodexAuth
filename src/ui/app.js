@@ -334,7 +334,7 @@ function accountCard(account) {
   switched.textContent = account.needsReauth
     ? account.reauthReason || "需要重新登录"
     : account.accessTokenExpired
-    ? "登录快照已过期，可能需要官网认证"
+    ? "访问令牌已到期，切换并使用时由 Codex 自动刷新"
     : account.lastSyncedAt
       ? `最近同步 ${formatDate(account.lastSyncedAt)}`
       : `最近切换 ${formatDate(account.lastSwitchedAt)}`;

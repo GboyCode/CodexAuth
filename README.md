@@ -115,6 +115,10 @@ DataProtectionScope.CurrentUser
 %APPDATA%\codex-auth-switcher\backups
 ```
 
+应用不自行调用 OpenAI 刷新接口。Codex 在账号实际使用时自动刷新 access / refresh token；CodexAuth Switch 监听当前 `auth.json` 的写回，并把新内容重新加密同步到对应账号快照。access token 到期本身不代表登录失效，只有 Codex 明确无法刷新时才需要重新登录。
+
+加密备份保留最新 60 份；超过一小时的原子写临时残留会在启动时清理，避免长期切换和统计产生无上限缓存。
+
 ### 账号切换流程
 
 切换账号时，应用会执行以下步骤：
@@ -159,6 +163,8 @@ DataProtectionScope.CurrentUser
 应用会监听本地日志文件变化，并用短延迟防抖刷新显示；同时用低频轮询检查 SQLite 文件更新时间，避免文件监听漏事件。
 
 额度快照只保存到本应用自己的账号元数据中，不会写回 Codex 的日志文件。
+
+多账号统计以账号最近一次切换时间为边界。跨切换时间继续运行的同一会话按相邻 Token 快照的增量归属，额度校准也只融合当前账号切入后的事件和该账号自己的历史校准，避免同套餐账号互相串数。
 
 ### 额度 pace 提示
 

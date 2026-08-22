@@ -149,23 +149,30 @@ function rawUsedPercent(rateLimits, kind) {
 function fallbackQuotaCreditUnitsPerPercent(planType, kind) {
   const plan = normalizePlanType(planType);
   if (kind === "weekly") {
-    if (plan === "business" || plan === "enterprise") return 158000;
+    if (plan === "business") return 158000;
     if (plan === "plus") return 258000;
-    return 100000;
+    return null;
   }
-  if (plan === "business" || plan === "enterprise") return 29400;
+  if (plan === "business") return 29400;
   if (plan === "plus") return 43900;
-  return 22000;
+  return null;
 }
 
 function fallbackQuotaCoefficient(planType, kind) {
-  return 1 / fallbackQuotaCreditUnitsPerPercent(planType, kind);
+  const units = fallbackQuotaCreditUnitsPerPercent(planType, kind);
+  return Number.isFinite(units) && units > 0 ? 1 / units : null;
 }
 
 function quotaCoefficientBounds(planType, kind) {
   const fallbackUnits = fallbackQuotaCreditUnitsPerPercent(planType, kind);
   const minUnits = kind === "weekly" ? 25000 : 8000;
   const maxUnits = kind === "weekly" ? 4000000 : 1500000;
+  if (!Number.isFinite(fallbackUnits) || fallbackUnits <= 0) {
+    return {
+      min: 1 / maxUnits,
+      max: 1 / minUnits,
+    };
+  }
   return {
     min: Math.min(1 / maxUnits, 1 / (fallbackUnits * 25)),
     max: Math.max(1 / minUnits, 25 / fallbackUnits),

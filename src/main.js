@@ -42,11 +42,11 @@ const {
   dateMs,
   median,
   normalizePlanType,
-  fallbackQuotaCreditUnitsPerPercent,
   fallbackQuotaCoefficient,
   quotaCoefficientBounds,
   isReasonableQuotaCoefficient,
 } = require("./quota/token-math");
+const { scopedTokenDelta } = require("./quota/usage-math");
 const { createLocalDataCache } = require("./quota/local-data-cache");
 
 const APP_NAME = "CodexAuth Switch";
@@ -61,9 +61,7 @@ const WIDGET_MAX_WIDTH = 620;
 const WIDGET_BASE_HEIGHT = 420;
 const WIDGET_ACCOUNT_ROW_DELTA = 49;
 const WIDGET_MIN_ACCOUNT_ROWS = 2;
-const WIDGET_MAX_ACCOUNT_ROWS = 2;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;
-const WIDGET_MAX_HEIGHT = 900;
 const VALID_RESIZE_EDGES = new Set(["n", "e", "s", "w", "ne", "se", "sw", "nw"]);
 const WIDGET_DOCK_EDGE_THRESHOLD = 12;
 const WIDGET_DOCK_VISIBLE_SIZE = 12;
@@ -75,6 +73,8 @@ const WIDGET_DOCK_STRIP_GRACE = 4;
 const WIDGET_DOCK_COLLAPSE_VERIFY_MS = 260;
 const WIDGET_DOCK_COLLAPSE_RETRY_MS = 360;
 const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
+const ATOMIC_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+const AUTH_BACKUP_RETENTION_COUNT = 60;
 const localDataCache = createLocalDataCache();
 
 let mainWindow;
@@ -83,6 +83,7 @@ let tray;
 let isQuitting = false;
 let widgetAlwaysOnTop = false;
 let widgetManualSize = false;
+let widgetAccountCount = WIDGET_MIN_ACCOUNT_ROWS;
 let widgetResizeSession = null;
 let widgetBoundsSaveTimer;
 let runtimeSettings = null;
@@ -200,9 +201,19 @@ function trayIconIcoPath() {
 }
 
 function widgetHeightForAccounts(accountCount) {
-  const count = Number.isFinite(Number(accountCount)) ? Number(accountCount) : 0;
-  const visibleRows = Math.max(WIDGET_MIN_ACCOUNT_ROWS, Math.min(WIDGET_MAX_ACCOUNT_ROWS, count || WIDGET_MIN_ACCOUNT_ROWS));
+  const numericCount = Number(accountCount);
+  const count = Number.isFinite(numericCount) ? Math.max(0, Math.floor(numericCount)) : 0;
+  const visibleRows = Math.max(WIDGET_MIN_ACCOUNT_ROWS, count);
   return WIDGET_BASE_HEIGHT + (visibleRows - 1) * WIDGET_ACCOUNT_ROW_DELTA;
+}
+
+function widgetMaxHeightForBounds(bounds, accountCount = widgetAccountCount) {
+  const workArea = screen.getDisplayMatching(bounds).workArea;
+  const availableHeight = Math.max(WIDGET_MIN_HEIGHT, workArea.height - 16);
+  return Math.max(
+    WIDGET_MIN_HEIGHT,
+    Math.min(widgetHeightForAccounts(accountCount), availableHeight)
+  );
 }
 
 function normalizeWidgetBounds(bounds) {
@@ -216,13 +227,85 @@ function normalizeWidgetBounds(bounds) {
     x,
     y,
     width: clamp(width, WIDGET_MIN_WIDTH, WIDGET_MAX_WIDTH),
-    height: clamp(height, WIDGET_MIN_HEIGHT, WIDGET_MAX_HEIGHT),
+    height: Math.max(WIDGET_MIN_HEIGHT, height),
   };
 }
 
 async function ensureStoreDirs() {
   await fs.mkdir(accountsDir(), { recursive: true });
   await fs.mkdir(backupsDir(), { recursive: true });
+}
+
+async function pruneAuthBackups() {
+  let entries;
+  try {
+    entries = await fs.readdir(backupsDir(), { withFileTypes: true });
+  } catch {
+    return { removedFiles: 0, removedBytes: 0 };
+  }
+
+  const backups = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".dpapi")) continue;
+    const filePath = path.join(backupsDir(), entry.name);
+    try {
+      const stat = await fs.stat(filePath);
+      backups.push({ filePath, size: stat.size, mtimeMs: stat.mtimeMs });
+    } catch {
+      // A concurrent cleanup may have already removed the file.
+    }
+  }
+
+  backups.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (const backup of backups.slice(AUTH_BACKUP_RETENTION_COUNT)) {
+    try {
+      await fs.rm(backup.filePath, { force: true });
+      removedFiles += 1;
+      removedBytes += backup.size;
+    } catch {
+      // Retention cleanup is best-effort and must not block account switching.
+    }
+  }
+  return { removedFiles, removedBytes };
+}
+
+async function cleanupStoreArtifacts() {
+  const cutoffMs = Date.now() - ATOMIC_TEMP_MAX_AGE_MS;
+  let entries;
+  try {
+    entries = await fs.readdir(storeRoot(), { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (const entry of entries) {
+    if (
+      !entry.isFile() ||
+      !/^(?:accounts\.json|local-token-ledger\.json)\.tmp-[0-9a-f-]+$/i.test(entry.name)
+    ) {
+      continue;
+    }
+    const filePath = path.join(storeRoot(), entry.name);
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.mtimeMs > cutoffMs) continue;
+      await fs.rm(filePath, { force: true });
+      removedFiles += 1;
+      removedBytes += stat.size;
+    } catch {
+      // Stale temporary files are harmless if a cleanup race occurs.
+    }
+  }
+
+  const backupCleanup = await pruneAuthBackups();
+  return {
+    removedFiles: removedFiles + backupCleanup.removedFiles,
+    removedBytes: removedBytes + backupCleanup.removedBytes,
+  };
 }
 
 async function pathExists(filePath) {
@@ -246,19 +329,27 @@ async function readJson(filePath, fallback) {
   }
 }
 
-async function writeJsonAtomic(filePath, value) {
+async function writeJsonAtomic(filePath, value, options = {}) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const temp = `${filePath}.tmp-${crypto.randomUUID()}`;
-  const content = `${JSON.stringify(value, null, 2)}\n`;
-  await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
-  await fs.rename(temp, filePath);
+  const content = `${options.pretty === false ? JSON.stringify(value) : JSON.stringify(value, null, 2)}\n`;
+  try {
+    await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temp, filePath);
+  } finally {
+    await fs.rm(temp, { force: true }).catch(() => {});
+  }
 }
 
 async function writeTextAtomic(filePath, content) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const temp = `${filePath}.tmp-${crypto.randomUUID()}`;
-  await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
-  await fs.rename(temp, filePath);
+  try {
+    await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temp, filePath);
+  } finally {
+    await fs.rm(temp, { force: true }).catch(() => {});
+  }
 }
 
 async function ensureCodexFileCredentialStore() {
@@ -598,6 +689,7 @@ function createAccountRecord(auth, displayName, now) {
     updatedAt: now,
     lastRefresh: authLastRefresh(auth.parsed),
     authFingerprint: fingerprint(auth.content),
+    refreshTokenFingerprint: refreshTokenFingerprint(auth.parsed),
     lastSwitchedAt: now,
   };
   Object.assign(account, authTokenStatus(auth.parsed));
@@ -623,18 +715,32 @@ async function loadAccountAuth(accountId) {
 async function saveAccountAuth(accountId, content) {
   await ensureStoreDirs();
   const encrypted = await protectText(content);
-  await fs.writeFile(accountBlobPath(accountId), `${encrypted}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeTextAtomic(accountBlobPath(accountId), `${encrypted}\n`);
 }
 
 function authLastRefresh(parsed) {
   return typeof parsed?.last_refresh === "string" ? parsed.last_refresh : null;
 }
 
+function refreshTokenFingerprint(parsed) {
+  const refreshToken = parsed?.tokens?.refresh_token;
+  return typeof refreshToken === "string" && refreshToken ? fingerprint(refreshToken) : null;
+}
+
 function markAccountAuthSnapshot(account, auth, content, now) {
+  const nextRefreshTokenFingerprint = refreshTokenFingerprint(auth.parsed);
+  if (
+    account.refreshTokenFingerprint &&
+    nextRefreshTokenFingerprint &&
+    account.refreshTokenFingerprint !== nextRefreshTokenFingerprint
+  ) {
+    account.refreshTokenRotatedAt = now;
+  }
   account.identity = auth.identity;
   account.updatedAt = now;
   account.lastRefresh = authLastRefresh(auth.parsed);
   account.authFingerprint = fingerprint(content);
+  account.refreshTokenFingerprint = nextRefreshTokenFingerprint;
   Object.assign(account, authTokenStatus(auth.parsed));
   delete account.needsReauth;
   delete account.reauthReason;
@@ -676,6 +782,10 @@ function normalizePublicQuotaSnapshot(snapshot) {
 
 function normalizePublicAccount(account, activeId, currentIdentityKey) {
   const key = identityKey(account.identity ?? {});
+  const expiresAtMs = new Date(account.accessTokenExpiresAt ?? "").getTime();
+  const accessTokenExpired = Number.isFinite(expiresAtMs)
+    ? expiresAtMs <= Date.now()
+    : account.accessTokenExpired ?? null;
   return {
     id: account.id,
     displayName: account.displayName,
@@ -689,7 +799,8 @@ function normalizePublicAccount(account, activeId, currentIdentityKey) {
     updatedAt: account.updatedAt,
     lastRefresh: account.lastRefresh ?? null,
     accessTokenExpiresAt: account.accessTokenExpiresAt ?? null,
-    accessTokenExpired: account.accessTokenExpired ?? null,
+    accessTokenExpired,
+    refreshTokenRotatedAt: account.refreshTokenRotatedAt ?? null,
     needsReauth: account.needsReauth === true,
     reauthReason: account.reauthReason ?? null,
     reauthMarkedAt: account.reauthMarkedAt ?? null,
@@ -790,7 +901,8 @@ async function backupCurrentAuth(content, reason) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(backupsDir(), `auth-${reason}-${stamp}.json.dpapi`);
   const encrypted = await protectText(content);
-  await fs.writeFile(backupPath, `${encrypted}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeTextAtomic(backupPath, `${encrypted}\n`);
+  await pruneAuthBackups();
   return backupPath;
 }
 
@@ -830,6 +942,8 @@ async function hydrateStoredAccountMetadata() {
           accessTokenExpiresAt: account.accessTokenExpiresAt ?? null,
           accessTokenExpired: account.accessTokenExpired ?? null,
           authFingerprint: account.authFingerprint ?? null,
+          refreshTokenFingerprint: account.refreshTokenFingerprint ?? null,
+          refreshTokenRotatedAt: account.refreshTokenRotatedAt ?? null,
         });
         markAccountAuthSnapshot(account, { content, ...auth }, content, account.updatedAt ?? new Date().toISOString());
         const next = JSON.stringify({
@@ -838,6 +952,8 @@ async function hydrateStoredAccountMetadata() {
           accessTokenExpiresAt: account.accessTokenExpiresAt ?? null,
           accessTokenExpired: account.accessTokenExpired ?? null,
           authFingerprint: account.authFingerprint ?? null,
+          refreshTokenFingerprint: account.refreshTokenFingerprint ?? null,
+          refreshTokenRotatedAt: account.refreshTokenRotatedAt ?? null,
         });
         if (previous !== next) changed = true;
       } catch {
@@ -853,8 +969,12 @@ async function atomicWriteAuth(content) {
   validateAuthJson(content);
   const target = authPath();
   const temp = path.join(codexDir(), `.auth.json.tmp-${crypto.randomUUID()}`);
-  await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
-  await fs.rename(temp, target);
+  try {
+    await fs.writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temp, target);
+  } finally {
+    await fs.rm(temp, { force: true }).catch(() => {});
+  }
 }
 
 async function refreshStoredActiveAccount(index) {
@@ -944,9 +1064,11 @@ function scheduleReauthCheck(accountId, expectedFingerprint, expectedLastRefresh
           const current = await readCurrentAuth();
           const currentKey = identityKey(current.identity);
           const accountKey = identityKey(account.identity ?? {});
-          const status = authTokenStatus(current.parsed);
-          if (currentKey && accountKey && currentKey === accountKey && status.accessTokenExpired !== true) {
-            markAccountAuthSnapshot(account, current, current.content, new Date().toISOString());
+          if (currentKey && accountKey && currentKey === accountKey) {
+            const now = new Date().toISOString();
+            await saveAccountAuth(account.id, current.content);
+            markAccountAuthSnapshot(account, current, current.content, now);
+            account.lastSyncedAt = now;
             return { value: true };
           }
         } catch {
@@ -957,7 +1079,7 @@ function scheduleReauthCheck(accountId, expectedFingerprint, expectedLastRefresh
           account.authFingerprint === expectedFingerprint && account.lastRefresh === expectedLastRefresh;
         if (!unchanged) return { value: false, write: false };
         account.needsReauth = true;
-        account.reauthReason = "切换后 Codex 没有写回新的登录快照，可能需要重新登录。";
+        account.reauthReason = "切换后 Codex 未写回可用的新凭证，请重试切换或重新登录。";
         account.reauthMarkedAt = new Date().toISOString();
         return { value: true };
       });
@@ -1221,6 +1343,28 @@ async function updateAccount(accountId, patch) {
       return {};
     }
     return { write: false };
+  });
+  return currentState();
+}
+
+async function reorderAccounts(accountIds) {
+  if (!Array.isArray(accountIds)) throw new Error("Invalid account order.");
+  await mutateIndex(async (index) => {
+    const currentIds = index.accounts.map((account) => account.id);
+    const nextIds = accountIds.map((accountId) => String(accountId));
+    if (
+      nextIds.length !== currentIds.length ||
+      new Set(nextIds).size !== nextIds.length ||
+      currentIds.some((accountId) => !nextIds.includes(accountId))
+    ) {
+      throw new Error("Account list changed. Refresh and try again.");
+    }
+    if (currentIds.every((accountId, indexPosition) => accountId === nextIds[indexPosition])) {
+      return { write: false };
+    }
+    const accountsById = new Map(index.accounts.map((account) => [account.id, account]));
+    index.accounts = nextIds.map((accountId) => accountsById.get(accountId));
+    return {};
   });
   return currentState();
 }
@@ -1649,8 +1793,9 @@ async function parseSessionFile(file, indexMap, options = {}) {
   };
   let lastTokenCount = null;
   let lastRateLimitEvent = null;
-  let afterSince = null;
   let afterSinceRateLimitEvent = null;
+  let previousTokenUsage = null;
+  const usageSegments = [];
 
   const stream = fsSync.createReadStream(file.path, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1683,18 +1828,36 @@ async function parseSessionFile(file, indexMap, options = {}) {
 
       const eventMs = new Date(timestamp).getTime();
       if (sinceMs && Number.isFinite(eventMs) && eventMs >= sinceMs) {
-        afterSince = tokenCount;
+        const delta = scopedTokenDelta(tokenCount.tokenUsage, previousTokenUsage, {
+          sinceMs,
+          eventMs,
+          sessionStartedMs: new Date(summary.startedAt ?? "").getTime(),
+        });
+        if (delta) {
+          usageSegments.push({
+            timestamp,
+            model: summary.model,
+            tokenUsage: delta,
+          });
+        }
         if (tokenCount.rateLimits) afterSinceRateLimitEvent = tokenCount;
       }
+      previousTokenUsage = tokenCount.tokenUsage;
     }
   }
 
-  const scopedTokenCount = sinceMs ? afterSince : lastTokenCount;
-  if (!scopedTokenCount) return null;
+  if (sinceMs && !usageSegments.length) return null;
+  if (!sinceMs && !lastTokenCount) return null;
   const quotaEvent = sinceMs ? afterSinceRateLimitEvent : lastRateLimitEvent;
-  summary.tokenUsage = scopedTokenCount.tokenUsage;
+  if (sinceMs) {
+    summary.tokenUsage = emptyTokenUsage();
+    for (const segment of usageSegments) addTokenUsage(summary.tokenUsage, segment.tokenUsage);
+    summary.usageSegments = usageSegments;
+  } else {
+    summary.tokenUsage = lastTokenCount.tokenUsage;
+  }
   summary.rateLimits = quotaEvent?.rateLimits ?? null;
-  summary.tokenCountAt = scopedTokenCount.timestamp;
+  summary.tokenCountAt = sinceMs ? usageSegments.at(-1).timestamp : lastTokenCount.timestamp;
   summary.rateLimitsAt = quotaEvent?.rateLimits ? quotaEvent.timestamp : null;
 
   const indexed = summary.id ? indexMap.get(summary.id) : null;
@@ -1707,7 +1870,7 @@ async function parseSessionFile(file, indexMap, options = {}) {
   summary.updatedAt =
     indexed?.updated_at && Number.isFinite(indexedMs)
       ? indexed.updated_at
-      : scopedTokenCount.timestamp ?? summary.updatedAt;
+      : summary.tokenCountAt ?? summary.updatedAt;
   return summary;
 }
 
@@ -2416,7 +2579,7 @@ async function readLocalTokenLedgerEvents(files, options = {}) {
     ledger.files = prunedFiles;
     ledger.updatedAt = new Date().toISOString();
     if (changed || pruned) {
-      await writeJsonAtomic(tokenLedgerPath(), ledger);
+      await writeJsonAtomic(tokenLedgerPath(), ledger, { pretty: false });
     }
 
     const allowed = new Set(recentFiles.map((file) => file.path));
@@ -2909,13 +3072,20 @@ function selectQuotaCoefficient(kind, planType, historicalCoefficient, historica
   if (hasHistorical) return { coefficient: historicalCoefficient, source: "calibrated" };
   if (hasActive && activeSamples >= 2) return { coefficient: activeCoefficient, source: "active-session" };
   if (hasActive) {
+    if (!Number.isFinite(fallback)) {
+      return {
+        coefficient: activeCoefficient,
+        source: "active-session-low-sample",
+      };
+    }
     return {
       coefficient: activeCoefficient * 0.75 + fallback * 0.25,
       source: "active-session-low-sample",
     };
   }
   if (Number.isFinite(historicalCoefficient)) return { coefficient: historicalCoefficient, source: "low-sample" };
-  return { coefficient: fallback, source: "fallback" };
+  if (Number.isFinite(fallback)) return { coefficient: fallback, source: "fallback" };
+  return { coefficient: null, source: "unsupported-plan" };
 }
 
 function blendLearnedCoefficient(kind, selected, learnedCoefficient, planType, learnedWindow = null) {
@@ -3053,7 +3223,9 @@ async function readQuotaEstimate(options = {}) {
     return quotaEstimateUnavailable("\u7b49\u5f85\u5feb\u7167\u540e\u7684 token \u8bb0\u5f55");
   }
 
-  const calibration = collectQuotaCalibration(sessionEvents, baseQuota.planType);
+  // Each account learns only from events observed after that account was
+  // switched in. Same-plan accounts must not share historical calibration.
+  const calibration = collectQuotaCalibration(scopedSessionEvents, baseQuota.planType);
 
   // Active-session calibration: if rate_limits changed within the most recent
   // active session, use that change as a high-confidence calibration sample
@@ -3095,14 +3267,14 @@ async function readQuotaEstimate(options = {}) {
     baseQuota.planType,
     learnedWeeklyWindow
   );
-  const sessionEstimateCoefficient = seededSessionDelta
+  const sessionEstimateCoefficient = seededSessionDelta && Number.isFinite(tunedSessionCoefficient.coefficient)
     ? Math.min(tunedSessionCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "session").max)
     : tunedSessionCoefficient.coefficient;
   const sessionEstimate =
     sessionDelta?.weightedTokens >= 100
       ? buildWindowEstimate(baseQuota.session, sessionEstimateCoefficient, sessionDelta.weightedTokens, calibration.sessionSamples)
       : null;
-  const weeklyEstimateCoefficient = seededWeeklyDelta
+  const weeklyEstimateCoefficient = seededWeeklyDelta && Number.isFinite(tunedWeeklyCoefficient.coefficient)
     ? Math.min(tunedWeeklyCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "weekly").max)
     : tunedWeeklyCoefficient.coefficient;
   const weeklyEstimate =
@@ -3110,7 +3282,16 @@ async function readQuotaEstimate(options = {}) {
       ? buildWindowEstimate(baseQuota.weekly, weeklyEstimateCoefficient, weeklyDelta.weightedTokens, calibration.weeklySamples)
       : null;
 
-  if (!sessionEstimate && !weeklyEstimate) return quotaEstimateUnavailable("\u7b49\u5f85\u5386\u53f2\u6821\u51c6\u6837\u672c");
+  if (!sessionEstimate && !weeklyEstimate) {
+    const lacksSupportedBaseline =
+      !Number.isFinite(tunedSessionCoefficient.coefficient) &&
+      !Number.isFinite(tunedWeeklyCoefficient.coefficient);
+    return quotaEstimateUnavailable(
+      lacksSupportedBaseline
+        ? "\u5f53\u524d\u5957\u9910\u7f3a\u5c11\u53ef\u9760\u7684\u8d26\u53f7\u6821\u51c6\u6837\u672c"
+        : "\u7b49\u5f85\u5386\u53f2\u6821\u51c6\u6837\u672c"
+    );
+  }
   return {
     source: "local-estimate",
     algorithm: QUOTA_ESTIMATE_ALGORITHM,
@@ -3321,17 +3502,25 @@ async function readLocalUsage(options = {}) {
 
   for (const session of sessions) {
     addTokenUsage(total, session.tokenUsage);
-    const model = session.model || "unknown";
-    if (!byModel.has(model)) byModel.set(model, { model, sessions: 0, tokenUsage: emptyTokenUsage() });
-    const modelEntry = byModel.get(model);
-    modelEntry.sessions += 1;
-    addTokenUsage(modelEntry.tokenUsage, session.tokenUsage);
+    const segments =
+      Array.isArray(session.usageSegments) && session.usageSegments.length
+        ? session.usageSegments
+        : [{ timestamp: session.updatedAt, model: session.model, tokenUsage: session.tokenUsage }];
+    const sessionModels = new Set();
+    const sessionDays = new Set();
+    for (const segment of segments) {
+      const model = segment.model || "unknown";
+      if (!byModel.has(model)) byModel.set(model, { model, sessions: 0, tokenUsage: emptyTokenUsage() });
+      addTokenUsage(byModel.get(model).tokenUsage, segment.tokenUsage);
+      sessionModels.add(model);
 
-    const day = localDayKey(session.updatedAt);
-    if (!byDay.has(day)) byDay.set(day, { day, sessions: 0, tokenUsage: emptyTokenUsage() });
-    const dayEntry = byDay.get(day);
-    dayEntry.sessions += 1;
-    addTokenUsage(dayEntry.tokenUsage, session.tokenUsage);
+      const day = localDayKey(segment.timestamp);
+      if (!byDay.has(day)) byDay.set(day, { day, sessions: 0, tokenUsage: emptyTokenUsage() });
+      addTokenUsage(byDay.get(day).tokenUsage, segment.tokenUsage);
+      sessionDays.add(day);
+    }
+    for (const model of sessionModels) byModel.get(model).sessions += 1;
+    for (const day of sessionDays) byDay.get(day).sessions += 1;
 
     const project = session.cwd ? path.basename(session.cwd) || session.cwd : "未知项目";
     if (!byProject.has(project)) {
@@ -3351,7 +3540,7 @@ async function readLocalUsage(options = {}) {
     models: Array.from(byModel.values()).sort((a, b) => b.tokenUsage.totalTokens - a.tokenUsage.totalTokens),
     daily: Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day)).slice(-7),
     projects: Array.from(byProject.values()).sort((a, b) => b.tokenUsage.totalTokens - a.tokenUsage.totalTokens).slice(0, 10),
-    recentSessions: sessions.slice(0, 12),
+    recentSessions: sessions.slice(0, 12).map(({ usageSegments, ...session }) => session),
     latestQuota,
     since: options.since ?? null,
     checkedAt: new Date().toISOString(),
@@ -3767,7 +3956,7 @@ function createWindow() {
 function defaultWidgetBounds() {
   const workArea = screen.getPrimaryDisplay().workArea;
   const width = WIDGET_WIDTH;
-  const height = widgetHeightForAccounts(1);
+  const height = WIDGET_MIN_HEIGHT;
   return {
     x: Math.max(workArea.x + 12, workArea.x + workArea.width - width - 24),
     y: workArea.y + 72,
@@ -3823,6 +4012,10 @@ function createWidgetWindow() {
   if (widgetWindow && !widgetWindow.isDestroyed()) return widgetWindow;
   const savedBounds = normalizeWidgetBounds(runtimeSettings?.widgetBounds);
   const bounds = clampWidgetBoundsToDisplay(savedBounds);
+  const initialMaxHeight = Math.max(
+    WIDGET_MIN_HEIGHT,
+    screen.getDisplayMatching(bounds).workArea.height
+  );
   if (savedBounds) widgetManualSize = true;
   widgetWindow = new BrowserWindow({
     width: bounds.width,
@@ -3830,7 +4023,7 @@ function createWidgetWindow() {
     minWidth: WIDGET_MIN_WIDTH,
     minHeight: WIDGET_MIN_HEIGHT,
     maxWidth: WIDGET_MAX_WIDTH,
-    maxHeight: WIDGET_MAX_HEIGHT,
+    maxHeight: initialMaxHeight,
     x: bounds.x,
     y: bounds.y,
     title: "Codex Quick View",
@@ -3883,9 +4076,11 @@ function setWidgetTopmost(pinned) {
 
 function resizeWidgetForAccounts(accountCount) {
   if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
-  if (widgetManualSize) return { ok: true, skipped: true };
+  const numericCount = Number(accountCount);
+  widgetAccountCount = Number.isFinite(numericCount) ? Math.max(0, Math.floor(numericCount)) : 0;
   const bounds = widgetDockState.collapsed && widgetDockState.expandedBounds ? widgetDockState.expandedBounds : widgetWindow.getBounds();
-  const nextHeight = widgetHeightForAccounts(accountCount);
+  const maxHeight = widgetMaxHeightForBounds(bounds);
+  const nextHeight = widgetManualSize ? Math.min(bounds.height, maxHeight) : WIDGET_MIN_HEIGHT;
   const display = screen.getDisplayMatching(bounds);
   const workArea = display.workArea;
   const maxY = workArea.y + workArea.height - nextHeight - 8;
@@ -3893,9 +4088,11 @@ function resizeWidgetForAccounts(accountCount) {
   const nextBounds = {
     x: bounds.x,
     y: nextY,
-    width: WIDGET_WIDTH,
+    width: widgetManualSize ? bounds.width : WIDGET_WIDTH,
     height: nextHeight,
   };
+  widgetWindow.setMaximumSize(WIDGET_MAX_WIDTH, maxHeight);
+  if (widgetResizeSession) return { ok: true, height: bounds.height, maxHeight, skipped: true };
   if (widgetDockState.edge && widgetDockState.collapsed) {
     widgetDockState.expandedBounds = expandedWidgetBoundsForDock(nextBounds, widgetDockState.edge);
     setWidgetDockBounds(
@@ -3906,9 +4103,9 @@ function resizeWidgetForAccounts(accountCount) {
       widgetDockState.expandedBounds = nextBounds;
       updateWidgetDockHint(widgetDockEdgeForBounds(nextBounds));
     }
-    widgetWindow.setBounds(nextBounds, false);
+    if (!boundsNear(bounds, nextBounds)) widgetWindow.setBounds(nextBounds, false);
   }
-  return { ok: true, height: nextHeight };
+  return { ok: true, height: nextHeight, maxHeight };
 }
 
 function clamp(value, min, max) {
@@ -3975,7 +4172,7 @@ function widgetDockEdgeForBounds(bounds) {
 function expandedWidgetBoundsForDock(bounds, edge) {
   const workArea = widgetWorkAreaForBounds(bounds);
   const width = clamp(bounds.width, WIDGET_MIN_WIDTH, WIDGET_MAX_WIDTH);
-  const height = clamp(bounds.height, WIDGET_MIN_HEIGHT, WIDGET_MAX_HEIGHT);
+  const height = clamp(bounds.height, WIDGET_MIN_HEIGHT, widgetMaxHeightForBounds(bounds));
   let x = clamp(bounds.x, workArea.x, workArea.x + workArea.width - width);
   let y = clamp(bounds.y, workArea.y, workArea.y + workArea.height - height);
 
@@ -4219,6 +4416,7 @@ function resizeWidgetBoundsFromSession(session) {
   const dx = cursor.x - session.startCursor.x;
   const dy = cursor.y - session.startCursor.y;
   const start = session.startBounds;
+  const maxHeight = widgetMaxHeightForBounds(start);
   let left = start.x;
   let top = start.y;
   let right = start.x + start.width;
@@ -4241,15 +4439,15 @@ function resizeWidgetBoundsFromSession(session) {
     if (direction.includes("w")) left = right - WIDGET_MAX_WIDTH;
     else right = left + WIDGET_MAX_WIDTH;
   }
-  if (bottom - top > WIDGET_MAX_HEIGHT) {
-    if (direction.includes("n")) top = bottom - WIDGET_MAX_HEIGHT;
-    else bottom = top + WIDGET_MAX_HEIGHT;
+  if (bottom - top > maxHeight) {
+    if (direction.includes("n")) top = bottom - maxHeight;
+    else bottom = top + maxHeight;
   }
 
   const display = screen.getDisplayMatching(start);
   const workArea = display.workArea;
   const width = clamp(right - left, WIDGET_MIN_WIDTH, WIDGET_MAX_WIDTH);
-  const height = clamp(bottom - top, WIDGET_MIN_HEIGHT, WIDGET_MAX_HEIGHT);
+  const height = clamp(bottom - top, WIDGET_MIN_HEIGHT, maxHeight);
   const x = clamp(left, workArea.x, workArea.x + workArea.width - width);
   const y = clamp(top, workArea.y, workArea.y + workArea.height - height);
   return { x, y, width, height };
@@ -4321,6 +4519,11 @@ function registerIpc() {
     broadcastStateChanged();
     return result;
   });
+  ipcMain.handle("account:reorder", async (_event, accountIds) => {
+    const result = await reorderAccounts(accountIds);
+    broadcastStateChanged();
+    return result;
+  });
   ipcMain.handle("account:reauth", async (_event, accountId) => {
     const result = await startAccountReauth(accountId);
     broadcastStateChanged();
@@ -4389,6 +4592,7 @@ if (hasSingleInstanceLock) {
     await ensureCodexFileCredentialStore();
     const settings = await syncLaunchAtLoginFromSettings();
     await migratePlaintextBackups();
+    await cleanupStoreArtifacts();
     await hydrateStoredAccountMetadata();
     await cleanupMismatchedQuotaSnapshots();
     registerIpc();
