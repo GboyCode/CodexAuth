@@ -4,32 +4,32 @@
 
 English README | [中文说明](README.md)
 
-CodexAuth Switch is a local Windows desktop utility for quickly switching between multiple Codex App login accounts.
+CodexAuth Switch is a local Windows and macOS desktop utility for quickly switching between multiple Codex App login accounts.
 
 It is designed for people who use more than one OpenAI / Codex App account. You can save each account's local login state, then switch the active Codex login through this tool. The app only operates on local files. Quota and usage views come from local Codex logs; it does not call remote quota endpoints or upload Codex conversation history.
 
-One-line positioning: **CodexAuth Switch is a local-first Codex App multi-account switcher with `auth.json` snapshot management, Windows DPAPI encryption, quota display, and token usage statistics.**
+One-line positioning: **CodexAuth Switch is a local-first Codex App multi-account switcher with `auth.json` snapshot management, Windows DPAPI / macOS Keychain encryption, quota display, and token usage statistics.**
 
 > This is an unofficial project and is not affiliated with OpenAI.
 
 ## Who It Is For
 
-- Users who manage multiple Codex App login accounts on Windows.
+- Users who manage multiple Codex App login accounts on Windows or macOS.
 - Users who want to switch the active OpenAI Codex / Codex App account quickly.
-- Users who want to safely save and restore local `%USERPROFILE%\.codex\auth.json` login snapshots.
+- Users who want to safely save and restore local `~/.codex/auth.json` login snapshots.
 - Users who want to view local Codex quota, 5-hour quota, weekly quota, Reviews, model-level limits, token usage, and recent sessions.
 - Users who want local log estimation without sending tokens, account data, or conversation history to remote quota endpoints.
 
 ## Search Keywords
 
-Codex account switcher, Codex multi account, Codex App account manager, OpenAI Codex account switcher, Codex auth.json switcher, Codex local login manager, Codex quota viewer, Codex token usage dashboard, Codex Windows desktop app, Codex DPAPI encryption, Codex local quota estimate, Codex local quota tracking, Codex local history read-only.
+Codex account switcher, Codex multi account, Codex App account manager, OpenAI Codex account switcher, Codex auth.json switcher, Codex local login manager, Codex quota viewer, Codex token usage dashboard, Codex Windows macOS desktop app, Codex DPAPI Keychain encryption, Codex local quota estimate, Codex local quota tracking, Codex local history read-only.
 
 ## Features
 
 - Import the current Codex App login state.
 - Save multiple local account snapshots.
-- Switch the active Codex login by replacing `%USERPROFILE%\.codex\auth.json`.
-- Encrypt saved account credentials with Windows DPAPI, readable only by the current Windows user.
+- Switch the active Codex login by replacing `~/.codex/auth.json`.
+- Encrypt saved credentials with Windows DPAPI or macOS Keychain-backed system storage, readable only by the current operating-system user.
 - Automatically back up the original `auth.json` before switching, reauth, or deleting the active account.
 - Provide a main window, system tray menu, and floating quick-view widget.
 - Read quota and token usage from local Codex logs.
@@ -49,34 +49,31 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 
 ### Files It Writes
 
-- `%USERPROFILE%\.codex\auth.json`
+- `~/.codex/auth.json`
   - The active local login file used by Codex App.
   - During account switching, the app replaces this file with a saved account snapshot.
-- `%USERPROFILE%\.codex\config.toml`
+- `~/.codex/config.toml`
   - Ensures the top-level setting contains `cli_auth_credentials_store = "file"` so current Codex releases continue using switchable `auth.json` credentials.
   - Creates a timestamped `config.toml.codexauth-backup-*` copy in the same directory before changing the file.
-- `%APPDATA%\codex-auth-switcher\accounts.json`
-  - Account metadata for this app.
-- `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`
-  - DPAPI-encrypted account credential snapshots.
-- `%APPDATA%\codex-auth-switcher\backups\*.dpapi`
-  - Encrypted backups created before switching, reauth, or deleting the active account.
+- App account metadata: `%APPDATA%\codex-auth-switcher\accounts.json` on Windows; `~/Library/Application Support/codex-auth-switcher/accounts.json` on macOS.
+- Encrypted account snapshots: `%APPDATA%\codex-auth-switcher\accounts\*.dpapi` on Windows; `~/Library/Application Support/codex-auth-switcher/accounts/*.keychain` on macOS.
+- Encrypted backups created before operating on the active account: `%APPDATA%\codex-auth-switcher\backups\*.dpapi` on Windows; `~/Library/Application Support/codex-auth-switcher/backups/*.keychain` on macOS.
 
 ### Files It Only Reads
 
-- `%USERPROFILE%\.codex\auth.json`
+- `~/.codex/auth.json`
   - Used to import the current login and identify the account.
-- `%USERPROFILE%\.codex\sessions\**\rollout-*.jsonl`
+- `~/.codex/sessions/**/rollout-*.jsonl`
   - Used for local usage and quota snapshot calculation.
-- `%USERPROFILE%\.codex\session_index.jsonl`
+- `~/.codex/session_index.jsonl`
   - Used to enrich local session metadata when available.
-- `%USERPROFILE%\.codex\logs_2.sqlite`
+- `~/.codex/logs_2.sqlite`
   - Opened in read-only mode to read local Codex quota events.
 
 ### What It Does Not Do
 
 - It does not modify Codex conversation history.
-- It does not delete `%USERPROFILE%\.codex\sessions`.
+- It does not delete `~/.codex/sessions`.
 - It does not write to `logs_2.sqlite`.
 - It does not upload tokens, account data, session logs, or usage records.
 - It does not use the current access token to request remote quota endpoints.
@@ -89,31 +86,27 @@ The only features that intentionally affect Codex App runtime state are account 
 
 ### Account Identification
 
-When importing the current login, the app reads `%USERPROFILE%\.codex\auth.json` and validates that it matches Codex App's ChatGPT login format.
+When importing the current login, the app reads `~/.codex/auth.json` and validates that it matches Codex App's ChatGPT login format.
 
 It parses JWT payloads locally and extracts fields such as email, user ID, and workspace/account ID. Account matching does not rely on a single claim. It combines personal identity and workspace identity when possible, because one person can belong to multiple workspaces and one workspace can contain multiple users.
 
 ### Credential Storage
 
-The app does not store `auth.json` in plain text. Saved account snapshots are encrypted through Windows DPAPI:
+The app does not store `auth.json` in plain text. Windows uses DPAPI; macOS uses Electron `safeStorage` backed by the system Keychain.
 
-```text
-DataProtectionScope.CurrentUser
-```
+Windows uses `DataProtectionScope.CurrentUser`; macOS uses the current user's Keychain.
 
-This binds encrypted snapshots to the current Windows user. Other Windows users or other machines cannot directly decrypt them.
+This binds encrypted snapshots to the current operating-system user. Other users, machines, or operating systems cannot directly decrypt them.
 
 Saved account snapshots are stored in:
 
-```text
-%APPDATA%\codex-auth-switcher\accounts
-```
+- Windows: `%APPDATA%\codex-auth-switcher\accounts`
+- macOS: `~/Library/Application Support/codex-auth-switcher/accounts`
 
 Backups created before operating on the active login are stored in:
 
-```text
-%APPDATA%\codex-auth-switcher\backups
-```
+- Windows: `%APPDATA%\codex-auth-switcher\backups`
+- macOS: `~/Library/Application Support/codex-auth-switcher/backups`
 
 The app does not call an OpenAI token-refresh endpoint itself. Codex refreshes access and refresh tokens during actual use; CodexAuth Switch watches the current `auth.json` and re-encrypts updated contents into the matching account snapshot. An expired access token alone does not mean the login is invalid—reauth is needed only when Codex can no longer refresh it.
 
@@ -123,17 +116,17 @@ The newest 60 encrypted backups are retained. Atomic-write temporary files older
 
 When switching accounts, the app:
 
-1. Reads the current `%USERPROFILE%\.codex\auth.json`.
-2. Creates a DPAPI-encrypted backup if a current login exists.
+1. Reads the current `~/.codex/auth.json`.
+2. Creates a backup encrypted by the current platform's secure storage if a login exists.
 3. Decrypts the selected account snapshot.
 4. Validates that the snapshot is a valid Codex login file.
 5. Writes the snapshot to a temporary file.
-6. Atomically renames the temporary file to `%USERPROFILE%\.codex\auth.json`.
+6. Atomically renames the temporary file to `~/.codex/auth.json`.
 7. Restarts Codex App if the user chooses to do so.
 
 The temporary-file plus atomic-rename approach reduces the chance that Codex App reads a partially written `auth.json`.
 
-In current Codex releases, the desktop shell runs as `ChatGPT.exe` while the local app server runs as `codex.exe`. Restart now stops the full process group belonging to the Codex installation, waits for it to exit, and then launches the desktop app again. This avoids the misleading “ChatGPT crashed” screen caused by terminating only the app server.
+On Windows, restart stops the desktop process group belonging to the Codex installation. On macOS, it detects the current `ChatGPT` or legacy `Codex` application process, waits for it to exit, and relaunches it through Launch Services.
 
 ### Reauth Flow
 
@@ -212,7 +205,7 @@ npm install
 npm start
 ```
 
-Hidden local debug start:
+Hidden local debug start on Windows:
 
 ```powershell
 npm run dev:hidden
@@ -263,10 +256,20 @@ This command replays local `.codex` session logs and validates the quota-estimat
 npm run pack:win
 ```
 
-The installer is written to:
+### Build macOS DMGs
+
+Run this command on macOS:
+
+```bash
+npm run pack:mac
+```
+
+It creates DMGs for Intel (`x64`) and Apple Silicon (`arm64`).
+
+The installers are written to:
 
 ```text
-release\
+release/
 ```
 
 The `release` directory is a local build artifact and is not committed to Git by default.
@@ -288,16 +291,16 @@ QUOTA-LOGIC.md                      Quota-estimation notes
 
 ## Limitations
 
-- Windows only for now.
-- Credential encryption depends on Windows DPAPI.
+- Windows and macOS are supported; Linux is not currently supported.
+- Encrypted snapshots are bound to the current system user and cannot be copied directly across machines or platforms.
 - This targets Codex App local login switching, not Codex CLI-only workflows.
 - Local estimate mode is a best-effort interpretation of local logs.
 - Quota snapshots may stay stale until Codex writes new local rate-limit records.
-- Do not share saved credential snapshots across machines or Windows users.
+- Do not share saved credential snapshots across machines or operating-system users.
 
 ## Release
 
-Windows installers are uploaded through GitHub Releases. The installer is not commercially code-signed, so Windows may show a security warning.
+Windows installers and Intel / Apple Silicon macOS DMGs are uploaded through GitHub Releases. The current builds are not commercially code-signed or Apple-notarized, so the operating system may show a security warning.
 
 ## License
 

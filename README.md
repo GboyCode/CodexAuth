@@ -4,32 +4,32 @@
 
 [English README](README.en.md) | 中文说明
 
-CodexAuth Switch 是一个 Windows 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
+CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
 
 它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。应用只操作本机文件，额度和用量来自本地 Codex 日志解析，不请求远程额度接口，也不会上传 Codex 会话历史。
 
-一句话定位：**CodexAuth Switch 是一个本地优先的 Codex App 多账号切换工具，支持 `auth.json` 快照管理、Windows DPAPI 加密、额度查看和 token 用量统计。**
+一句话定位：**CodexAuth Switch 是一个本地优先的 Codex App 多账号切换工具，支持 `auth.json` 快照管理、Windows DPAPI / macOS Keychain 加密、额度查看和 token 用量统计。**
 
 > 这是非官方项目，与 OpenAI 无官方关联。
 
 ## 适合谁
 
-- 想在 Windows 上管理多个 Codex App 登录账号。
+- 想在 Windows 或 macOS 上管理多个 Codex App 登录账号。
 - 想快速切换 OpenAI Codex / Codex App 当前账号。
-- 想安全保存和恢复本地 `%USERPROFILE%\.codex\auth.json` 登录快照。
+- 想安全保存和恢复本地 `~/.codex/auth.json` 登录快照。
 - 想查看 Codex 本地额度、5 小时额度、周额度、Reviews、模型级额度、token 用量和最近会话。
 - 想坚持本地日志估算，不把 token、账号信息或会话历史发到远程额度接口。
 
 ## 常见搜索词
 
-Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows 桌面工具、Codex DPAPI 加密、Codex 本地预估、Codex 本地额度估算、Codex 本地历史只读。
+Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows macOS 桌面工具、Codex DPAPI Keychain 加密、Codex 本地预估、Codex 本地额度估算、Codex 本地历史只读。
 
 ## 功能
 
 - 导入当前 Codex App 登录状态。
 - 保存多个本地账号快照。
-- 通过替换 `%USERPROFILE%\.codex\auth.json` 切换当前 Codex 登录。
-- 使用 Windows DPAPI 加密保存账号凭据，仅当前 Windows 用户可解密。
+- 通过替换 `~/.codex/auth.json` 切换当前 Codex 登录。
+- Windows 使用 DPAPI、macOS 使用 Keychain 支持的系统安全存储加密账号凭据，仅当前系统用户可解密。
 - 切换、重新登录、删除当前账号前自动备份原始 `auth.json`。
 - 提供主窗口、系统托盘菜单和悬浮快捷窗。
 - 从本地 Codex 日志读取额度和 token 使用情况。
@@ -49,34 +49,31 @@ CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和
 
 ### 会写入的文件
 
-- `%USERPROFILE%\.codex\auth.json`
+- `~/.codex/auth.json`
   - Codex App 当前使用的本地登录文件。
   - 切换账号时，应用会用已保存的账号快照替换这个文件。
-- `%USERPROFILE%\.codex\config.toml`
+- `~/.codex/config.toml`
   - 自动确保顶层配置包含 `cli_auth_credentials_store = "file"`，让新版 Codex 继续使用可切换的 `auth.json` 文件凭据。
   - 修改前会在同目录生成带时间戳的 `config.toml.codexauth-backup-*` 备份。
-- `%APPDATA%\codex-auth-switcher\accounts.json`
-  - 本应用的账号元数据。
-- `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`
-  - 使用 DPAPI 加密后的账号凭据快照。
-- `%APPDATA%\codex-auth-switcher\backups\*.dpapi`
-  - 切换、重新登录、删除当前账号前生成的加密备份。
+- 本应用的账号元数据：Windows 为 `%APPDATA%\codex-auth-switcher\accounts.json`；macOS 为 `~/Library/Application Support/codex-auth-switcher/accounts.json`。
+- 加密账号凭据快照：Windows 为 `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`；macOS 为 `~/Library/Application Support/codex-auth-switcher/accounts/*.keychain`。
+- 操作当前账号前的加密备份：Windows 为 `%APPDATA%\codex-auth-switcher\backups\*.dpapi`；macOS 为 `~/Library/Application Support/codex-auth-switcher/backups/*.keychain`。
 
 ### 只读取的文件
 
-- `%USERPROFILE%\.codex\auth.json`
+- `~/.codex/auth.json`
   - 用于导入当前登录、识别账号身份。
-- `%USERPROFILE%\.codex\sessions\**\rollout-*.jsonl`
+- `~/.codex/sessions/**/rollout-*.jsonl`
   - 用于本地统计用量和额度快照。
-- `%USERPROFILE%\.codex\session_index.jsonl`
+- `~/.codex/session_index.jsonl`
   - 存在时用于补充本地会话元数据。
-- `%USERPROFILE%\.codex\logs_2.sqlite`
+- `~/.codex/logs_2.sqlite`
   - 以只读方式打开，用于读取 Codex 本地写入的额度事件。
 
 ### 不会做的事
 
 - 不修改 Codex 会话历史。
-- 不删除 `%USERPROFILE%\.codex\sessions`。
+- 不删除 `~/.codex/sessions`。
 - 不写入 `logs_2.sqlite`。
 - 不上传 token、账号信息、会话日志或用量记录。
 - 不使用当前 access token 请求远程额度接口。
@@ -89,31 +86,27 @@ CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和
 
 ### 账号识别
 
-导入当前登录时，应用会读取 `%USERPROFILE%\.codex\auth.json`，并验证它是否是 Codex App 的 ChatGPT 登录格式。
+导入当前登录时，应用会读取 `~/.codex/auth.json`，并验证它是否是 Codex App 的 ChatGPT 登录格式。
 
 应用会在本地解析 JWT payload，提取邮箱、用户 ID、workspace/account ID 等字段。账号匹配不会只依赖单个字段，而是尽量组合个人身份和工作区身份，因为同一个人可能加入多个工作区，同一个工作区也可能包含多个成员。
 
 ### 凭据保存
 
-保存账号时，应用不会明文存储 `auth.json`。它会调用 Windows DPAPI：
+保存账号时，应用不会明文存储 `auth.json`：Windows 使用 DPAPI，macOS 使用 Electron `safeStorage` 与系统 Keychain。
 
-```text
-DataProtectionScope.CurrentUser
-```
+Windows 使用 `DataProtectionScope.CurrentUser`；macOS 使用当前用户的 Keychain。
 
-这表示加密后的账号快照绑定到当前 Windows 用户。其他 Windows 用户或其他机器不能直接解密。
+这表示加密后的账号快照绑定到当前操作系统用户，其他用户、其他机器或不同操作系统不能直接解密。
 
 账号快照存储在：
 
-```text
-%APPDATA%\codex-auth-switcher\accounts
-```
+- Windows：`%APPDATA%\codex-auth-switcher\accounts`
+- macOS：`~/Library/Application Support/codex-auth-switcher/accounts`
 
 操作当前登录前的备份存储在：
 
-```text
-%APPDATA%\codex-auth-switcher\backups
-```
+- Windows：`%APPDATA%\codex-auth-switcher\backups`
+- macOS：`~/Library/Application Support/codex-auth-switcher/backups`
 
 应用不自行调用 OpenAI 刷新接口。Codex 在账号实际使用时自动刷新 access / refresh token；CodexAuth Switch 监听当前 `auth.json` 的写回，并把新内容重新加密同步到对应账号快照。access token 到期本身不代表登录失效，只有 Codex 明确无法刷新时才需要重新登录。
 
@@ -123,17 +116,17 @@ DataProtectionScope.CurrentUser
 
 切换账号时，应用会执行以下步骤：
 
-1. 读取当前 `%USERPROFILE%\.codex\auth.json`。
-2. 如果当前登录存在，先生成 DPAPI 加密备份。
+1. 读取当前 `~/.codex/auth.json`。
+2. 如果当前登录存在，先生成当前平台安全存储加密的备份。
 3. 解密目标账号的本地快照。
 4. 校验目标快照是否是有效的 Codex 登录文件。
 5. 先写入临时文件。
-6. 再通过原子重命名替换 `%USERPROFILE%\.codex\auth.json`。
+6. 再通过原子重命名替换 `~/.codex/auth.json`。
 7. 根据用户选择重启 Codex App。
 
 使用临时文件加原子替换，是为了避免 Codex App 读到写入一半的 `auth.json`。
 
-新版 Codex 的桌面外壳进程名是 `ChatGPT.exe`，本地 app-server 才是 `codex.exe`。重启时应用会结束属于 Codex 安装目录的整组进程并等待完全退出，再重新启动桌面应用，避免只终止 app-server 后出现误导性的“ChatGPT 崩溃”页面。
+Windows 会结束属于 Codex 安装目录的桌面进程组并重新启动应用；macOS 会识别当前 `ChatGPT` / 旧版 `Codex` 应用进程，等待退出后通过 Launch Services 重新启动。
 
 ### 重新登录流程
 
@@ -212,7 +205,7 @@ npm install
 npm start
 ```
 
-本地隐藏调试启动：
+Windows 本地隐藏调试启动：
 
 ```powershell
 npm run dev:hidden
@@ -263,10 +256,20 @@ npm run quota:validate
 npm run pack:win
 ```
 
+### 打包 macOS DMG
+
+请在 macOS 上运行：
+
+```bash
+npm run pack:mac
+```
+
+命令会同时生成 Intel (`x64`) 与 Apple Silicon (`arm64`) DMG。
+
 安装包输出到：
 
 ```text
-release\
+release/
 ```
 
 `release` 目录是本地构建产物，默认不提交到 Git。
@@ -288,16 +291,16 @@ QUOTA-LOGIC.md                      额度估算逻辑说明
 
 ## 限制
 
-- 目前只支持 Windows。
-- 凭据加密依赖 Windows DPAPI。
+- 支持 Windows 与 macOS，暂不支持 Linux。
+- Windows 与 macOS 的加密快照绑定各自系统用户，不能跨机器或跨平台直接复制使用。
 - 目标是 Codex App 本地登录切换，不是 Codex CLI-only 工作流。
 - 本地预估模式来自本地日志解析，属于本地近似展示。
 - Codex 没有写入新的本地 rate-limit 记录时，额度快照可能暂时不更新。
-- 不要跨机器或跨 Windows 用户共享已保存的凭据快照。
+- 不要跨机器或跨系统用户共享已保存的凭据快照。
 
 ## Release
 
-Windows 安装包会随 GitHub Release 上传。安装器未做商业代码签名，Windows 可能会显示安全提醒。
+Windows 安装包以及 Intel / Apple Silicon macOS DMG 会随 GitHub Release 上传。当前安装包没有商业代码签名或 Apple 公证，操作系统可能显示安全提醒。
 
 ## License
 

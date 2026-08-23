@@ -5,6 +5,7 @@ const {
   Tray,
   ipcMain,
   nativeImage,
+  safeStorage,
   screen,
   shell,
   session: electronSession,
@@ -48,6 +49,13 @@ const {
 } = require("./quota/token-math");
 const { scopedTokenDelta } = require("./quota/usage-math");
 const { createLocalDataCache } = require("./quota/local-data-cache");
+const {
+  MAC_CODEX_APP_NAMES,
+  credentialFileExtension,
+  credentialProtectionLabel,
+  isEncryptedCredentialBackup,
+  platformDisplayName,
+} = require("./platform-support");
 
 const APP_NAME = "CodexAuth Switch";
 const APP_ID = "local.codexauth.switch";
@@ -55,6 +63,7 @@ const STARTUP_ARG = "--codexauth-startup";
 const STORE_DIR_NAME = "codex-auth-switcher";
 const STORE_VERSION = 1;
 const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
 const WIDGET_WIDTH = 340;
 const WIDGET_MIN_WIDTH = 300;
 const WIDGET_MAX_WIDTH = 620;
@@ -177,7 +186,7 @@ function accountsDir() {
 }
 
 function accountBlobPath(id) {
-  return path.join(accountsDir(), `${id}.dpapi`);
+  return path.join(accountsDir(), `${id}.${credentialFileExtension()}`);
 }
 
 function backupsDir() {
@@ -194,6 +203,10 @@ function appIconPngPath() {
 
 function appIconIcoPath() {
   return path.join(__dirname, "ui", "assets", "codex-color.ico");
+}
+
+function appIconPath() {
+  return isWindows ? appIconIcoPath() : appIconPngPath();
 }
 
 function trayIconIcoPath() {
@@ -246,7 +259,7 @@ async function pruneAuthBackups() {
 
   const backups = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".dpapi")) continue;
+    if (!entry.isFile() || !isEncryptedCredentialBackup(entry.name)) continue;
     const filePath = path.join(backupsDir(), entry.name);
     try {
       const stat = await fs.stat(filePath);
@@ -513,13 +526,9 @@ async function runTokenLedgerOperation(task) {
   }
 }
 
-function runPowerShell(script, stdinText = "") {
+function runProcess(command, args = [], stdinText = "") {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { windowsHide: true }
-    );
+    const child = spawn(command, args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -534,15 +543,31 @@ function runPowerShell(script, stdinText = "") {
         resolve(stdout.trim());
         return;
       }
-      reject(new Error((stderr || stdout || `PowerShell exited with ${code}`).trim()));
+      const error = new Error((stderr || stdout || `${command} exited with ${code}`).trim());
+      error.exitCode = code;
+      reject(error);
     });
     child.stdin.end(stdinText);
   });
 }
 
+function runPowerShell(script, stdinText = "") {
+  return runProcess(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    stdinText
+  );
+}
+
 async function protectText(plainText) {
+  if (isMac) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("macOS Keychain encryption is unavailable for the current user.");
+    }
+    return safeStorage.encryptString(plainText).toString("base64");
+  }
   if (!isWindows) {
-    throw new Error("Current build only supports Windows DPAPI storage.");
+    throw new Error("Credential storage is supported on Windows and macOS only.");
   }
   const input = Buffer.from(plainText, "utf8").toString("base64");
   const script = `
@@ -557,8 +582,14 @@ $protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null
 }
 
 async function unprotectText(cipherText) {
+  if (isMac) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("macOS Keychain encryption is unavailable for the current user.");
+    }
+    return safeStorage.decryptString(Buffer.from(String(cipherText).trim(), "base64"));
+  }
   if (!isWindows) {
-    throw new Error("Current build only supports Windows DPAPI storage.");
+    throw new Error("Credential storage is supported on Windows and macOS only.");
   }
   const script = `
 $ErrorActionPreference = 'Stop'
@@ -839,6 +870,9 @@ async function currentState() {
   }
 
   return {
+    platform: process.platform,
+    platformName: platformDisplayName(),
+    credentialProtection: credentialProtectionLabel(),
     codexDir: codexDir(),
     authPath: authPath(),
     storeRoot: storeRoot(),
@@ -899,7 +933,10 @@ async function importCurrentAccount(displayName) {
 
 async function backupCurrentAuth(content, reason) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = path.join(backupsDir(), `auth-${reason}-${stamp}.json.dpapi`);
+  const backupPath = path.join(
+    backupsDir(),
+    `auth-${reason}-${stamp}.json.${credentialFileExtension()}`
+  );
   const encrypted = await protectText(content);
   await writeTextAtomic(backupPath, `${encrypted}\n`);
   await pruneAuthBackups();
@@ -917,7 +954,7 @@ async function migratePlaintextBackups() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
     const source = path.join(backupsDir(), entry.name);
-    const target = `${source}.dpapi`;
+    const target = `${source}.${credentialFileExtension()}`;
     try {
       const content = await fs.readFile(source, "utf8");
       const encrypted = await protectText(content);
@@ -1416,10 +1453,56 @@ async function restartCodexAppQueued() {
   return runAccountOperation(() => restartCodexApp());
 }
 
-async function restartCodexApp() {
-  if (!isWindows) {
-    throw new Error("Restart is currently implemented for Windows only.");
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function macProcessIsRunning(processName) {
+  try {
+    await runProcess("/usr/bin/pgrep", ["-x", processName]);
+    return true;
+  } catch (error) {
+    if (error?.exitCode === 1) return false;
+    throw error;
   }
+}
+
+async function restartCodexAppMac() {
+  for (const processName of MAC_CODEX_APP_NAMES) {
+    if (!(await macProcessIsRunning(processName))) continue;
+    try {
+      await runProcess("/usr/bin/pkill", ["-x", processName]);
+    } catch (error) {
+      if (error?.exitCode !== 1) throw error;
+    }
+  }
+
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const running = await Promise.all(MAC_CODEX_APP_NAMES.map(macProcessIsRunning));
+    if (!running.some(Boolean)) break;
+    await wait(150);
+  }
+  const stillRunning = await Promise.all(MAC_CODEX_APP_NAMES.map(macProcessIsRunning));
+  if (stillRunning.some(Boolean)) {
+    throw new Error("Codex App did not fully exit before restart.");
+  }
+
+  const launchErrors = [];
+  for (const appName of MAC_CODEX_APP_NAMES) {
+    try {
+      await runProcess("/usr/bin/open", ["-a", appName]);
+      return { ok: true, application: appName };
+    } catch (error) {
+      launchErrors.push(error.message);
+    }
+  }
+  throw new Error(`Cannot find Codex App launcher. ${launchErrors.join(" ")}`.trim());
+}
+
+async function restartCodexApp() {
+  if (isMac) return restartCodexAppMac();
+  if (!isWindows) throw new Error("Restart is supported on Windows and macOS only.");
   const script = `
 $ErrorActionPreference = 'Stop'
 $package = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
@@ -3931,7 +4014,7 @@ function createWindow() {
     minWidth: 860,
     minHeight: 620,
     title: APP_NAME,
-    icon: appIconIcoPath(),
+    icon: appIconPath(),
     backgroundColor: "#f8fafc",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -4027,7 +4110,7 @@ function createWidgetWindow() {
     x: bounds.x,
     y: bounds.y,
     title: "Codex Quick View",
-    icon: appIconIcoPath(),
+    icon: appIconPath(),
     frame: false,
     resizable: false,
     maximizable: false,

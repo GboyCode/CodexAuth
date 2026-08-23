@@ -25,6 +25,8 @@ const els = {
   refreshBtn: document.querySelector("#refreshBtn"),
   widgetBtn: document.querySelector("#widgetBtn"),
   restartBtn: document.querySelector("#restartBtn"),
+  platformLabel: document.querySelector("#platformLabel"),
+  credentialProtection: document.querySelector("#credentialProtection"),
   currentIdentity: document.querySelector("#currentIdentity"),
   currentPath: document.querySelector("#currentPath"),
   accountCount: document.querySelector("#accountCount"),
@@ -211,6 +213,8 @@ function renderSettings(snapshot) {
 
 function renderStatus(snapshot) {
   const current = snapshot.current;
+  els.platformLabel.textContent = `${snapshot.platformName || "本机"} 本地`;
+  els.credentialProtection.textContent = snapshot.credentialProtection || "操作系统当前用户安全存储";
   if (current?.exists && !current.error) {
     els.currentIdentity.textContent = identityLabel(current);
   } else if (current?.exists && current.error) {

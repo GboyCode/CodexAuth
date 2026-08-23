@@ -16,7 +16,7 @@
     <main class="shell">
       <section class="topbar">
         <div>
-          <p class="eyebrow">Windows 本地</p>
+          <p id="platformLabel" class="eyebrow">本机本地</p>
           <h1>Codex App 账号切换</h1>
         </div>
         <div class="top-actions">
@@ -68,7 +68,7 @@
             </label>
             <div class="divider"></div>
             <p class="small-copy">
-              凭证使用 Windows 当前用户 DPAPI 加密保存。切换前会备份并保存当前
+              凭证使用 <span id="credentialProtection">操作系统当前用户安全存储</span> 加密保存。切换前会备份并保存当前
               <code>auth.json</code>，减少刷新令牌丢失。
             </p>
             <p class="small-copy">

@@ -27,25 +27,77 @@ jobs:
         run: npm ci
 
       - name: Check source
-        run: npm run lint
+        run: npm run lint && npm run platform:validate && npm run codex-config:validate
 
       - name: Build installer
         run: npm run pack:win
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          if-no-files-found: error
+          path: |
+            release/CodexAuthSwitch-Setup-*.exe
+            release/CodexAuthSwitch-Setup-*.exe.blockmap
+
+  build-macos:
+    name: Build macOS installers
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check source
+        run: npm run lint && npm run platform:validate && npm run codex-config:validate
+
+      - name: Build Intel and Apple Silicon DMGs
+        run: npm run pack:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload macOS installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers
+          if-no-files-found: error
+          path: release/*.dmg*
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: CodexAuth Switch ${{ github.ref_name }}
           body: |
-            CodexAuth Switch release.
+            CodexAuth Switch release for Windows and macOS.
 
-            - Windows local Codex App account switcher
-            - DPAPI-encrypted local account snapshots
-            - Local quota estimation by default
-            - Optional online precise quota mode for current-account limits
-            - Reviews, model-level quota cards, and quota pace hints
+            - Windows x64 installer
+            - macOS DMGs for Apple Silicon and Intel
+            - DPAPI encryption on Windows and Keychain-backed encryption on macOS
+            - Local account snapshots, quota estimates, and token usage statistics
             - No Codex conversation history upload
-            - The installer is not commercially code-signed, so Windows may show a security warning.
-          files: |
-            release/CodexAuthSwitch-Setup-*.exe
-            release/CodexAuthSwitch-Setup-*.exe.blockmap
+            - The installers are not commercially code-signed or Apple-notarized, so the operating system may show a security warning.
+          files: release-assets/**
