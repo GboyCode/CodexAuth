@@ -16,7 +16,10 @@
     <main class="shell">
       <section class="topbar">
         <div>
-          <p id="platformLabel" class="eyebrow">本机本地</p>
+          <div class="app-meta">
+            <p id="platformLabel" class="eyebrow">本机本地</p>
+            <button id="checkUpdatesBtn" class="version-btn" type="button" title="从 GitHub 检查更新"><span id="appVersion">版本…</span> · 检查更新</button>
+          </div>
           <h1>Codex App 账号切换</h1>
         </div>
         <div class="top-actions">
@@ -227,5 +230,6 @@
     </dialog>
     <script src="./shared-quota.js"></script>
     <script src="./app.js"></script>
+    <script src="./updates.js"></script>
   </body>
 </html>

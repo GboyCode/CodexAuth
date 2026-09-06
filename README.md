@@ -1,6 +1,16 @@
 # CodexAuth Switch
 
-[下载最新版本](https://github.com/GboyCode/CodexAuth/releases/latest) · [v0.1.13 完整更新说明](docs/releases/v0.1.13.md)
+## 0.1.15：版本显示与 GitHub 更新检查
+
+主窗口标题上方和浮窗左上角显示版本号，点击即可手动检查 GitHub 最新正式版。发现更新时，按当前系统与架构匹配安装包，点击“下载安装包”通过浏览器下载，再运行安装包更新。检查失败可以重试；本机版本较新时不会提示降级。
+
+仅手动检查时请求本项目的公开 GitHub Release 接口，不携带账号、凭证或用量数据；不后台检查、不自动安装。实现使用 [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)。
+
+## 0.1.14：凭证文件图标
+
+安装后，`.codexauth` 加密凭证文件使用 CodexAuth 应用图标。导入仍通过主窗口的“导入凭证文件”完成。
+
+[下载最新版本](https://github.com/GboyCode/CodexAuth/releases/latest) · [v0.1.15 完整更新说明](docs/releases/v0.1.15.md)
 
 ## 0.1.13：跨电脑账号迁移
 
@@ -239,6 +249,8 @@ wss://
 ```
 
 这些限制用于确保渲染页面保持本地工具属性，避免账号信息或本地历史被上传。额度读取同样保持本地-only。
+
+例外是用户主动点击的 GitHub 更新检查：主进程使用独立 HTTPS 请求访问固定的公开仓库地址。只接受本仓库当前版本对应的安装包链接，并通过系统浏览器打开；不读取 GitHub 登录信息或 Codex 凭证。
 
 ## 使用方法
 

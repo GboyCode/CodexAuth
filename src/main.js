@@ -54,6 +54,9 @@ const { estimateLocalQuota } = require("./quota/local-estimate");
 const { readBrowserResetCredits } = require("./quota/browser-reset-cache");
 const { recoverAccountIndex } = require("./account-recovery");
 const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
+const { createUpdateChecker } = require("./github-updates");
+let updateChecker = null;
+let updateDialogPending = false;
 const readRecordFile = createRecordCache();
 let detectedCodexVersion = null;
 let selectedLogsDb = null;
@@ -4448,7 +4451,39 @@ function handleWidgetPointerLeave() {
   return { ok: true };
 }
 
+async function checkForUpdates(event) {
+  if (updateDialogPending) return { ok: true, busy: true };
+  updateDialogPending = true;
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const show = (options) => parent && !parent.isDestroyed()
+    ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+  try {
+    updateChecker ??= createUpdateChecker({ currentVersion: app.getVersion() });
+    const result = await updateChecker.check();
+    const newer = result.comparison > 0;
+    const canDownload = newer && result.installer;
+    const buttons = canDownload ? ["下载安装包", "查看更新说明", "关闭"] : ["查看更新说明", "关闭"];
+    const detail = [`当前版本：v${result.currentVersion}`, `GitHub 最新正式版：v${result.latestVersion}`];
+    if (canDownload) detail.push(`安装包：${result.installer.name}（${(result.installer.size / 1024 / 1024).toFixed(1)} MB）`, "点击下载会打开浏览器；下载完成后运行安装包更新。");
+    else if (newer) detail.push("该版本暂未提供适用于本机的安装包，请在发布页查看。");
+    else if (result.comparison < 0) detail.push("本机版本比 GitHub 已发布版本更新，无需降级。");
+    detail.push("仅查询公开 GitHub 发布信息，不发送账号、凭证或用量数据。");
+    const choice = await show({ type: "info", title: "CodexAuth 更新",
+      message: newer ? `发现新版本 v${result.latestVersion}` : result.comparison === 0 ? "当前已是最新正式版" : "本机版本更新",
+      detail: detail.join("\n\n"), buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
+    if (canDownload && choice.response === 0) await shell.openExternal(result.installer.url);
+    else if (choice.response === (canDownload ? 1 : 0)) await shell.openExternal(result.releaseUrl);
+    return { ok: true, latestVersion: result.latestVersion };
+  } catch (error) {
+    await show({ type: "warning", title: "CodexAuth 更新", message: "暂时无法检查更新",
+      detail: error.message, buttons: ["关闭"], noLink: true });
+    return { ok: false };
+  } finally { updateDialogPending = false; }
+}
+
 function registerIpc() {
+  ipcMain.handle("app:version", () => app.getVersion());
+  ipcMain.handle("updates:check", checkForUpdates);
   ipcMain.handle("diagnostics:get", async () => (await currentState()).diagnostics);
   ipcMain.handle("state:get", () => currentState());
   ipcMain.handle("account:export-portable", (_event, password) => exportCurrentCredentials(password));

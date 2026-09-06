@@ -86,6 +86,12 @@ button {
   backdrop-filter: none;
 }
 
+.app-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 5px; }
+.version-btn { padding: 0; background: transparent; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.version-btn:hover { color: var(--accent); }
+.version-btn:disabled { cursor: wait; opacity: 0.6; }
+.version-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
 .eyebrow,
 .label {
   margin: 0;

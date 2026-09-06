@@ -1,6 +1,16 @@
 # CodexAuth Switch
 
-[Download the latest release](https://github.com/GboyCode/CodexAuth/releases/latest) · [Full v0.1.13 release notes](docs/releases/v0.1.13.md)
+## 0.1.15: Version display and GitHub update checks
+
+Click the version above the main window title or beside the widget brand to check the latest public GitHub release. A newer release offers the installer matching the current OS and architecture; Download opens it in your browser for manual installation. Failed checks can be retried, and newer local builds are not offered a downgrade.
+
+Checks are manual and send no account, credential or usage data. There are no background checks or automatic installs. Uses the public [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
+
+## 0.1.14: Credential file icon
+
+After installation, `.codexauth` encrypted credential files use the CodexAuth app icon. Use Import credentials in the main window to import a file.
+
+[Download the latest release](https://github.com/GboyCode/CodexAuth/releases/latest) · [Full v0.1.15 release notes](docs/releases/v0.1.15.md)
 
 ## 0.1.13: portable account credentials
 
@@ -236,6 +246,8 @@ wss://
 ```
 
 These restrictions keep renderer pages local-only and help prevent account data or local history from being uploaded. Quota reading also stays local-only.
+
+The explicit exception is a user-triggered update check: the main process makes a separate HTTPS request to this repository's fixed public GitHub endpoint. Only matching installer links within this repository are accepted and opened in the system browser. GitHub login data and Codex credentials are not read.
 
 ## Usage
 

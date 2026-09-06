@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("codexAuth", {
+  getVersion: () => ipcRenderer.invoke("app:version"),
+  checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   getState: () => ipcRenderer.invoke("state:get"),
   importCurrent: (displayName) => ipcRenderer.invoke("account:import-current", displayName),
   exportPortable: (password) => ipcRenderer.invoke("account:export-portable", password),
