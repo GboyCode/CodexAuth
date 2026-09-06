@@ -237,8 +237,8 @@
     const stale=!Number.isFinite(stamp)||Date.now()-stamp>5*60*1000;
     const expiry=(reset.credits??[]).filter((c)=>c.status==="available"&&Number.isFinite(c.expiresAt)).map((c)=>c.expiresAt);
     const hasExpired=expiry.some((n)=>n*1000<=Date.now());
-    const origin=reset.source==="local-browser-cache"?"浏览器缓存":"本地快照";
-    const status=hasExpired?"含已到期记录，待更新":stale?(reset.source==="local-browser-cache"?"浏览器旧缓存，待更新":"旧快照，待更新"):origin;
+    const origin=reset.source==="local-browser-cache"?"Codex缓存":"本地快照";
+    const status=hasExpired?"含已到期记录，待更新":stale?(reset.source==="local-browser-cache"?"Codex旧缓存，待更新":"旧快照，待更新"):origin;
     return `重置次数：${reset.availableCount} · ${status}${options.compact?"":` · ${formatSnapshotTime(reset.checkedAt)}`}`;
   }
 

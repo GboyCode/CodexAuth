@@ -751,3 +751,10 @@ button {
 }
 
 #resetCreditsInfo, #extraBucketsInfo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+.quota-card #resetCreditsInfo {
+  height: 20px;
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: 0;
+}

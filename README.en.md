@@ -1,5 +1,10 @@
 # CodexAuth Switch
 
+## 0.1.10: widget minimum-height fix
+
+- Reserve enough minimum height for two complete account rows, including the additional-pool summary. Previously saved smaller bounds are corrected automatically.
+- Compact the reset-count line and label its source as Codex cache.
+
 ## 0.1.9: per-account quick overview
 
 - The widget account popover and main account details show saved reset counts, source, timestamp and additional quota pools for each account.

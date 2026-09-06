@@ -37,8 +37,8 @@ async function main() {
     assert.equal(reset.checkedAt, new Date(date).toISOString());
     const ui = vm.createContext({ window: {}, Date, Intl });
     vm.runInContext(await fs.readFile(path.join(__dirname, "../src/ui/shared-quota.js"), "utf8"), ui);
-    assert.match(ui.window.CodexQuotaUI.resetCreditsLabel(reset), /重置次数：2 · 浏览器缓存/);
-    assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({ ...reset, checkedAt: "2020-01-01T00:00:00Z" }), /浏览器旧缓存，待更新/);
+    assert.match(ui.window.CodexQuotaUI.resetCreditsLabel(reset), /重置次数：2 · Codex缓存/);
+    assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({ ...reset, checkedAt: "2020-01-01T00:00:00Z" }), /Codex旧缓存，待更新/);
     assert.equal(await readBrowserResetCache(root, { ...identity, userId: "other" }), null);
     assert.equal(await readBrowserResetCache(root, { ...identity, chatgptUserId: "other" }), null);
     assert.equal(await readBrowserResetCache(root, { userId: "account-a" }), null);
