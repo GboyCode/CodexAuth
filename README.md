@@ -5,6 +5,8 @@
 - 移除浮窗、账号详情及用量看板中的其他额度池展示，保留会话额度、周额度和重置次数。
 - 浮窗不再为额外额度池预留高度，最小尺寸仍可完整显示两个账号。
 
+维护时从 Codex 或终端更新已安装程序后，使用 `scripts/start-installed-independent.ps1 -ExecutablePath "E:\CodexAuth\CodexAuth Switch.exe"` 独立启动（路径按实际安装位置调整）。脚本由 Windows 进程服务启动程序，避免沿用维护宿主的进程生命周期；平时仍可使用桌面快捷方式。
+
 ## 0.1.11：修复重复启动时的空白账号页
 
 - 初始化期间重复打开程序会等待接口就绪，再显示主窗口或浮窗，避免 `No handler registered for 'state:get'`。
