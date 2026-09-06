@@ -18,6 +18,21 @@ function browserCacheDirectories(appData) {
   ].map((dir) => path.join(dir, "Cache", "Cache_Data"));
 }
 
+async function discoverBrowserCacheDirectories(appData, localAppData = process.env.LOCALAPPDATA) {
+  const roots = [appData];
+  // Store/MSIX installs can redirect Codex's roaming profile into LocalCache.
+  if (localAppData) {
+    const packages = path.join(localAppData, "Packages");
+    try {
+      const entries = await fs.readdir(packages, { withFileTypes: true });
+      for (const entry of entries.filter((item) => item.isDirectory() && /^OpenAI\.Codex_[\w]+$/i.test(item.name)).slice(0, 8)) {
+        roots.push(path.join(packages, entry.name, "LocalCache", "Roaming"));
+      }
+    } catch { /* The unpackaged app and non-Windows platforms have no Packages directory. */ }
+  }
+  return [...new Set(roots.flatMap(browserCacheDirectories))];
+}
+
 function resetFromCachedUsage(data, headers, identity, now = Date.now()) {
   // The separate reset-credit endpoint has no account identity. Never use it.
   if (!identity?.userId || !identity?.chatgptUserId ||
@@ -71,9 +86,11 @@ async function readBrowserResetCache(directory, identity) {
       let address = index.readUInt32LE(368 + slot * 4);
       while (address && !visited.has(address) && visited.size < 10000) {
         visited.add(address);
+        let nextAddress = 0;
         try {
           const entry = await stream(address, 256);
-          address = entry.readUInt32LE(4);
+          nextAddress = entry.readUInt32LE(4);
+          address = nextAddress;
           const keyLength = entry.readUInt32LE(32);
           if (entry.readInt32LE(20) !== 0 || keyLength < USAGE_URL.length || keyLength > 160 || entry.readUInt32LE(36)) continue;
           const key = entry.subarray(96, 96 + keyLength).toString("utf8");
@@ -88,17 +105,21 @@ async function readBrowserResetCache(directory, identity) {
           else if (encoding && encoding !== "identity") continue;
           const reset = resetFromCachedUsage(JSON.parse(body.toString("utf8")), headers, identity);
           if (reset && (!latest || Date.parse(reset.checkedAt) > Date.parse(latest.checkedAt))) latest = reset;
-        } catch { break; } // A cache entry may be replaced while Codex is writing it.
+        } catch {
+          // A replaced body must not hide other entries in the same hash chain.
+          address = nextAddress;
+        }
       }
     }
   } catch { /* Missing, locked or unsupported caches do not imply zero credits. */ }
   return latest;
 }
 
-async function readBrowserResetCredits(appData, identity) {
+async function readBrowserResetCredits(appData, identity, localAppData = process.env.LOCALAPPDATA) {
   if (!identity?.userId || !identity?.chatgptUserId) return null;
-  const results = await Promise.all(browserCacheDirectories(appData).map((dir) => readBrowserResetCache(dir, identity)));
+  const directories = await discoverBrowserCacheDirectories(appData, localAppData);
+  const results = await Promise.all(directories.map((dir) => readBrowserResetCache(dir, identity)));
   return results.filter(Boolean).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt))[0] ?? null;
 }
 
-module.exports = { browserCacheDirectories, resetFromCachedUsage, readBrowserResetCache, readBrowserResetCredits };
+module.exports = { browserCacheDirectories, discoverBrowserCacheDirectories, resetFromCachedUsage, readBrowserResetCache, readBrowserResetCredits };

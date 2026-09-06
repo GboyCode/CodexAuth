@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",

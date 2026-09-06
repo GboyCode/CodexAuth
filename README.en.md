@@ -1,5 +1,9 @@
 # CodexAuth Switch
 
+## 0.1.16: Reset-credit cache and snapshot fixes
+
+Discover redirected Codex cache profiles from Windows Store / MSIX installations and continue past damaged responses in cache hash chains. Account-verified reset credits can now be read without a switch timestamp and saved without a new quota event. Concurrent refreshes preserve the newest reset record, including snapshots with no quota windows. All quota reads remain local; missing records remain unknown.
+
 ## 0.1.15: Version display and GitHub update checks
 
 Click the version above the main window title or beside the widget brand to check the latest public GitHub release. A newer release offers the installer matching the current OS and architecture; Download opens it in your browser for manual installation. Failed checks can be retried, and newer local builds are not offered a downgrade.

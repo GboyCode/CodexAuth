@@ -4,7 +4,7 @@ const path = require("node:path");
 const os = require("node:os");
 const zlib = require("node:zlib");
 const vm = require("node:vm");
-const { readBrowserResetCache, resetFromCachedUsage } = require("../src/quota/browser-reset-cache");
+const { readBrowserResetCache, resetFromCachedUsage, readBrowserResetCredits } = require("../src/quota/browser-reset-cache");
 
 async function main() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexauth-cache-test-"));
@@ -47,13 +47,31 @@ async function main() {
     await fixture({ endpoint: "rate-limit-reset-credits", value: { available_count: 9 } });
     assert.equal(await readBrowserResetCache(root, identity), null, "unbound reset endpoint is ignored");
     await fixture({ corrupt: true }); assert.equal(await readBrowserResetCache(root, identity), null);
+    // A broken response at the head must not hide a valid colliding usage entry.
+    await fixture();
+    const chain = Buffer.alloc(8192 + 512);
+    const original = (await fs.readFile(path.join(root, "data_1"))).subarray(8192);
+    original.copy(chain, 8192); original.copy(chain, 8192 + 256);
+    chain.writeUInt32LE(0xa0010001, 8192 + 4);
+    chain.writeUInt32LE(0x800000ff, 8192 + 60);
+    await fs.writeFile(path.join(root, "data_1"), chain);
+    assert.equal((await readBrowserResetCache(root, identity)).availableCount, 2, "continue past an unreadable body in the same hash chain");
     await fixture({ encoding: "gzip" }); assert.equal((await readBrowserResetCache(root, identity)).availableCount, 2);
     await fixture({ encoding: "identity", value: { ...data, rate_limit_reset_credits: { available_count: 0 } } });
     assert.equal((await readBrowserResetCache(root, identity)).availableCount, 0);
     assert.equal(resetFromCachedUsage(data, header.replace(date, "invalid"), identity), null);
     assert.equal(resetFromCachedUsage(data, header.replace("200 OK", "401 Unauthorized"), identity), null);
     assert.equal(resetFromCachedUsage({ ...data, rate_limit_reset_credits: {} }, header, identity), null);
-    console.log("Browser reset cache validation passed: indexed entries, account/user isolation, compression, missing/zero counts, timestamps and corrupt caches.");
+    const appData = path.join(root, "Roaming");
+    const localAppData = path.join(root, "Local");
+    const packagedCache = path.join(localAppData, "Packages", "OpenAI.Codex_test", "LocalCache", "Roaming", "Codex", "Cache", "Cache_Data");
+    await fs.mkdir(packagedCache, { recursive: true });
+    await fixture();
+    for (const name of ["index", "data_1", "f_000001", "f_000002"]) await fs.copyFile(path.join(root, name), path.join(packagedCache, name));
+    assert.equal((await readBrowserResetCredits(appData, identity, localAppData)).availableCount, 2, "discover a Store install's redirected cache");
+    assert.equal(await readBrowserResetCredits(appData, { ...identity, chatgptUserId: "other" }, localAppData), null);
+    assert.equal(await readBrowserResetCredits(appData, identity, path.join(root, "missing")), null);
+    console.log("Browser reset cache validation passed: indexed entries, account/user isolation, Store profiles, compression, missing/zero counts, timestamps and corrupt hash chains.");
   } finally {
     assert.ok(path.resolve(root).startsWith(path.join(path.resolve(os.tmpdir()), "codexauth-cache-test-")));
     await fs.rm(root, { recursive: true, force: true });

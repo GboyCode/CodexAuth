@@ -820,13 +820,12 @@ async function localDiagnostics(index, current) {
 
 async function readLocalResetCredits(scope, records) {
   const since=Date.parse(scope.since);
-  if(!Number.isFinite(since)) return null;
   let latest=records.flatMap((r)=>r.resets).filter((r)=>Date.parse(r.checkedAt)>=since)
     .sort((a,b)=>Date.parse(b.checkedAt)-Date.parse(a.checkedAt))[0]??null;
   // Only structured Codex messages with matching account tags are accepted.
   // Assistant/tool transcripts (including quota queries pasted in a chat) are
   // intentionally not a data source for earned-reset balances.
-  const fromDb=await localDataCache.cached(`reset:${scope.accountId}:${scope.since}`,async()=>{
+  const fromDb=Number.isFinite(since) ? await localDataCache.cached(`reset:${scope.accountId}:${scope.since}`,async()=>{
     let db;
     try {
       const {DatabaseSync}=require("node:sqlite");db=new DatabaseSync(logsDbPath(),{readOnly:true});
@@ -844,7 +843,7 @@ async function readLocalResetCredits(scope, records) {
     }catch{/* an absent local reset record means unknown, never zero */}
     finally{db?.close();}
     return null;
-  });
+  }) : null;
   if(fromDb&&(!latest||Date.parse(fromDb.checkedAt)>Date.parse(latest.checkedAt)))latest=fromDb;
   const browser = scope.hasCurrentAuth ? await localDataCache.cached(`browser-reset:${scope.accountId}`, () =>
     readBrowserResetCredits(app.getPath("appData"), scope.account)) : null;
@@ -3537,7 +3536,7 @@ function localStoredQuotaSnapshot(snapshot) {
   const weekly = rateWindowHasDisplayData(snapshot.weekly) ? snapshot.weekly : null;
   const strippedSession = !!snapshot.session && !session;
   const strippedWeekly = !!snapshot.weekly && !weekly;
-  if (!session && !weekly && !snapshot.credits) return null;
+  if (!session && !weekly && !snapshot.credits && !normalizeResetCredits(snapshot.resetCredits, snapshot.resetCredits?.checkedAt)) return null;
   return {
     ...snapshot,
     session,
@@ -3619,9 +3618,32 @@ function mergeAccountQuotaWindow(nextWindow, previousWindow) {
   return quotaWindowHasDisplayData(previousWindow) ? previousWindow : nextWindow ?? null;
 }
 
-function buildAccountQuotaSnapshot(quota) {
+function newestResetCredits(...resets) {
+  return resets.filter((reset) => normalizeResetCredits(reset, reset?.checkedAt) && Number.isFinite(Date.parse(reset.checkedAt)))
+    .sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt))[0] ?? null;
+}
+
+async function saveAccountResetCredits(accountId, reset) {
+  if (!accountId || !newestResetCredits(reset)) return false;
+  return mutateIndex(async (index) => {
+    if (index.activeAccountId !== accountId) return { value: false, write: false };
+    const account = index.accounts.find((item) => item.id === accountId);
+    if (!account) return { value: false, write: false };
+    const previous = localStoredQuotaSnapshot(account.quotaSnapshot);
+    const latest = newestResetCredits(reset, previous?.resetCredits);
+    if (JSON.stringify(latest) === JSON.stringify(previous?.resetCredits)) return { value: false, write: false };
+    account.quotaSnapshot = buildAccountQuotaSnapshot({
+      ...(previous ?? { source: "local", planType: account.identity?.planType ?? null, session: null, weekly: null, credits: null, checkedAt: reset.checkedAt }),
+      resetCredits: latest,
+    });
+    account.quotaSnapshotUpdatedAt = new Date().toISOString();
+    return { value: true };
+  });
+}
+
+function buildAccountQuotaSnapshot(quota, previous) {
   const {calibration, ...snapshot} = quota;
-  return {...snapshot, schemaVersion:2};
+  return {...snapshot, resetCredits: newestResetCredits(snapshot.resetCredits, previous?.schemaVersion === 2 ? previous.resetCredits : null), schemaVersion:2};
 }
 
 function windowLearningSample(previousSnapshot, nextQuota, kind) {
@@ -3774,8 +3796,9 @@ async function resolveQuotaWithMode(scope, files) {
   const estimated = latestQuota ? estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration}) : baseQuota;
   const reset = await readLocalResetCredits(scope, records);
   const savedReset = scope.accountQuotaSnapshot?.resetCredits;
-  estimated.resetCredits = reset && (!savedReset || Date.parse(reset.checkedAt) >= Date.parse(savedReset.checkedAt)) ? reset : savedReset ?? null;
+  estimated.resetCredits = newestResetCredits(reset, savedReset);
   if (latestQuota && scope.accountId) await saveAccountQuotaSnapshot(scope.accountId, estimated);
+  else if (reset && scope.accountId) await saveAccountResetCredits(scope.accountId, reset);
   const {calibration, ...publicQuota} = estimated;
   return publicQuota;
 }

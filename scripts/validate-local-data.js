@@ -76,6 +76,33 @@ async function main(){
   assert.equal(sandbox.localStoredQuotaSnapshot({source:"local",session:{usedPercent:20}}),null,"old schema cannot leak old estimates");
   const persisted=sandbox.buildAccountQuotaSnapshot({...integratedQuota,resetCredits:{availableCount:3,checkedAt:ts(0)}});
   assert.equal(persisted.schemaVersion,2);assert.equal(persisted.resetCredits.availableCount,3);
+  const freshReset={availableCount:2,checkedAt:ts(5),source:"local-browser-cache"};
+  const olderReset={availableCount:3,checkedAt:ts(1),source:"local-browser-cache"};
+  const merged=sandbox.buildAccountQuotaSnapshot({...integratedQuota,resetCredits:olderReset},{schemaVersion:2,resetCredits:freshReset});
+  assert.equal(merged.resetCredits.availableCount,2,"a concurrent older quota refresh cannot overwrite newer reset credits");
+  assert.equal(sandbox.buildAccountQuotaSnapshot(integratedQuota,merged).resetCredits.availableCount,2,"quota records without credits preserve the saved balance");
+  assert.equal(sandbox.newestResetCredits({availableCount:9,checkedAt:"invalid"},freshReset).availableCount,2);
+  assert.equal(sandbox.localStoredQuotaSnapshot({schemaVersion:2,source:"local",resetCredits:freshReset}).resetCredits.availableCount,2,"credits survive without session/weekly windows");
+  // An account-bound browser response does not need an untagged-log switch boundary.
+  const resetSrc=await fs.readFile(srcPath,"utf8");
+  const resetSandbox=vm.createContext({require:(name)=>name==="electron"?{app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"test",getPath:()=>root}}:name==="./quota/browser-reset-cache"?{readBrowserResetCredits:async()=>freshReset}:realRequire(name),process:{...process,env:{...process.env,CODEX_HOME:root}},__dirname:path.dirname(srcPath),console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  vm.runInContext(resetSrc,resetSandbox);
+  const resetScope={hasCurrentAuth:true,accountId:"account-test",account:{userId:"account-test",chatgptUserId:"user-test"},since:null};
+  assert.equal((await resetSandbox.readLocalResetCredits(resetScope,[])).availableCount,2);
+  const resetIndex={activeAccountId:resetScope.accountId,accounts:[{id:resetScope.accountId,identity:{planType:"business"}}]};
+  resetSandbox.mutateIndex=async(action)=>action(resetIndex);
+  await resetSandbox.saveAccountResetCredits(resetScope.accountId,freshReset);
+  assert.equal(resetIndex.accounts[0].quotaSnapshot.resetCredits.availableCount,2);
+  await resetSandbox.saveAccountResetCredits(resetScope.accountId,olderReset);
+  assert.equal(resetIndex.accounts[0].quotaSnapshot.resetCredits.availableCount,2,"older responses cannot roll back a saved balance");
+  resetIndex.activeAccountId="other";
+  await resetSandbox.saveAccountResetCredits(resetScope.accountId,{availableCount:0,checkedAt:ts(6)});
+  assert.equal(resetIndex.accounts[0].quotaSnapshot.resetCredits.availableCount,2,"an in-flight untagged response cannot write after switching accounts");
+  resetSandbox.readBestLocalQuota=async()=>null;
+  let savedReset=null;
+  resetSandbox.saveAccountResetCredits=async(id,reset)=>{assert.equal(id,resetScope.accountId);savedReset=reset;};
+  assert.equal((await resetSandbox.resolveQuotaWithMode(resetScope,[])).resetCredits.availableCount,2);
+  assert.equal(savedReset.availableCount,2,"save new credits even with no fresh quota event");
   console.log("Local data validation passed: event deltas, model attribution, forks, account boundaries, compression, counter resets, quota buckets, weekly-only plans, nulls, local reset provenance, calibration isolation, recovery and main-process integration.");
  }finally{
   assert.ok(path.resolve(root).startsWith(path.join(path.resolve(os.tmpdir()),"codexauth-local-test-")));
