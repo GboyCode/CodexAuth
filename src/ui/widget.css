@@ -750,7 +750,7 @@ button {
   cursor: nwse-resize;
 }
 
-#resetCreditsInfo, #extraBucketsInfo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+#resetCreditsInfo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 
 .quota-card #resetCreditsInfo {
   height: 20px;

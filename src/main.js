@@ -76,8 +76,8 @@ const isMac = process.platform === "darwin";
 const WIDGET_WIDTH = 340;
 const WIDGET_MIN_WIDTH = 300;
 const WIDGET_MAX_WIDTH = 620;
-// Reserve the reset line and optional extra-pool line above two complete rows.
-const WIDGET_BASE_HEIGHT = 480;
+// Reserve the compact reset line above two complete account rows.
+const WIDGET_BASE_HEIGHT = 445;
 const WIDGET_ACCOUNT_ROW_DELTA = 49;
 const WIDGET_MIN_ACCOUNT_ROWS = 2;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;

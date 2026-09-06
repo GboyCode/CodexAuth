@@ -408,13 +408,11 @@ button:hover {
 
 .meter.estimated span,
 .account-quota-meter.estimated span,
-.all-account-meter.estimated span,
-.extra-quota-meter.estimated span {
+.all-account-meter.estimated span {
   background: linear-gradient(90deg, #7c3aed, #c4b5fd);
 }
 
-.quota-card.estimated .quota-title strong,
-.extra-quota-card.estimated .extra-quota-head strong {
+.quota-card.estimated .quota-title strong {
   color: #6d28d9;
 }
 
@@ -1215,63 +1213,8 @@ code {
   box-shadow: 0 8px 16px -12px rgba(79, 108, 255, 0.8);
 }
 
-.extra-quota-section {
-  margin: 0 0 14px;
-}
-
-.extra-quota-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px;
-}
-
-.extra-quota-card {
-  display: grid;
-  gap: 7px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 12px;
-  background: var(--surface-strong);
-}
-
-.extra-quota-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.extra-quota-head strong {
-  color: var(--codex-blue);
-  font-size: 13px;
-  font-weight: 560;
-}
-
-.extra-quota-meter {
-  height: 6px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #edf1f6;
-}
-
-.extra-quota-meter span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--codex-blue), var(--codex-cyan));
-}
-
-.extra-quota-card p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
 .local-diagnostics summary { cursor: pointer; font-size: 13px; }
 .local-diagnostics p { white-space: pre-line; overflow-wrap: anywhere; }
 .metric-card { min-width: 0; }
 .metric-card strong { font-size: clamp(16px, 2.1vw, 24px); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.extra-quota-head span, .usage-note { overflow-wrap: anywhere; }
+.usage-note { overflow-wrap: anywhere; }

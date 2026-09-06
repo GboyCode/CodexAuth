@@ -55,8 +55,6 @@ const els = {
   planType: document.querySelector("#planType"),
   quotaSource: document.querySelector("#quotaSource"),
   creditsInfo: document.querySelector("#creditsInfo"),
-  extraQuotaSection: document.querySelector("#extraQuotaSection"),
-  extraQuotaGrid: document.querySelector("#extraQuotaGrid"),
   totalTokens: document.querySelector("#totalTokens"),
   inputTokens: document.querySelector("#inputTokens"),
   outputTokens: document.querySelector("#outputTokens"),
@@ -306,14 +304,6 @@ function createAccountQuotaDetails(account) {
   const grid = document.createElement("div");
   grid.className = "account-quota-grid";
   grid.append(createAccountQuotaMetric("session", snapshot.session), createAccountQuotaMetric("weekly", snapshot.weekly));
-  for (const bucket of snapshot.additional ?? []) {
-    for (const kind of ["session", "weekly"]) {
-      if (!bucket[kind]) continue;
-      const metric = createAccountQuotaMetric(kind, bucket[kind]);
-      metric.querySelector(".account-quota-head span").textContent = `${bucket.label || bucket.limitId} · ${q.quotaWindowLabel(kind, bucket[kind])}`;
-      grid.append(metric);
-    }
-  }
 
   details.append(summary, resets, grid);
   return details;
@@ -467,44 +457,9 @@ function renderQuotaPanel(dashboard) {
   els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits);
 }
 
-function extraQuotaCard(label, quotaWindow) {
-  const card = document.createElement("article");
-  card.className = q.isEstimatedWindow(quotaWindow) ? "extra-quota-card estimated" : "extra-quota-card";
-  const head = document.createElement("div");
-  head.className = "extra-quota-head";
-  const title = document.createElement("span");
-  title.textContent = label;
-  const value = document.createElement("strong");
-  value.textContent = q.formatRemainingText(quotaWindow);
-  head.append(title, value);
-  const meter = document.createElement("div");
-  meter.className = q.isEstimatedWindow(quotaWindow) ? "extra-quota-meter estimated" : "extra-quota-meter";
-  const fill = document.createElement("span");
-  const remaining = q.displayRemainingPercent(quotaWindow);
-  fill.style.width = remaining === null ? "0%" : `${Math.round(remaining)}%`;
-  meter.append(fill);
-  const foot = document.createElement("p");
-  foot.textContent = quotaWindow ? q.formatUsedFootnote(quotaWindow) : "暂无数据";
-  card.append(head, meter, foot);
-  return card;
-}
-
-function renderExtraQuota(quota) {
-  els.extraQuotaGrid.replaceChildren();
-  const cards = [];
-  if (quota?.review) cards.push(extraQuotaCard("Reviews", quota.review));
-  for (const entry of quota?.additional || []) {
-    if (entry.session) cards.push(extraQuotaCard(`${entry.label} · ${q.windowTitle("session",entry.session)}`, entry.session));
-    if (entry.weekly) cards.push(extraQuotaCard(`${entry.label} · 周额度`, entry.weekly));
-  }
-  els.extraQuotaSection.hidden = cards.length === 0;
-  cards.forEach((card) => els.extraQuotaGrid.append(card));
-}
-
 function renderDashboard(dashboard) {
   state.dashboardLoaded = true;
   renderQuotaPanel(dashboard);
-  renderExtraQuota(dashboard?.quota);
 
   const usage = dashboard?.usage;
   const tokenUsage = usage?.tokenUsage || {};
@@ -730,12 +685,6 @@ async function renderAllAccountsQuota() {
           createAllAccountQuotaMeter("weekly", account.quotaSnapshot.weekly)
         );
         card.append(meters);
-        for (const bucket of account.quotaSnapshot.additional ?? []) {
-          const note=document.createElement("p");
-          note.className="all-account-no-data";
-          note.textContent=`${bucket.label} · ${q.formatRemainingText(bucket.weekly??bucket.session)}`;
-          card.append(note);
-        }
       } else {
         const noData = document.createElement("p");
         noData.className = "all-account-no-data";
@@ -785,7 +734,6 @@ async function readQuota(silent = true) {
   try {
     const quotaDashboard = await api.getQuota();
     renderQuotaPanel(quotaDashboard);
-    renderExtraQuota(quotaDashboard?.quota);
     if (!silent) showToast("额度已刷新");
   } finally {
     state.quotaLoading = false;

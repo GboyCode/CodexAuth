@@ -1,5 +1,10 @@
 # CodexAuth Switch
 
+## 0.1.12: simplified quota display
+
+- Remove additional quota pools from the widget, account details and usage dashboard. Session quota, weekly quota and reset counts remain available.
+- Reduce the widget minimum height while retaining two complete account rows.
+
 ## 0.1.11: startup race fix
 
 - Repeated launches wait for initialization and IPC registration before opening either window, preventing the missing `state:get` handler error.

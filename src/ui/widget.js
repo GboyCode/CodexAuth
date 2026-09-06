@@ -16,7 +16,6 @@ const els = {
   weeklyReset: document.querySelector("#weeklyReset"),
   quotaFreshness: document.querySelector("#quotaFreshness"),
   resetCreditsInfo: document.querySelector("#resetCreditsInfo"),
-  extraBucketsInfo: document.querySelector("#extraBucketsInfo"),
   accountList: document.querySelector("#accountList"),
   refreshBtn: document.querySelector("#refreshBtn"),
   restartBtn: document.querySelector("#restartBtn"),
@@ -222,14 +221,6 @@ function createAccountQuotaDetails(account) {
     createAccountQuotaMetric("session", snapshot.session),
     createAccountQuotaMetric("weekly", snapshot.weekly)
   );
-  for (const bucket of snapshot.additional ?? []) {
-    for (const kind of ["session", "weekly"]) {
-      if (!bucket[kind]) continue;
-      const metric = createAccountQuotaMetric(kind, bucket[kind]);
-      metric.querySelector(".account-quota-line span").textContent = `${bucket.label || bucket.limitId} · ${q.quotaWindowLabel(kind, bucket[kind])}`;
-      details.append(metric);
-    }
-  }
   return details;
 }
 
@@ -507,10 +498,6 @@ function render(snapshot, dashboard) {
   renderWindow("weekly", quota?.weekly);
   renderQuotaFreshness(quota);
   els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits,{compact:true});
-  const extra=(quota?.additional??[]).map((b)=>`${b.label}：${q.formatRemainingText(b.weekly??b.session)}`);
-  els.extraBucketsInfo.hidden=extra.length===0;
-  els.extraBucketsInfo.textContent=extra.join(" · ");
-  els.extraBucketsInfo.title=extra.join("\n");
   renderAccounts(snapshot);
 }
 
