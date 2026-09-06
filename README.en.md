@@ -1,5 +1,7 @@
 # CodexAuth Switch
 
+[Download the latest release](https://github.com/GboyCode/CodexAuth/releases/latest) · [Full v0.1.13 release notes](docs/releases/v0.1.13.md)
+
 ## 0.1.13: portable account credentials
 
 Use **Export current account** on computer A with a migration password of at least 10 characters. Install this version or newer on computer B, import the encrypted `.codexauth` file with the same password, then select **Switch** for the imported account. Importing does not automatically change the active login or restart Codex.
@@ -61,7 +63,7 @@ One-line positioning: **CodexAuth Switch is a local-first Codex App multi-accoun
 - Users who manage multiple Codex App login accounts on Windows or macOS.
 - Users who want to switch the active OpenAI Codex / Codex App account quickly.
 - Users who want to safely save and restore local `~/.codex/auth.json` login snapshots.
-- Users who want to view local Codex quota, 5-hour quota, weekly quota, Reviews, model-level limits, token usage, and recent sessions.
+- Users who want to view local session quota, weekly quota, remaining resets, token usage, and recent sessions.
 - Users who want local log estimation without sending tokens, account data, or conversation history to remote quota endpoints.
 
 ## Search Keywords
@@ -78,7 +80,7 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - Provide a main window, system tray menu, and floating quick-view widget.
 - Read quota and token usage from local Codex logs.
 - Cache parsed local token events by file size and modification time to reduce repeated scans.
-- Show quota pace hints, Reviews, and model-level limit cards.
+- Show session quota, weekly quota and saved reset counts per account, with explicit missing or stale data labels.
 - Disable network requests in renderer pages; quota reading also stays local-only.
 
 ## Screenshots

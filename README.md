@@ -1,5 +1,7 @@
 # CodexAuth Switch
 
+[下载最新版本](https://github.com/GboyCode/CodexAuth/releases/latest) · [v0.1.13 完整更新说明](docs/releases/v0.1.13.md)
+
 ## 0.1.13：跨电脑账号迁移
 
 主窗口提供“导出当前账号”和“导入凭证文件”。在 A 电脑设置至少 10 个字符的迁移密码，保存加密的 `.codexauth` 文件；在 B 电脑安装本版本或更新版本，选择导入并输入相同密码，再在账号列表点击“切换”。导入不会自动切换或重启当前账号。
@@ -64,7 +66,7 @@ CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多�
 - 想在 Windows 或 macOS 上管理多个 Codex App 登录账号。
 - 想快速切换 OpenAI Codex / Codex App 当前账号。
 - 想安全保存和恢复本地 `~/.codex/auth.json` 登录快照。
-- 想查看 Codex 本地额度、5 小时额度、周额度、Reviews、模型级额度、token 用量和最近会话。
+- 想查看 Codex 本地会话额度、周额度、剩余重置次数、token 用量和最近会话。
 - 想坚持本地日志估算，不把 token、账号信息或会话历史发到远程额度接口。
 
 ## 常见搜索词
@@ -81,7 +83,7 @@ Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账
 - 提供主窗口、系统托盘菜单和悬浮快捷窗。
 - 从本地 Codex 日志读取额度和 token 使用情况。
 - 使用本地 token 事件索引辅助额度预估，减少重复扫描并提升刷新稳定性。
-- 显示额度消耗 pace 提示、Reviews 和模型级额度。
+- 显示会话额度、周额度和各账号保存的剩余重置次数；缺失或过期的数据会明确标注。
 - 渲染页面禁用网络请求；额度读取路径也保持本地-only。
 
 ## 界面截图

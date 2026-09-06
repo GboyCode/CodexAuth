@@ -81,6 +81,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
       - name: Download installers
         uses: actions/download-artifact@v4
         with:
@@ -91,13 +94,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: CodexAuth Switch ${{ github.ref_name }}
-          body: |
-            CodexAuth Switch release for Windows and macOS.
-
-            - Windows x64 installer
-            - macOS DMGs for Apple Silicon and Intel
-            - DPAPI encryption on Windows and Keychain-backed encryption on macOS
-            - Local account snapshots, quota estimates, and token usage statistics
-            - No Codex conversation history upload
-            - The installers are not commercially code-signed or Apple-notarized, so the operating system may show a security warning.
+          body_path: docs/releases/${{ github.ref_name }}.md
           files: release-assets/**

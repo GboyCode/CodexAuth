@@ -14,5 +14,10 @@ Thumbs.db
 .codex/
 auth.json
 *.dpapi
+*.keychain
+*.codexauth
+accounts.json
+auth.json.*
+config.toml.codexauth-backup-*
 *.sqlite
 *.sqlite-*
