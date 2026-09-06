@@ -190,11 +190,14 @@ function createAccountQuotaDetails(account) {
   details.className = "account-quota-details";
 
   const snapshot = account.quotaSnapshot;
+  const resets = document.createElement("p");
+  resets.className = "account-reset-credits";
+  resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits);
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
     empty.textContent = "暂无上次额度快照";
-    details.append(empty);
+    details.append(empty, resets);
     return details;
   }
 
@@ -209,15 +212,24 @@ function createAccountQuotaDetails(account) {
   if (!account.isActive) {
     const note = document.createElement("p");
     note.className = "account-quota-empty";
-    note.textContent = "上次切换时的本地快照";
+    note.textContent = "该账号上次保存的本地快照";
     details.append(note);
   }
 
   details.append(
     summary,
+    resets,
     createAccountQuotaMetric("session", snapshot.session),
     createAccountQuotaMetric("weekly", snapshot.weekly)
   );
+  for (const bucket of snapshot.additional ?? []) {
+    for (const kind of ["session", "weekly"]) {
+      if (!bucket[kind]) continue;
+      const metric = createAccountQuotaMetric(kind, bucket[kind]);
+      metric.querySelector(".account-quota-line span").textContent = `${bucket.label || bucket.limitId} · ${q.quotaWindowLabel(kind, bucket[kind])}`;
+      details.append(metric);
+    }
+  }
   return details;
 }
 
@@ -288,7 +300,7 @@ function positionAccountPopover(popover, row) {
   const availableAbove = Math.max(128, rect.top - margin - gap);
 
   popover.style.width = `${width}px`;
-  popover.style.maxHeight = `${Math.min(236, availableAbove)}px`;
+  popover.style.maxHeight = `${Math.min(340, availableAbove)}px`;
   const height = popover.offsetHeight;
   popover.style.left = `${left}px`;
   popover.style.top = `${Math.max(margin, rect.top - height - gap)}px`;

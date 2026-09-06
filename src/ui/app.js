@@ -282,11 +282,14 @@ function createAccountQuotaDetails(account) {
   details.className = "account-quota-details";
 
   const snapshot = account.quotaSnapshot;
+  const resets = document.createElement("p");
+  resets.className = "account-reset-credits";
+  resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits);
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
     empty.textContent = "暂无上次额度快照";
-    details.append(empty);
+    details.append(empty, resets);
     return details;
   }
 
@@ -303,8 +306,16 @@ function createAccountQuotaDetails(account) {
   const grid = document.createElement("div");
   grid.className = "account-quota-grid";
   grid.append(createAccountQuotaMetric("session", snapshot.session), createAccountQuotaMetric("weekly", snapshot.weekly));
+  for (const bucket of snapshot.additional ?? []) {
+    for (const kind of ["session", "weekly"]) {
+      if (!bucket[kind]) continue;
+      const metric = createAccountQuotaMetric(kind, bucket[kind]);
+      metric.querySelector(".account-quota-head span").textContent = `${bucket.label || bucket.limitId} · ${q.quotaWindowLabel(kind, bucket[kind])}`;
+      grid.append(metric);
+    }
+  }
 
-  details.append(summary, grid);
+  details.append(summary, resets, grid);
   return details;
 }
 

@@ -643,6 +643,17 @@ button {
   margin: 0;
 }
 
+.account-reset-credits {
+  margin: 0;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--blue);
+  background: rgba(82, 110, 255, 0.06);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .empty {
   color: var(--muted);
 }

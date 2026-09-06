@@ -649,6 +649,17 @@ button:hover {
   color: var(--danger);
 }
 
+.account-reset-credits {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--blue);
+  background: rgba(82, 110, 255, 0.06);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .account-quota-details {
   grid-column: 1 / -1;
   border-top: 1px solid var(--line-soft);

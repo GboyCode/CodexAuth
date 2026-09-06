@@ -1,5 +1,10 @@
 # CodexAuth Switch
 
+## 0.1.9: per-account quick overview
+
+- The widget account popover and main account details show saved reset counts, source, timestamp and additional quota pools for each account.
+- Snapshots remain available after switching accounts. Missing values stay unknown and stale reset counts are labeled; no online refresh is performed for other accounts.
+
 ## 0.1.8: local reset-credit cache support
 
 - Read existing Codex browser usage-response caches after matching both account ID and user ID to the active account.
