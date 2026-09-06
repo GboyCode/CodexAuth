@@ -31,6 +31,11 @@ const els = {
   currentPath: document.querySelector("#currentPath"),
   accountCount: document.querySelector("#accountCount"),
   storePath: document.querySelector("#storePath"),
+  diagnosticsInfo: document.querySelector("#diagnosticsInfo"),
+  recoveryInfo: document.querySelector("#recoveryInfo"),
+  resetCreditsInfo: document.querySelector("#resetCreditsInfo"),
+  tokenBreakdown: document.querySelector("#tokenBreakdown"),
+  usageCoverage: document.querySelector("#usageCoverage"),
   displayNameInput: document.querySelector("#displayNameInput"),
   importBtn: document.querySelector("#importBtn"),
   accountList: document.querySelector("#accountList"),
@@ -226,6 +231,17 @@ function renderStatus(snapshot) {
   els.accountCount.textContent = `${snapshot.accounts.length} 个账号`;
   els.storePath.textContent = snapshot.storeRoot;
   els.storePath.title = "打开保险箱目录";
+  const d=snapshot.diagnostics;
+  if(d) {
+    els.diagnosticsInfo.textContent = [
+      `CodexAuth ${d.version} · Codex ${d.codexVersion ?? "版本未知"}`,
+      `文件凭据：${d.fileCredentials?"正常":"需检查"} · 账号同步：${d.authSynchronized?"一致":"待同步"}`,
+      `${d.sessionFiles} 个本地日志 · ${d.logDatabase} ${d.dbReadable?"可读":"暂不可读"}`,
+      `日志更新：${d.latestLogAt?formatDate(d.latestLogAt):"未知"} · 全程本地`,
+    ].join("\n");
+    els.recoveryInfo.hidden=!d.recovery;
+    if(d.recovery)els.recoveryInfo.textContent=`已从加密快照恢复 ${d.recovery.recovered} 个账号，${d.recovery.skipped} 个未恢复。原文件保留于 ${d.recovery.path}`;
+  }
 }
 
 function createAccountQuotaMetric(kind, window) {
@@ -417,7 +433,7 @@ function renderQuotaWindow(kind, window) {
     resetEl.textContent = "暂无数据";
     return;
   }
-  const remainingPercent = q.displayRemainingPercent(window) ?? Math.max(0, Math.min(100, 100 - q.displayUsedPercent(window)));
+  const remainingPercent = q.displayRemainingPercent(window) ?? 0;
   percentEl.textContent = q.formatRemainingText(window);
   meterEl.parentElement?.classList.toggle("estimated", q.isEstimatedWindow(window));
   meterEl.style.width = `${remainingPercent}%`;
@@ -437,6 +453,7 @@ function renderQuotaPanel(dashboard) {
     quota?.credits?.balance !== undefined && quota?.credits?.balance !== null
       ? `余额 ${quota.credits.balance}`
       : "余额 --";
+  els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits);
 }
 
 function extraQuotaCard(label, quotaWindow) {
@@ -466,8 +483,8 @@ function renderExtraQuota(quota) {
   const cards = [];
   if (quota?.review) cards.push(extraQuotaCard("Reviews", quota.review));
   for (const entry of quota?.additional || []) {
-    if (entry.session) cards.push(extraQuotaCard(entry.label, entry.session));
-    if (entry.weekly) cards.push(extraQuotaCard(`${entry.label} Weekly`, entry.weekly));
+    if (entry.session) cards.push(extraQuotaCard(`${entry.label} · ${q.windowTitle("session",entry.session)}`, entry.session));
+    if (entry.weekly) cards.push(extraQuotaCard(`${entry.label} · 周额度`, entry.weekly));
   }
   els.extraQuotaSection.hidden = cards.length === 0;
   cards.forEach((card) => els.extraQuotaGrid.append(card));
@@ -480,9 +497,19 @@ function renderDashboard(dashboard) {
 
   const usage = dashboard?.usage;
   const tokenUsage = usage?.tokenUsage || {};
-  els.totalTokens.textContent = compactNumber(tokenUsage.totalTokens);
-  els.inputTokens.textContent = compactNumber(tokenUsage.inputTokens);
-  els.outputTokens.textContent = compactNumber(tokenUsage.outputTokens);
+  const exact=(n)=>new Intl.NumberFormat("zh-CN").format(Number(n??0));
+  els.totalTokens.textContent = exact(tokenUsage.totalTokens);
+  els.inputTokens.textContent = exact(tokenUsage.inputTokens);
+  els.outputTokens.textContent = exact(tokenUsage.outputTokens);
+  els.tokenBreakdown.textContent=`缓存输入 ${exact(tokenUsage.cachedInputTokens)} · 推理输出 ${exact(tokenUsage.reasoningOutputTokens)}（均为已包含的子项）`;
+  const c=usage?.coverage??{};
+  els.usageCoverage.textContent=[`已扫描 ${usage?.scannedFiles??0}/${usage?.totalFiles??0} 个日志文件`,
+    `重复事件去重 ${c.duplicates??0} 条`,
+    usage?.failedFiles?`${usage.failedFiles} 个文件暂不可读`:null,
+    c.invalidLines?`${c.invalidLines} 行损坏或尚未写完`:null,
+    c.counterResets?`${c.counterResets} 次计数回退已重新设定基准`:null,
+    (c.boundaryIntervals||c.missingBaselines)?`存在缺失基准的区间，未推算用量`:null,
+  ].filter(Boolean).join(" · ");
   els.sessionCount.textContent = String(usage?.sessionsAnalyzed ?? 0);
   if (usage?.totalFiles && usage.totalFiles > usage.scannedFiles) {
     els.sessionCount.title = `已扫描最近 ${usage.scannedFiles} 个会话文件，本机共 ${usage.totalFiles} 个`;
@@ -631,7 +658,7 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
   const head = document.createElement("div");
   head.className = "all-account-meter-head";
   const label = document.createElement("span");
-  label.textContent = kind === "weekly" ? "周额度" : quotaWindow?.windowMinutes === 300 ? "5 小时" : "会话";
+  label.textContent = q.windowTitle(kind,quotaWindow);
   const value = document.createElement("strong");
   value.textContent = q.formatRemainingText(quotaWindow);
   head.append(label, value);
@@ -692,6 +719,12 @@ async function renderAllAccountsQuota() {
           createAllAccountQuotaMeter("weekly", account.quotaSnapshot.weekly)
         );
         card.append(meters);
+        for (const bucket of account.quotaSnapshot.additional ?? []) {
+          const note=document.createElement("p");
+          note.className="all-account-no-data";
+          note.textContent=`${bucket.label} · ${q.formatRemainingText(bucket.weekly??bucket.session)}`;
+          card.append(note);
+        }
       } else {
         const noData = document.createElement("p");
         noData.className = "all-account-no-data";
@@ -699,6 +732,10 @@ async function renderAllAccountsQuota() {
         card.append(noData);
       }
 
+      const resets=document.createElement("p");
+      resets.className="all-account-no-data";
+      resets.textContent=q.resetCreditsLabel(account.quotaSnapshot?.resetCredits,{compact:true});
+      card.append(resets);
       els.allAccountsGrid.append(card);
     }
   } catch (error) {
@@ -737,6 +774,7 @@ async function readQuota(silent = true) {
   try {
     const quotaDashboard = await api.getQuota();
     renderQuotaPanel(quotaDashboard);
+    renderExtraQuota(quotaDashboard?.quota);
     if (!silent) showToast("额度已刷新");
   } finally {
     state.quotaLoading = false;

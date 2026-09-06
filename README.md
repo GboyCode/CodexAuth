@@ -1,5 +1,16 @@
 # CodexAuth Switch
 
+## 0.1.7：本地兼容与统计更新
+
+- 按额度池 ID 分别展示，正确识别只有周窗口的套餐；缺失百分比显示未知。
+- Token 使用逐事件增量，覆盖 sessions 与 archived_sessions，重复历史去重，按实际模型/日期归属；支持 gzip 与运行时可用的 Zstandard。展示完整整数、缓存输入/推理输出子项和扫描覆盖情况。计数回退或缺失基准不猜测补齐。
+- 额度估算只使用本账号、同模型、明确速度档、同额度池和窗口的本地样本，至少 3 个样本；新模型不再套用 GPT-5.5 价格。样本不足仍展示本地快照。
+- 重置次数只接受结构化本地 Codex 记录；没有记录显示“未知”，旧记录或过期记录明确标注。不联网查询，也不提供兑换重置操作。
+- 自检展示实际运行版本、凭据同步与日志状态；索引损坏时先保留原索引和加密快照，再恢复可解密账号。恢复目录不自动删除。
+- 当前账号统计从最近一次切换起，不能据此推断其他设备用量。首次完整统计可能较慢，后续复用未变化文件的解析结果。
+- 新增验证：`npm run local-data:validate`。
+
+
 ![CodexAuth Switch 横版海报](docs/assets/readme-poster.png)
 
 [English README](README.en.md) | 中文说明
@@ -149,9 +160,9 @@ Windows 会结束属于 Codex 安装目录的桌面进程组并重新启动应�
 本地预估模式读取以下数据：
 
 - session JSONL 文件里的 `codex.rate_limits`。
-- `logs_2.sqlite` 里的 `codex.rate_limits` 和 usage-limit 记录。
+- 自动发现最新 `logs_N.sqlite` 里的 `codex.rate_limits` 和 usage-limit 记录。
 - session 文件里的 `token_count` 事件。
-- 应用本地目录里的 `local-token-ledger.json`，只保存 token 计数、模型、时间、rate-limit 快照和文件状态，用于增量去重和更稳定的本地估算。
+- 按文件大小和修改时间缓存解析结果，对完整日志事件去重；账号元数据只保存额度快照和各模型、服务档位独立的校准样本。旧版 `local-token-ledger.json` 不再参与统计。
 
 应用会监听本地日志文件变化，并用短延迟防抖刷新显示；同时用低频轮询检查 SQLite 文件更新时间，避免文件监听漏事件。
 
@@ -245,10 +256,10 @@ npm run lint
 ### 校验额度逻辑
 
 ```powershell
-npm run quota:validate
+npm run local-data:validate
 ```
 
-这个命令会回放本机 `.codex` session 日志，检查额度估算逻辑。它只读取本地会话文件，不会写入这些文件。
+这个命令使用隔离测试日志，检查 Token 增量、重复和分叉、账号边界、额度池、周窗口、重置次数来源、估算校准及账号恢复。`quota:validate` 保留用于旧价格权重算法的历史回放，不作为当前算法的验收。
 
 ### 打包 Windows 安装器
 

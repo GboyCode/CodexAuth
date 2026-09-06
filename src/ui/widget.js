@@ -15,6 +15,8 @@ const els = {
   weeklyMeter: document.querySelector("#weeklyMeter"),
   weeklyReset: document.querySelector("#weeklyReset"),
   quotaFreshness: document.querySelector("#quotaFreshness"),
+  resetCreditsInfo: document.querySelector("#resetCreditsInfo"),
+  extraBucketsInfo: document.querySelector("#extraBucketsInfo"),
   accountList: document.querySelector("#accountList"),
   refreshBtn: document.querySelector("#refreshBtn"),
   restartBtn: document.querySelector("#restartBtn"),
@@ -148,7 +150,7 @@ function renderWindow(kind, quotaWindow) {
     return;
   }
   const remainingPercent =
-    q.displayRemainingPercent(quotaWindow) ?? Math.max(0, Math.min(100, 100 - q.displayUsedPercent(quotaWindow)));
+    q.displayRemainingPercent(quotaWindow) ?? 0;
   percentEl.textContent = q.formatRemainingText(quotaWindow);
   meterEl.parentElement?.classList.toggle("estimated", q.isEstimatedWindow(quotaWindow));
   meterEl.style.width = `${remainingPercent}%`;
@@ -492,6 +494,11 @@ function render(snapshot, dashboard) {
   renderWindow("session", quota?.session);
   renderWindow("weekly", quota?.weekly);
   renderQuotaFreshness(quota);
+  els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits,{compact:true});
+  const extra=(quota?.additional??[]).map((b)=>`${b.label}：${q.formatRemainingText(b.weekly??b.session)}`);
+  els.extraBucketsInfo.hidden=extra.length===0;
+  els.extraBucketsInfo.textContent=extra.join(" · ");
+  els.extraBucketsInfo.title=extra.join("\n");
   renderAccounts(snapshot);
 }
 

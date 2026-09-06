@@ -738,3 +738,5 @@ button {
   left: 0;
   cursor: nwse-resize;
 }
+
+#resetCreditsInfo, #extraBucketsInfo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }

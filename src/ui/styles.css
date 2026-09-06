@@ -1258,3 +1258,9 @@ code {
   font-size: 11px;
   line-height: 1.35;
 }
+
+.local-diagnostics summary { cursor: pointer; font-size: 13px; }
+.local-diagnostics p { white-space: pre-line; overflow-wrap: anywhere; }
+.metric-card { min-width: 0; }
+.metric-card strong { font-size: clamp(16px, 2.1vw, 24px); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.extra-quota-head span, .usage-note { overflow-wrap: anywhere; }

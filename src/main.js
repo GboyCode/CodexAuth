@@ -48,6 +48,13 @@ const {
   isReasonableQuotaCoefficient,
 } = require("./quota/token-math");
 const { scopedTokenDelta } = require("./quota/usage-math");
+const { createRecordCache, aggregateUsage, quotaFromRecords, normalizeBucket, combineBuckets, windowFor, normalizeResetCredits, numberOrNull } = require("./quota/local-records");
+const { estimateLocalQuota } = require("./quota/local-estimate");
+const { recoverAccountIndex } = require("./account-recovery");
+const readRecordFile = createRecordCache();
+let detectedCodexVersion = null;
+let selectedLogsDb = null;
+let selectedLogsDbAt = 0;
 const { createLocalDataCache } = require("./quota/local-data-cache");
 const {
   MAC_CODEX_APP_NAMES,
@@ -162,7 +169,14 @@ function sessionIndexPath() {
 }
 
 function logsDbPath() {
-  return path.join(codexDir(), "logs_2.sqlite");
+  if (selectedLogsDb && Date.now() - selectedLogsDbAt < 30000) return selectedLogsDb;
+  try {
+    const names = fsSync.readdirSync(codexDir()).filter((name) => /^logs_\d+\.sqlite$/.test(name));
+    names.sort((a,b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
+    selectedLogsDb = path.join(codexDir(), names[0] ?? "logs_2.sqlite");
+  } catch { selectedLogsDb = path.join(codexDir(), "logs_2.sqlite"); }
+  selectedLogsDbAt = Date.now();
+  return selectedLogsDb;
 }
 
 function logsDbWalPath() {
@@ -462,6 +476,7 @@ async function readIndex() {
     accounts: Array.isArray(data.accounts) ? data.accounts : [],
     deletedIdentityKeys: Array.isArray(data.deletedIdentityKeys) ? data.deletedIdentityKeys : [],
     settings: normalizeSettings(data.settings),
+    recovery: data.recovery ?? null,
   };
 }
 
@@ -472,6 +487,7 @@ async function writeIndex(index) {
     accounts: index.accounts,
     deletedIdentityKeys: Array.isArray(index.deletedIdentityKeys) ? index.deletedIdentityKeys : [],
     settings: normalizeSettings(index.settings),
+    recovery: index.recovery ?? null,
   });
 }
 
@@ -738,6 +754,88 @@ async function readCurrentAuth() {
   return { path: currentPath, content, ...validation };
 }
 
+async function recoverStoreIfNeeded() {
+  return recoverAccountIndex({
+    indexPath:indexPath(), accountsDir:accountsDir(), extension:credentialFileExtension(),
+    decode:async (encrypted) => {
+      const content=await unprotectText(encrypted);
+      return {...validateAuthJson(content),content};
+    },
+    identify:identityKey,
+    makeRecord:(auth) => createAccountRecord(auth,safeAccountName("",auth.identity),new Date().toISOString()),
+    write:writeJsonAtomic,
+  });
+}
+
+async function readLocalRecords(files, since = null) {
+  const cutoff=since ? Date.parse(since) : null;
+  const records=[];
+  for(const file of files) {
+    if(Number.isFinite(cutoff) && file.mtimeMs < cutoff) continue;
+    try { records.push(await readRecordFile(file)); } catch { /* surfaced as failedFiles in statistics */ }
+  }
+  return records;
+}
+
+async function localDiagnostics(index, current) {
+  if (!detectedCodexVersion) {
+    detectedCodexVersion = (async () => {
+      try {
+        if (isWindows) {
+          const output = await runPowerShell("$p = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1; if ($p) { $p.Version.ToString() }");
+          return String(output).trim().slice(0,80) || null;
+        }
+      } catch { /* version detection is optional */ }
+      return null;
+    })();
+  }
+  const config=await fs.readFile(codexConfigPath(),"utf8").catch(()=>"");
+  const files=await localDataCache.getSessionFiles(sessionsDir(),walkSessionFiles);
+  let dbReadable=false;
+  try {
+    const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(logsDbPath(),{readOnly:true});
+    try { const columns=db.prepare("pragma table_info(logs)").all().map((c)=>c.name);dbReadable=columns.includes("ts")&&columns.includes("feedback_log_body"); } finally {db.close();}
+  } catch { /* sessions remain available without SQLite */ }
+  const matching=index.accounts.find((a)=>a.authFingerprint===current?.fingerprint);
+  return {version:app.getVersion(),codexVersion:await detectedCodexVersion,
+    fileCredentials:!fileCredentialStoreConfig(config).changed,
+    authRecognized:!!current?.exists&&!current?.error, authSynchronized:!!matching,
+    accountCount:index.accounts.length,logDatabase:path.basename(logsDbPath()),dbReadable,
+    sessionFiles:files.length,latestLogAt:files[0]?.mtimeMs?new Date(files[0].mtimeMs).toISOString():null,
+    recovery:index.recovery??null, mode:"local-only"};
+}
+
+async function readLocalResetCredits(scope, records) {
+  const since=Date.parse(scope.since);
+  if(!Number.isFinite(since)) return null;
+  let latest=records.flatMap((r)=>r.resets).filter((r)=>Date.parse(r.checkedAt)>=since)
+    .sort((a,b)=>Date.parse(b.checkedAt)-Date.parse(a.checkedAt))[0]??null;
+  // Only structured Codex messages with matching account tags are accepted.
+  // Assistant/tool transcripts (including quota queries pasted in a chat) are
+  // intentionally not a data source for earned-reset balances.
+  const fromDb=await localDataCache.cached(`reset:${scope.accountId}:${scope.since}`,async()=>{
+    let db;
+    try {
+      const {DatabaseSync}=require("node:sqlite");db=new DatabaseSync(logsDbPath(),{readOnly:true});
+      const rows=db.prepare("select ts, feedback_log_body from logs where ts >= ? and (feedback_log_body like '%rateLimitResetCredits%' or feedback_log_body like '%rate_limit_reset_credits%') order by ts desc, id desc limit 100").all(Math.floor(since/1000));
+      const filter=normalizeAccountFilter(scope.account);
+      for(const row of rows){
+        const fields=parseLogKeyValues(row.feedback_log_body);
+        if(responseEventAccountMatch({accountId:fields["user.account_id"],email:fields["user.email"]},filter)!=="match" || !fields["user.account_id"])continue;
+        const message=extractCodexLogMessage(row.feedback_log_body);
+        if(!["codex.rate_limits","account/rateLimits/updated"].includes(message?.type??message?.method))continue;
+        const data=message.params??message;
+        const result=normalizeResetCredits(data.rateLimitResetCredits??data.rate_limit_reset_credits,new Date(row.ts*1000).toISOString());
+        if(result)return result;
+      }
+    }catch{/* an absent local reset record means unknown, never zero */}
+    finally{db?.close();}
+    return null;
+  });
+  if(fromDb&&(!latest||Date.parse(fromDb.checkedAt)>Date.parse(latest.checkedAt)))latest=fromDb;
+  return latest;
+}
+
 async function loadAccountAuth(accountId) {
   const encrypted = await fs.readFile(accountBlobPath(accountId), "utf8");
   return unprotectText(encrypted);
@@ -870,6 +968,8 @@ async function currentState() {
   }
 
   return {
+    version: app.getVersion(),
+    diagnostics: await localDiagnostics(index, current),
     platform: process.platform,
     platformName: platformDisplayName(),
     credentialProtection: credentialProtectionLabel(),
@@ -1067,6 +1167,7 @@ async function syncCurrentAuthToStoredAccount() {
         return { value: true };
       }
       if (index.activeAccountId !== account.id) {
+        account.lastSwitchedAt = now;
         index.activeAccountId = account.id;
         return { value: true };
       }
@@ -1074,6 +1175,7 @@ async function syncCurrentAuthToStoredAccount() {
     }
 
     await saveAccountAuth(account.id, current.content);
+    if (index.activeAccountId !== account.id) account.lastSwitchedAt = now;
     markAccountAuthSnapshot(account, current, current.content, now);
     account.lastSyncedAt = now;
     index.activeAccountId = account.id;
@@ -1166,7 +1268,7 @@ async function startAuthWatcher() {
 
 function shouldRefreshForLocalLog(filename) {
   const value = String(filename || "").toLowerCase();
-  return value === "logs_2.sqlite" || value === "logs_2.sqlite-wal" || value === "logs_2.sqlite-shm";
+  return /^logs_\d+\.sqlite(?:-wal|-shm)?$/.test(value);
 }
 
 function scheduleLocalLogRefresh() {
@@ -1192,23 +1294,8 @@ async function refreshQuotaSnapshotFromLocalLog() {
       const scope = await dashboardScope();
       if (!scope.hasCurrentAuth || !scope.accountId) continue;
       const files = await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
-      const latestQuota = newerQuota(
-        newerQuota(
-          await readLatestLocalQuota({ since: scope.since, files }),
-          await readLatestSqliteRateLimitQuota({ since: scope.since, accountIdentity: scope.account })
-        ),
-        await readLatestUsageLimitQuota({ since: scope.since, accountIdentity: scope.account })
-      );
-      const quotaEstimate = await readQuotaEstimate({
-        since: scope.since,
-        files,
-        baseQuota: latestQuota,
-        calibration: scope.accountQuotaCalibration,
-        accountIdentity: scope.account,
-      });
-      const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, latestQuota), quotaEstimate);
-      const changed = await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
-      if (changed) broadcastStateChanged({ scope: "quota" });
+      await resolveQuotaWithMode(scope, files);
+      broadcastStateChanged({ scope: "quota" });
     } while (localLogRefreshPending);
   } catch {
     // Codex can write the sqlite database in bursts; the next file event will retry.
@@ -1239,7 +1326,7 @@ async function startSessionsWatcher() {
     await fs.mkdir(dir, { recursive: true });
     sessionsWatcher = fsSync.watch(dir, { persistent: false, recursive: true }, (_event, filename) => {
       const name = String(filename || "").toLowerCase();
-      if (name.endsWith(".jsonl")) scheduleLocalLogRefresh();
+      if (/\.jsonl(?:\.gz|\.zst)?$/.test(name)) scheduleLocalLogRefresh();
     });
   } catch {
     sessionsWatcher = null;
@@ -1714,19 +1801,19 @@ function hardenWindowNavigation(win) {
 }
 
 function rateWindowSeconds(window) {
-  const direct = Number(window?.limit_window_seconds);
+  const direct = numberOrNull(window?.limit_window_seconds);
   if (Number.isFinite(direct)) return direct;
-  const minutes = Number(window?.window_minutes ?? window?.windowMinutes);
+  const minutes = numberOrNull(window?.window_minutes ?? window?.windowMinutes ?? window?.windowDurationMins);
   return Number.isFinite(minutes) ? minutes * 60 : null;
 }
 
 function rateWindowResetsAt(window) {
-  const value = Number(window?.reset_at ?? window?.resets_at ?? window?.resetsAt);
+  const value = numberOrNull(window?.reset_at ?? window?.resets_at ?? window?.resetsAt);
   return Number.isFinite(value) ? value : null;
 }
 
 function rateWindowUsedPercent(window) {
-  const value = Number(window?.used_percent ?? window?.usedPercent);
+  const value = numberOrNull(window?.used_percent ?? window?.usedPercent);
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
 }
 
@@ -1813,13 +1900,14 @@ async function walkSessionFiles(dir) {
       const fullPath = path.join(currentDir, entry.name);
       if (entry.isDirectory()) {
         await walk(fullPath);
-      } else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+      } else if (entry.isFile() && entry.name.startsWith("rollout-") && /\.jsonl(?:\.gz|\.zst)?$/.test(entry.name)) {
         const stat = await fs.stat(fullPath).catch(() => null);
         result.push({ path: fullPath, mtimeMs: stat?.mtimeMs ?? 0, size: stat?.size ?? 0 });
       }
     }
   }
   await walk(dir);
+  if (path.resolve(dir) === path.resolve(sessionsDir())) await walk(path.join(codexDir(), "archived_sessions"));
   return result.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
@@ -2077,39 +2165,8 @@ async function parseSessionFileFastCached(file, indexMap) {
   return parsed;
 }
 
-function quotaFromLocalRateLimits(rateLimits, checkedAt, windowCheckedAt = {}) {
-  if (!rateLimits) return null;
-  const session = normalizeRateWindow(
-    rateLimits.primary,
-    windowCheckedAt.session ?? checkedAt,
-    windowCheckedAt.sessionEstimateBase ?? windowCheckedAt.session ?? checkedAt,
-    {
-      estimateTokenUsage: windowCheckedAt.sessionEstimateTokenUsage,
-      estimateWeightedTokens: windowCheckedAt.sessionEstimateWeightedTokens,
-      estimateLatestAt: windowCheckedAt.sessionEstimateLatestAt,
-    }
-  );
-  const weekly = normalizeRateWindow(
-    rateLimits.secondary,
-    windowCheckedAt.weekly ?? checkedAt,
-    windowCheckedAt.weeklyEstimateBase ?? windowCheckedAt.weekly ?? checkedAt,
-    {
-      estimateTokenUsage: windowCheckedAt.weeklyEstimateTokenUsage,
-      estimateWeightedTokens: windowCheckedAt.weeklyEstimateWeightedTokens,
-      estimateLatestAt: windowCheckedAt.weeklyEstimateLatestAt,
-    }
-  );
-  const credits = normalizeCredits(rateLimits.credits);
-  if (!session && !weekly && !credits) return null;
-  return {
-    source: "local",
-    checkedAt,
-    planType: rateLimits.plan_type ?? null,
-    session,
-    weekly,
-    credits,
-    error: null,
-  };
+function quotaFromLocalRateLimits(rateLimits, checkedAt) {
+  return normalizeBucket(rateLimits, checkedAt);
 }
 
 function extractCodexLogMessage(body) {
@@ -2138,7 +2195,14 @@ function extractCodexLogMessage(body) {
 
 function quotaFromUsageLimitMessage(message, timestampSeconds) {
   if (message?.type !== "error" || message?.error?.type !== "usage_limit_reached") return null;
-  const headers = normalizeHeaderMap(message.headers);
+  const headers = Object.fromEntries(Object.entries(message.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]));
+  const numberHeader = (values, key) => numberOrNull(values[key]);
+  const boolHeader = (values, key) => {
+    const value = values[key];
+    if (value === true || value === "true") return true;
+    if (value === false || value === "false") return false;
+    return null;
+  };
   const checkedAt = new Date(timestampSeconds * 1000).toISOString();
   const primaryResetAt =
     numberHeader(headers, "x-codex-primary-reset-at") ??
@@ -2151,28 +2215,28 @@ function quotaFromUsageLimitMessage(message, timestampSeconds) {
       ? timestampSeconds + numberHeader(headers, "x-codex-secondary-reset-after-seconds")
       : null);
   const planType = headers["x-codex-plan-type"] ?? message.error?.plan_type ?? null;
-  return {
-    source: "local-error",
-    checkedAt,
-    planType,
-    session: {
-      usedPercent: Math.max(100, numberHeader(headers, "x-codex-primary-used-percent") ?? 100),
-      windowMinutes: numberHeader(headers, "x-codex-primary-window-minutes"),
-      resetsAt: primaryResetAt ?? message.error?.resets_at ?? null,
-      checkedAt,
+  const bucket = normalizeBucket({
+    plan_type: planType,
+    primary: {
+      used_percent: numberHeader(headers, "x-codex-primary-used-percent"),
+      window_minutes: numberHeader(headers, "x-codex-primary-window-minutes"),
+      resets_at: primaryResetAt,
     },
-    weekly: {
-      usedPercent: Math.max(0, Math.min(100, numberHeader(headers, "x-codex-secondary-used-percent") ?? 0)),
-      windowMinutes: numberHeader(headers, "x-codex-secondary-window-minutes"),
-      resetsAt: secondaryResetAt,
-      checkedAt,
+    secondary: {
+      used_percent: numberHeader(headers, "x-codex-secondary-used-percent"),
+      window_minutes: numberHeader(headers, "x-codex-secondary-window-minutes"),
+      resets_at: secondaryResetAt,
     },
     credits: {
       hasCredits: boolHeader(headers, "x-codex-credits-has-credits"),
       unlimited: boolHeader(headers, "x-codex-credits-unlimited"),
       balance: numberHeader(headers, "x-codex-credits-balance"),
     },
-    error: "Codex 返回 usage_limit_reached，本地日志显示当前会话额度已用完。",
+  }, checkedAt);
+  return {
+    ...bucket,
+    source: "local-error",
+    error: "Codex 返回 usage_limit_reached；未记录的额度窗口保持未知。",
   };
 }
 
@@ -2184,6 +2248,7 @@ function quotaFromCodexRateLimitsMessage(message, timestampSeconds) {
       ...message.rate_limits,
       plan_type: message.plan_type ?? message.rate_limits?.plan_type ?? null,
       credits: message.credits ?? message.rate_limits?.credits,
+      rateLimitResetCredits: message.rateLimitResetCredits ?? message.rate_limit_reset_credits,
     },
     checkedAt
   );
@@ -2215,10 +2280,12 @@ async function readLatestSqliteRateLimitQuota(options = {}) {
          limit 1000`
       )
       .all(effectiveSinceSeconds);
+    const buckets = [];
     for (const row of filterRowsByAccount(rows, accountFilter)) {
       const quota = quotaFromCodexRateLimitsMessage(extractCodexLogMessage(row.feedback_log_body), row.ts);
-      if (quota) return quota;
+      if (quota) buckets.push(quota);
     }
+    return combineBuckets(buckets);
   } catch {
     return null;
   } finally {
@@ -2925,7 +2992,7 @@ async function readSqliteResponseCompletedEvents(options = {}) {
 }
 
 function quotaRawWindow(rateLimits, kind) {
-  return kind === "weekly" ? rateLimits?.secondary : rateLimits?.primary;
+  return windowFor(rateLimits, kind);
 }
 
 function rawUsedPercent(rateLimits, kind) {
@@ -3230,174 +3297,9 @@ function tokenDeltaFromEstimateSeed(window) {
 }
 
 async function readQuotaEstimate(options = {}) {
-  const rawBaseQuota = options.baseQuota;
-  if (!rawBaseQuota || rawBaseQuota.source !== "local") {
-    return quotaEstimateUnavailable("\u7b49\u5f85\u672c\u5730\u989d\u5ea6\u5feb\u7167");
-  }
-  const baseQuota = {
-    ...rawBaseQuota,
-    session: rateWindowIsCurrent(rawBaseQuota.session) ? rawBaseQuota.session : null,
-    weekly: rateWindowIsCurrent(rawBaseQuota.weekly) ? rawBaseQuota.weekly : null,
-  };
-  if (!baseQuota.session && !baseQuota.weekly) {
-    return quotaEstimateUnavailable("\u7b49\u5f85\u65b0\u7684\u672c\u5730\u989d\u5ea6\u5feb\u7167");
-  }
-  const sessionBaseMs = dateMs(baseQuota.session?.estimateBaseAt ?? baseQuota.session?.checkedAt ?? baseQuota.checkedAt);
-  const weeklyBaseMs = dateMs(baseQuota.weekly?.estimateBaseAt ?? baseQuota.weekly?.checkedAt ?? baseQuota.checkedAt);
-  const baseTimes = [sessionBaseMs, weeklyBaseMs].filter(Number.isFinite);
-  if (!baseTimes.length) return quotaEstimateUnavailable("\u5feb\u7167\u65f6\u95f4\u4e0d\u53ef\u7528");
-  const earliestBaseMs = Math.min(...baseTimes);
-
-  const sinceMs = options.since ? dateMs(options.since) : null;
-  const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
-  const files = options.files ?? (await walkSessionFiles(sessionsDir()));
-  const recentFiles = files.slice(0, 40);
-  let sessionEvents = [];
-  try {
-    sessionEvents = await readLocalTokenLedgerEvents(files, { scanLimit: Math.max(TOKEN_LEDGER_SCAN_LIMIT, recentFiles.length) });
-  } catch {
-    sessionEvents = [];
-  }
-
-  if (!sessionEvents.length) {
-    for (const file of recentFiles) {
-      try {
-        sessionEvents.push(...(await parseQuotaEventFileCached(file)));
-      } catch {
-        // A session file can be mid-write; skip it and try again on the next refresh.
-      }
-    }
-  }
-
-  const sqliteSinceMs =
-    effectiveSinceMs && Number.isFinite(effectiveSinceMs) ? Math.min(effectiveSinceMs, earliestBaseMs) : earliestBaseMs;
-  const sqliteEvents = await readSqliteResponseCompletedEvents({
-    sinceMs: sqliteSinceMs,
-    accountIdentity: options.accountIdentity,
-  });
-  const events = [...sessionEvents, ...sqliteEvents];
-  if (!events.length) return quotaEstimateUnavailable("\u672a\u627e\u5230\u672c\u5730 token \u8bb0\u5f55");
-  events.sort((a, b) => a.ms - b.ms);
-  sessionEvents.sort((a, b) => a.ms - b.ms);
-  sqliteEvents.sort((a, b) => a.ms - b.ms);
-
-  const scopedSessionEvents = effectiveSinceMs ? sessionEvents.filter((event) => event.ms >= effectiveSinceMs) : sessionEvents;
-  const scopedSqliteEvents = effectiveSinceMs ? sqliteEvents.filter((event) => event.ms >= effectiveSinceMs) : sqliteEvents;
-  const seededSessionDelta = tokenDeltaFromEstimateSeed(baseQuota.session);
-  const seededWeeklyDelta = tokenDeltaFromEstimateSeed(baseQuota.weekly);
-  const eventSessionDelta = Number.isFinite(sessionBaseMs)
-    ? newerTokenDelta(
-        tokenDeltaSinceBase(scopedSessionEvents, sessionBaseMs, "session"),
-        tokenDeltaSinceBase(scopedSqliteEvents, sessionBaseMs, "session")
-      )
-    : null;
-  const eventWeeklyDelta = Number.isFinite(weeklyBaseMs)
-    ? newerTokenDelta(
-        tokenDeltaSinceBase(scopedSessionEvents, weeklyBaseMs, "weekly"),
-        tokenDeltaSinceBase(scopedSqliteEvents, weeklyBaseMs, "weekly")
-      )
-    : null;
-  const sessionDelta = seededSessionDelta ?? eventSessionDelta;
-  const weeklyDelta = seededWeeklyDelta ?? eventWeeklyDelta;
-  const freshestDelta = newerTokenDelta(sessionDelta, weeklyDelta);
-  if (!sessionDelta?.latestAt && !weeklyDelta?.latestAt) {
-    const baseAgeMs = Date.now() - earliestBaseMs;
-    if (Number.isFinite(baseAgeMs) && baseAgeMs < 5 * 60 * 1000) return null;
-    return quotaEstimateUnavailable("\u7b49\u5f85\u5feb\u7167\u540e\u7684 token \u8bb0\u5f55");
-  }
-
-  // Each account learns only from events observed after that account was
-  // switched in. Same-plan accounts must not share historical calibration.
-  const calibration = collectQuotaCalibration(scopedSessionEvents, baseQuota.planType);
-
-  // Active-session calibration: if rate_limits changed within the most recent
-  // active session, use that change as a high-confidence calibration sample
-  // for predicting further consumption in the same session. This adapts to
-  // the current task's actual token-to-quota ratio (which can vary 2-3x by
-  // task type even within the same plan).
-  const activeSessionCalibration = computeActiveSessionCalibration(scopedSessionEvents, baseQuota.planType);
-
-  const sessionCoefficient = selectQuotaCoefficient(
-    "session",
-    baseQuota.planType,
-    calibration.sessionCoefficient,
-    calibration.sessionSamples,
-    activeSessionCalibration.sessionCoefficient,
-    activeSessionCalibration.sessionSamples
-  );
-  const weeklyCoefficient = selectQuotaCoefficient(
-    "weekly",
-    baseQuota.planType,
-    calibration.weeklyCoefficient,
-    calibration.weeklySamples,
-    activeSessionCalibration.weeklyCoefficient,
-    activeSessionCalibration.weeklySamples
-  );
-  const learned = options.calibration;
-  const learnedSessionWindow = calibrationWindowFromLearning(learned, "session", baseQuota.planType);
-  const learnedWeeklyWindow = calibrationWindowFromLearning(learned, "weekly", baseQuota.planType);
-  const tunedSessionCoefficient = blendLearnedCoefficient(
-    "session",
-    sessionCoefficient,
-    coefficientFromCalibration(learned, "session", baseQuota.planType),
-    baseQuota.planType,
-    learnedSessionWindow
-  );
-  const tunedWeeklyCoefficient = blendLearnedCoefficient(
-    "weekly",
-    weeklyCoefficient,
-    coefficientFromCalibration(learned, "weekly", baseQuota.planType),
-    baseQuota.planType,
-    learnedWeeklyWindow
-  );
-  const sessionEstimateCoefficient = seededSessionDelta && Number.isFinite(tunedSessionCoefficient.coefficient)
-    ? Math.min(tunedSessionCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "session").max)
-    : tunedSessionCoefficient.coefficient;
-  const sessionEstimate =
-    sessionDelta?.weightedTokens >= 100
-      ? buildWindowEstimate(baseQuota.session, sessionEstimateCoefficient, sessionDelta.weightedTokens, calibration.sessionSamples)
-      : null;
-  const weeklyEstimateCoefficient = seededWeeklyDelta && Number.isFinite(tunedWeeklyCoefficient.coefficient)
-    ? Math.min(tunedWeeklyCoefficient.coefficient, quotaCoefficientBounds(baseQuota.planType, "weekly").max)
-    : tunedWeeklyCoefficient.coefficient;
-  const weeklyEstimate =
-    weeklyDelta?.weightedTokens >= 500
-      ? buildWindowEstimate(baseQuota.weekly, weeklyEstimateCoefficient, weeklyDelta.weightedTokens, calibration.weeklySamples)
-      : null;
-
-  if (!sessionEstimate && !weeklyEstimate) {
-    const lacksSupportedBaseline =
-      !Number.isFinite(tunedSessionCoefficient.coefficient) &&
-      !Number.isFinite(tunedWeeklyCoefficient.coefficient);
-    return quotaEstimateUnavailable(
-      lacksSupportedBaseline
-        ? "\u5f53\u524d\u5957\u9910\u7f3a\u5c11\u53ef\u9760\u7684\u8d26\u53f7\u6821\u51c6\u6837\u672c"
-        : "\u7b49\u5f85\u5386\u53f2\u6821\u51c6\u6837\u672c"
-    );
-  }
-  return {
-    source: "local-estimate",
-    algorithm: QUOTA_ESTIMATE_ALGORITHM,
-    available: true,
-    checkedAt: freshestDelta?.latestAt,
-    baseCheckedAt: baseQuota.checkedAt,
-    weightedTokens: Math.round(Math.max(sessionDelta?.weightedTokens ?? 0, weeklyDelta?.weightedTokens ?? 0)),
-    tokenUsage: freshestDelta?.tokenUsage ?? sessionDelta?.tokenUsage ?? weeklyDelta?.tokenUsage,
-    sessions: Math.max(sessionDelta?.sessions ?? 0, weeklyDelta?.sessions ?? 0),
-    confidence: [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("active-session")
-      ? "active-session"
-      : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].some((source) => String(source).startsWith("active-session"))
-        ? "active-session-blended"
-        : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].some((source) => String(source).startsWith("learned"))
-          ? "learned"
-          : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("calibrated")
-          ? "calibrated"
-          : [tunedSessionCoefficient.source, tunedWeeklyCoefficient.source].includes("low-sample")
-            ? "low-sample"
-            : "fallback",
-    session: sessionEstimate,
-    weekly: weeklyEstimate,
-  };
+  const files = options.files ?? await walkSessionFiles(sessionsDir());
+  const records = await readLocalRecords(files, options.since);
+  return estimateLocalQuota(options.baseQuota, records, options);
 }
 
 // Compute calibration coefficient from rate_limits changes that happened
@@ -3511,123 +3413,16 @@ function attachQuotaEstimate(quota, estimate) {
 const rateLimitFileCache = new Map();
 
 async function readLatestLocalQuota(options = {}) {
-  const sinceMs = options.since ? new Date(options.since).getTime() : null;
-  const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
-  const files = options.files ?? (await walkSessionFiles(sessionsDir()));
-  const recentFiles = files.slice(0, 24);
-  const candidates = [];
-
-  for (const file of recentFiles) {
-    let parsed;
-    try {
-      const cacheKey = `rl:${file.path}:${file.size}:${file.mtimeMs}`;
-      if (rateLimitFileCache.has(cacheKey)) {
-        parsed = rateLimitFileCache.get(cacheKey);
-      } else {
-        parsed = await parseLatestRateLimitFile(file, null);
-        rateLimitFileCache.set(cacheKey, parsed);
-        if (rateLimitFileCache.size > 30) {
-          const firstKey = rateLimitFileCache.keys().next().value;
-          rateLimitFileCache.delete(firstKey);
-        }
-      }
-    } catch {
-      continue;
-    }
-    if (!parsed?.rateLimits) continue;
-    // Apply since filter after cache lookup
-    if (effectiveSinceMs && parsed.timestamp) {
-      const parsedMs = new Date(parsed.timestamp).getTime();
-      if (Number.isFinite(parsedMs) && parsedMs < effectiveSinceMs) continue;
-    }
-    candidates.push(parsed);
-  }
-  const latest = selectBestLocalQuotaCandidate(candidates);
-  if (latest?.rateLimits) {
-    return quotaFromLocalRateLimits(latest.rateLimits, latest.timestamp, latest.windowTimestamps);
-  }
-  return null;
+  const files = options.files ?? await walkSessionFiles(sessionsDir());
+  const records = await readLocalRecords(files, options.since);
+  return quotaFromRecords(records, options.since);
 }
 
 async function readLocalUsage(options = {}) {
-  const sinceMs = options.since ? new Date(options.since).getTime() : null;
-  const effectiveSinceMs = Number.isFinite(sinceMs) ? sinceMs : null;
-  const files =
-    options.files ?? (await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles));
-  const indexMap = await readSessionIndexMap();
-  const scanLimit = Number.isFinite(options.scanLimit) ? options.scanLimit : 80;
-  const recentFiles = files.slice(0, scanLimit);
-  const sessions = [];
-  let latestQuota = null;
-  const useFastParser = !effectiveSinceMs;
-
-  for (const file of recentFiles) {
-    let parsed;
-    try {
-      parsed = useFastParser
-        ? await parseSessionFileFastCached(file, indexMap)
-        : await parseSessionFileCached(file, indexMap, { sinceMs: effectiveSinceMs });
-    } catch {
-      continue;
-    }
-    if (!parsed) continue;
-    sessions.push(parsed);
-    if (!latestQuota && parsed.rateLimits) {
-      latestQuota = quotaFromLocalRateLimits(parsed.rateLimits, parsed.rateLimitsAt ?? parsed.updatedAt);
-    }
-  }
-
-  sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  const total = emptyTokenUsage();
-  const byModel = new Map();
-  const byDay = new Map();
-  const byProject = new Map();
-
-  for (const session of sessions) {
-    addTokenUsage(total, session.tokenUsage);
-    const segments =
-      Array.isArray(session.usageSegments) && session.usageSegments.length
-        ? session.usageSegments
-        : [{ timestamp: session.updatedAt, model: session.model, tokenUsage: session.tokenUsage }];
-    const sessionModels = new Set();
-    const sessionDays = new Set();
-    for (const segment of segments) {
-      const model = segment.model || "unknown";
-      if (!byModel.has(model)) byModel.set(model, { model, sessions: 0, tokenUsage: emptyTokenUsage() });
-      addTokenUsage(byModel.get(model).tokenUsage, segment.tokenUsage);
-      sessionModels.add(model);
-
-      const day = localDayKey(segment.timestamp);
-      if (!byDay.has(day)) byDay.set(day, { day, sessions: 0, tokenUsage: emptyTokenUsage() });
-      addTokenUsage(byDay.get(day).tokenUsage, segment.tokenUsage);
-      sessionDays.add(day);
-    }
-    for (const model of sessionModels) byModel.get(model).sessions += 1;
-    for (const day of sessionDays) byDay.get(day).sessions += 1;
-
-    const project = session.cwd ? path.basename(session.cwd) || session.cwd : "未知项目";
-    if (!byProject.has(project)) {
-      byProject.set(project, { project, cwd: session.cwd, sessions: 0, tokenUsage: emptyTokenUsage() });
-    }
-    const projectEntry = byProject.get(project);
-    projectEntry.sessions += 1;
-    addTokenUsage(projectEntry.tokenUsage, session.tokenUsage);
-  }
-
-  return {
-    source: "local",
-    scannedFiles: recentFiles.length,
-    totalFiles: files.length,
-    sessionsAnalyzed: sessions.length,
-    tokenUsage: total,
-    models: Array.from(byModel.values()).sort((a, b) => b.tokenUsage.totalTokens - a.tokenUsage.totalTokens),
-    daily: Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day)).slice(-7),
-    projects: Array.from(byProject.values()).sort((a, b) => b.tokenUsage.totalTokens - a.tokenUsage.totalTokens).slice(0, 10),
-    recentSessions: sessions.slice(0, 12).map(({ usageSegments, ...session }) => session),
-    latestQuota,
-    since: options.since ?? null,
-    checkedAt: new Date().toISOString(),
-  };
+  const files = options.files ?? await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
+  const records = await readLocalRecords(files);
+  const usage = aggregateUsage(records, {...options, indexMap:await readSessionIndexMap()});
+  return {...usage, scannedFiles:files.length, totalFiles:files.length, failedFiles:files.length-records.length, latestQuota:null};
 }
 
 function emptyLocalUsage(since = null) {
@@ -3647,7 +3442,7 @@ function emptyLocalUsage(since = null) {
 }
 
 function localStoredQuotaSnapshot(snapshot) {
-  if (!snapshot || snapshot.source === QUOTA_MODE_ONLINE) return null;
+  if (!snapshot || snapshot.source === QUOTA_MODE_ONLINE || snapshot.schemaVersion !== 2) return null;
   const session = rateWindowHasDisplayData(snapshot.session) ? snapshot.session : null;
   const weekly = rateWindowHasDisplayData(snapshot.weekly) ? snapshot.weekly : null;
   const strippedSession = !!snapshot.session && !session;
@@ -3703,10 +3498,12 @@ async function dashboardScope() {
 async function saveAccountQuotaSnapshot(accountId, quota) {
   if (!accountId || !quota || !["local", "local-error"].includes(quota.source)) return false;
   return mutateIndex(async (index) => {
+    if (index.activeAccountId !== accountId) return {value:false,write:false};
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) return { value: false, write: false };
     if (!quotaMatchesAccount(account, quota)) return { value: false, write: false };
-    const learned = updateQuotaLearning(account, quota);
+    const learned = quota.calibration && JSON.stringify(account.quotaCalibration) !== JSON.stringify(quota.calibration);
+    if (learned) account.quotaCalibration = quota.calibration;
     const nextSnapshot = buildAccountQuotaSnapshot(quota, account.quotaSnapshot);
     const previous = JSON.stringify(account.quotaSnapshot ?? null);
     const next = JSON.stringify(nextSnapshot);
@@ -3732,31 +3529,9 @@ function mergeAccountQuotaWindow(nextWindow, previousWindow) {
   return quotaWindowHasDisplayData(previousWindow) ? previousWindow : nextWindow ?? null;
 }
 
-function buildAccountQuotaSnapshot(quota, previousSnapshot = null) {
-  previousSnapshot = localStoredQuotaSnapshot(previousSnapshot);
-  const canReusePrevious =
-    previousSnapshot &&
-    planTypesMatch(previousSnapshot.planType, quota.planType) &&
-    (quotaWindowHasDisplayData(previousSnapshot.session) || quotaWindowHasDisplayData(previousSnapshot.weekly));
-  const session = canReusePrevious ? mergeAccountQuotaWindow(quota.session, previousSnapshot.session) : quota.session ?? null;
-  const weekly = canReusePrevious ? mergeAccountQuotaWindow(quota.weekly, previousSnapshot.weekly) : quota.weekly ?? null;
-  const reusedWindow =
-    canReusePrevious &&
-    ((!quotaWindowHasDisplayData(quota.session) && quotaWindowHasDisplayData(previousSnapshot.session)) ||
-      (!quotaWindowHasDisplayData(quota.weekly) && quotaWindowHasDisplayData(previousSnapshot.weekly)));
-  const hasFreshWindow = quotaWindowHasDisplayData(quota.session) || quotaWindowHasDisplayData(quota.weekly);
-  return {
-    source: quota.source,
-    checkedAt: hasFreshWindow ? quota.checkedAt : previousSnapshot?.checkedAt ?? quota.checkedAt,
-    planType: quota.planType ?? previousSnapshot?.planType ?? null,
-    session,
-    weekly,
-    review: quota.review ?? previousSnapshot?.review ?? null,
-    additional: Array.isArray(quota.additional) ? quota.additional : previousSnapshot?.additional ?? [],
-    credits: quota.credits ?? previousSnapshot?.credits ?? null,
-    error: quota.error ?? (reusedWindow ? "本次本地日志未写入完整额度窗口，保留此账号上次可用快照。" : null),
-    estimate: quota.estimate ?? null,
-  };
+function buildAccountQuotaSnapshot(quota) {
+  const {calibration, ...snapshot} = quota;
+  return {...snapshot, schemaVersion:2};
 }
 
 function windowLearningSample(previousSnapshot, nextQuota, kind) {
@@ -3895,30 +3670,22 @@ function resolveQuota(scope, latestQuota) {
 }
 
 async function readBestLocalQuota(scope, files) {
-  return newerQuota(
-    newerQuota(
-      await readLatestLocalQuota({ since: scope.since, files }),
-      await readLatestSqliteRateLimitQuota({ since: scope.since, accountIdentity: scope.account })
-    ),
-    await readLatestUsageLimitQuota({ since: scope.since, accountIdentity: scope.account })
-  );
+  if (!scope.hasCurrentAuth || !scope.since) return null;
+  const local = await readLatestLocalQuota({since:scope.since, files});
+  const sqlite = await readLatestSqliteRateLimitQuota({since:scope.since, accountIdentity:scope.account});
+  // Structured bucket snapshots outrank legacy errors that do not name a bucket.
+  return combineBuckets([local, sqlite]) ?? await readLatestUsageLimitQuota({since:scope.since, accountIdentity:scope.account});
 }
 
-async function resolveQuotaWithMode(scope, files, usage = null) {
+async function resolveQuotaWithMode(scope, files) {
   const latestQuota = await readBestLocalQuota(scope, files);
-  const baseQuota = latestQuota ?? usage?.latestQuota ?? null;
-  const quotaEstimate = await readQuotaEstimate({
-    since: scope.since,
-    files,
-    baseQuota,
-    calibration: scope.accountQuotaCalibration,
-    accountIdentity: scope.account,
-  });
-  const resolvedQuota = attachQuotaEstimate(resolveQuota(scope, baseQuota), quotaEstimate);
-  if (latestQuota && scope.accountId) {
-    await saveAccountQuotaSnapshot(scope.accountId, resolvedQuota);
-  }
-  return resolvedQuota;
+  const baseQuota = resolveQuota(scope, latestQuota);
+  const records = await readLocalRecords(files, scope.since);
+  const estimated = latestQuota ? estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration}) : baseQuota;
+  estimated.resetCredits = await readLocalResetCredits(scope, records) ?? scope.accountQuotaSnapshot?.resetCredits ?? null;
+  if (latestQuota && scope.accountId) await saveAccountQuotaSnapshot(scope.accountId, estimated);
+  const {calibration, ...publicQuota} = estimated;
+  return publicQuota;
 }
 
 async function getQuota() {
@@ -3974,6 +3741,8 @@ async function getAllAccountsQuotaSummary() {
         ? {
             checkedAt: snapshot.checkedAt,
             isCachedSnapshot: !isActive,
+            resetCredits: snapshot.resetCredits ?? null,
+            additional: snapshot.additional ?? [],
             session: snapshot.session
               ? {
                   usedPercent: snapshot.session.usedPercent ?? null,
@@ -4591,6 +4360,7 @@ function handleWidgetPointerLeave() {
 }
 
 function registerIpc() {
+  ipcMain.handle("diagnostics:get", async () => (await currentState()).diagnostics);
   ipcMain.handle("state:get", () => currentState());
   ipcMain.handle("account:import-current", async (_event, displayName) => {
     const result = await importCurrentAccount(displayName);
@@ -4633,7 +4403,7 @@ function registerIpc() {
   ipcMain.handle("dashboard:all-accounts", () => getAllAccountsQuotaSummary());
   ipcMain.handle("dashboard:all-usage", () =>
     localDataCache.cached(localDataCache.buildUsageKey({ since: null, scanLimit: 200 }), () =>
-      readLocalUsage({ since: null, scanLimit: 200 })
+      readLocalUsage({ since: null })
     )
   );
   ipcMain.handle("path:open", (_event, targetPath) => openPath(targetPath));
@@ -4672,6 +4442,7 @@ if (hasSingleInstanceLock) {
     }
     Menu.setApplicationMenu(null);
     await ensureStoreDirs();
+    await recoverStoreIfNeeded();
     await ensureCodexFileCredentialStore();
     const settings = await syncLaunchAtLoginFromSettings();
     await migratePlaintextBackups();

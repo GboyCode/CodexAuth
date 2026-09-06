@@ -1,0 +1,85 @@
+const assert=require("node:assert/strict");
+const fs=require("node:fs/promises");
+const os=require("node:os");
+const path=require("node:path");
+const vm=require("node:vm");
+const {createRequire}=require("node:module");
+const zlib=require("node:zlib");
+const {parseRecordFile,aggregateUsage,normalizeBucket,combineBuckets,quotaFromRecords,normalizeResetCredits}=require("../src/quota/local-records");
+const {normalizeTokenUsage,tokenUsageTotal,codexRateCard}=require("../src/quota/token-math");
+const {estimateLocalQuota}=require("../src/quota/local-estimate");
+const {recoverAccountIndex}=require("../src/account-recovery");
+
+async function main(){
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"codexauth-local-test-"));
+ try{
+  const base=Date.now()-3600000,ts=(n)=>new Date(base+n*1000).toISOString();
+  const quota=(used,id="codex",minutes=300)=>({limit_id:id,plan_type:"plus",primary:{used_percent:used,window_minutes:minutes,resets_at:Math.floor(Date.now()/1000)+86400},secondary:null});
+  const usage=(n)=>({input_tokens:n,output_tokens:Math.round(n/2),cached_input_tokens:Math.round(n/4),reasoning_output_tokens:Math.round(n/4),total_tokens:n+Math.round(n/2)});
+  const event=(n,count,rate=quota(10))=>({timestamp:ts(n),type:"event_msg",payload:{type:"token_count",info:count===null?null:{total_token_usage:usage(count)},rate_limits:rate}});
+  const meta={timestamp:ts(0),type:"session_meta",payload:{id:"session-a",timestamp:ts(0),cwd:"/first/project"}};
+  const context=(model,turn)=>({type:"turn_context",payload:{model,turn_id:turn,service_tier:"default"}});
+  const rows=[meta,context("gpt-6-astra","turn1"),event(1,100),event(2,100,quota(10,"premium",10080)),event(3,null),context("gpt-5.6-sol","turn2"),event(4,200),event(5,200)];
+  const write=async(name,entries)=>{const p=path.join(root,name);await fs.writeFile(p,entries.map((e)=>JSON.stringify(e)).join("\n")+"\n");return {path:p,mtimeMs:Date.now(),size:(await fs.stat(p)).size};};
+  const file=await write("rollout-a.jsonl",rows),record=await parseRecordFile(file);
+  assert.equal(record.segments.length,2,"same counter and info:null must not count twice");
+  const total=aggregateUsage([record]);
+  assert.equal(total.tokenUsage.totalTokens,300);assert.equal(total.models.length,2);
+  assert.equal(total.models.find((m)=>m.model==="gpt-6-astra").tokenUsage.totalTokens,150);
+  assert.equal(aggregateUsage([record,record]).tokenUsage.totalTokens,300,"copied events across rollouts are deduplicated");
+  assert.equal(aggregateUsage([record],{since:ts(3)}).tokenUsage.totalTokens,150,"account switch uses adjacent delta");
+  const fork=await parseRecordFile(await write("rollout-fork.jsonl",[{...meta,payload:{...meta.payload,id:"fork",forked_from_id:"session-a"}},...rows.slice(1)]));
+  assert.equal(aggregateUsage([record,fork]).tokenUsage.totalTokens,300);
+  const subagent=await parseRecordFile(await write("rollout-child.jsonl",[{...meta,payload:{...meta.payload,id:"child",parent_thread_id:"session-a"}},context("a","child-turn"),event(6,100)]));
+  assert.equal(subagent.segments[0].tokenUsage.totalTokens,150,"subagent first usage must not be treated as inherited");
+  const rollback=await parseRecordFile(await write("rollout-reset.jsonl",[meta,context("a","x"),event(1,100),event(2,50),event(3,70)]));
+  assert.equal(aggregateUsage([rollback]).tokenUsage.totalTokens,180);assert.equal(rollback.counterResets,1);
+  const gz=path.join(root,"rollout-a.jsonl.gz");await fs.writeFile(gz,zlib.gzipSync(await fs.readFile(file.path)));assert.equal((await parseRecordFile({path:gz})).segments.length,2);
+  if(zlib.zstdCompressSync){const zst=path.join(root,"rollout-a.jsonl.zst");await fs.writeFile(zst,zlib.zstdCompressSync(await fs.readFile(file.path)));assert.equal((await parseRecordFile({path:zst})).segments.length,2);}
+  const week=normalizeBucket(quota(25,"premium",10080),ts(1));assert.equal(week.session,null);assert.equal(week.weekly.usedPercent,25);
+  assert.equal(normalizeBucket(quota(null),ts(1)).session.usedPercent,null);
+  const buckets=quotaFromRecords([record],ts(0));assert.equal(buckets.limitId,"codex");assert.equal(buckets.additional[0].limitId,"premium");
+  assert.equal(combineBuckets([week,normalizeBucket(quota(10),ts(4))]).additional.length,1);
+  assert.equal(quotaFromRecords([record],null),null,"never borrow quotas without account boundary");
+  assert.equal(normalizeResetCredits({availableCount:null},ts(0)),null);assert.equal(normalizeResetCredits({availableCount:0},ts(0)).availableCount,0);
+  const resetRows=[meta,{type:"response_item",timestamp:ts(1),payload:{rateLimitResetCredits:{availableCount:999}}},{...event(2,10),payload:{...event(2,10).payload,rateLimitResetCredits:{availableCount:3}}}];
+  assert.deepEqual((await parseRecordFile(await write("rollout-credits.jsonl",resetRows))).resets.map((r)=>r.availableCount),[3]);
+  const samples=[meta,context("gpt-6-astra","estimate"),event(1,1000,quota(10)),event(2,2000,quota(11)),event(3,3000,quota(12)),event(4,4000,quota(13)),event(5,5000,quota(13))];
+  const learned=await parseRecordFile(await write("rollout-calibration.jsonl",samples));
+  const estimated=estimateLocalQuota(quotaFromRecords([learned],ts(0)),[learned],{since:ts(0)});
+  assert.equal(estimated.session.estimatedUsedPercent,14,"new models learn from local events without price fallback");
+  const other={...learned,events:learned.events.map((e)=>({...e,model:"unseen",serviceTier:"priority"}))};
+  const noSamples={...other,events:other.events.slice(-2)};
+  const unknown=estimateLocalQuota(quotaFromRecords([noSamples],ts(0)),[noSamples],{since:ts(0),calibration:estimated.calibration});
+  assert.equal(unknown.session.estimatedUsedPercent,undefined,"model/tier calibration must stay isolated");
+  assert.equal(codexRateCard("gpt-6-astra"),null);
+  assert.equal(tokenUsageTotal(normalizeTokenUsage({input_tokens:100,output_tokens:40,reasoning_output_tokens:30})),140);
+  const ui=vm.createContext({window:{},Date,Intl});vm.runInContext(await fs.readFile(path.join(__dirname,"../src/ui/shared-quota.js"),"utf8"),ui);
+  assert.equal(ui.window.CodexQuotaUI.formatRemainingText({usedPercent:null}),"--");assert.equal(ui.window.CodexQuotaUI.windowTitle("session",{windowMinutes:10080}),"周额度");
+  assert.match(ui.window.CodexQuotaUI.resetCreditsLabel(null),/未知/);assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({availableCount:0,checkedAt:ts(0)}),/旧快照/);
+  const accountsDir=path.join(root,"accounts");await fs.mkdir(accountsDir);const indexPath=path.join(root,"accounts.json");await fs.writeFile(indexPath,"\0\0");
+  const id="11111111-1111-4111-8111-111111111111";await fs.writeFile(path.join(accountsDir,id+".dpapi"),"encrypted-fixture");
+  const opts={indexPath,accountsDir,extension:"dpapi",decode:async()=>({identity:{subject:"fixture"}}),identify:(a)=>a.subject,makeRecord:(a)=>({identity:a.identity}),write:async(p,v)=>fs.writeFile(p,JSON.stringify(v))};
+  const recovery=await recoverAccountIndex(opts);assert.equal(recovery.index.accounts[0].id,id);assert.equal(await fs.readFile(path.join(recovery.index.recovery.path,"accounts.corrupt.json"),"utf8"),"\0\0");assert.equal((await recoverAccountIndex(opts)).recovered,false);
+  // Load the main-process integration with Electron/startup disabled and an
+  // isolated CODEX_HOME; no real accounts, app restarts or remote requests.
+  const srcPath=path.resolve(__dirname,"../src/main.js"),realRequire=createRequire(srcPath);
+  const sandbox=vm.createContext({require:(name)=>name==="electron"?{app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"test",getPath:()=>root}}:realRequire(name),process:{...process,env:{...process.env,CODEX_HOME:root}},__dirname:path.dirname(srcPath),console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  vm.runInContext(await fs.readFile(srcPath,"utf8"),sandbox);
+  const limitError={type:"error",error:{type:"usage_limit_reached"}};
+  const unknownLimit=sandbox.quotaFromUsageLimitMessage(limitError,base/1000);
+  assert.equal(unknownLimit.session,null);assert.equal(unknownLimit.weekly,null);
+  const weeklyLimit=sandbox.quotaFromUsageLimitMessage({...limitError,headers:{"x-codex-primary-used-percent":"100","x-codex-primary-window-minutes":"10080"}},base/1000);
+  assert.equal(weeklyLimit.session,null);assert.equal(weeklyLimit.weekly.usedPercent,100);
+  const integrated=await sandbox.readLocalUsage({files:[file]});assert.equal(integrated.tokenUsage.totalTokens,300);
+  const integratedQuota=await sandbox.readLatestLocalQuota({files:[file],since:ts(0)});assert.equal(integratedQuota.additional[0].limitId,"premium");
+  assert.equal(sandbox.localStoredQuotaSnapshot({source:"local",session:{usedPercent:20}}),null,"old schema cannot leak old estimates");
+  const persisted=sandbox.buildAccountQuotaSnapshot({...integratedQuota,resetCredits:{availableCount:3,checkedAt:ts(0)}});
+  assert.equal(persisted.schemaVersion,2);assert.equal(persisted.resetCredits.availableCount,3);
+  console.log("Local data validation passed: event deltas, model attribution, forks, account boundaries, compression, counter resets, quota buckets, weekly-only plans, nulls, local reset provenance, calibration isolation, recovery and main-process integration.");
+ }finally{
+  assert.ok(path.resolve(root).startsWith(path.join(path.resolve(os.tmpdir()),"codexauth-local-test-")));
+  await fs.rm(root,{recursive:true,force:true});
+ }
+}
+main().catch((error)=>{console.error(error);process.exitCode=1;});

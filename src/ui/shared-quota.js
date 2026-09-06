@@ -1,5 +1,6 @@
 (function initSharedQuotaUi(global) {
   function clampPercent(value) {
+    if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
     if (!Number.isFinite(number)) return null;
     return Math.max(0, Math.min(100, number));
@@ -80,6 +81,7 @@
   }
 
   function quotaWindowLabel(kind, window) {
+    if (window?.windowMinutes === 10080) return "周额度";
     if (kind === "weekly") return "周额度";
     if (window?.windowMinutes === 300) return "5 小时额度";
     if (window?.windowMinutes) return `${Math.round(window.windowMinutes / 60)} 小时额度`;
@@ -219,6 +221,7 @@
   }
 
   function formatUsedFootnote(window, options = {}) {
+    if (clampPercent(window?.usedPercent) === null) return "已用比例未知 · " + relativeReset(window?.resetsAt);
     const used = displayUsedPercent(window);
     const prefix = isEstimatedWindow(window) ? "≈已用" : "已用";
     if (options.compact === true) {
@@ -228,7 +231,18 @@
     return `${prefix} ${Math.round(used)}%${estimateRemainingLabel(window)} · ${relativeReset(window?.resetsAt)}${paceLabel(window, options)}`;
   }
 
+  function resetCreditsLabel(reset, options = {}) {
+    if (!reset || !Number.isInteger(reset.availableCount)) return "重置次数：未知 · 尚无本地记录";
+    const stamp=Date.parse(reset.checkedAt);
+    const stale=!Number.isFinite(stamp)||Date.now()-stamp>5*60*1000;
+    const expiry=(reset.credits??[]).filter((c)=>c.status==="available"&&Number.isFinite(c.expiresAt)).map((c)=>c.expiresAt);
+    const hasExpired=expiry.some((n)=>n*1000<=Date.now());
+    const status=hasExpired?"含已到期记录，待更新":stale?"旧快照，待更新":"本地快照";
+    return `重置次数：${reset.availableCount} · ${status}${options.compact?"":` · ${formatSnapshotTime(reset.checkedAt)}`}`;
+  }
+
   global.CodexQuotaUI = {
+    resetCreditsLabel,
     clampPercent,
     remainingPercent,
     isEstimatedWindow,

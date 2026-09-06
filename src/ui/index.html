@@ -75,6 +75,12 @@
               如果 Codex 提示 refresh token 已被使用，需要在 Codex App 重新登录该账号，
               然后回到这里重新导入当前登录。
             </p>
+            <div class="divider"></div>
+            <details class="local-diagnostics" open>
+              <summary>本地兼容性自检</summary>
+              <p id="diagnosticsInfo" class="small-copy" role="status">读取中</p>
+              <p id="recoveryInfo" class="small-copy" hidden></p>
+            </details>
           </aside>
         </section>
       </section>
@@ -126,6 +132,7 @@
               </div>
               <p id="quotaSource" class="muted">--</p>
               <p id="creditsInfo" class="muted">--</p>
+              <p id="resetCreditsInfo" class="muted">重置次数：未知 · 尚无本地记录</p>
             </article>
           </div>
 
@@ -152,8 +159,10 @@
               <strong id="sessionCount">--</strong>
             </article>
           </div>
+          <p id="tokenBreakdown" class="usage-note"></p>
+          <p id="usageCoverage" class="usage-note"></p>
           <p class="usage-note">
-            Token 是本机日志里的原始用量，不按高速版或模型倍率折算；5 小时和周额度以 Codex 写入的额度快照为准。
+            Token 按本地事件增量统计，缓存输入已含在输入中，推理输出已含在输出中，不重复相加。当前账号统计自最近切换起；其他设备或未落盘的用量无法从本机补齐。
           </p>
 
           <div class="usage-detail">

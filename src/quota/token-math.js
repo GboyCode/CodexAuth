@@ -15,7 +15,7 @@ function emptyTokenUsage() {
 }
 
 function normalizeTokenUsage(raw) {
-  return {
+  const usage = {
     inputTokens: Number(raw?.input_tokens ?? raw?.inputTokens ?? 0),
     cachedInputTokens: Number(
       raw?.cached_input_tokens ?? raw?.cachedInputTokens ?? raw?.input_tokens_details?.cached_tokens ?? 0
@@ -26,6 +26,11 @@ function normalizeTokenUsage(raw) {
     ),
     totalTokens: Number(raw?.total_tokens ?? raw?.totalTokens ?? 0),
   };
+  for (const key of Object.keys(usage)) usage[key] = Number.isFinite(usage[key]) ? Math.max(0,usage[key]) : 0;
+  usage.cachedInputTokens = Math.min(usage.inputTokens,usage.cachedInputTokens);
+  // Reasoning is part of output, and cached input is part of input.
+  if (raw?.total_tokens == null && raw?.totalTokens == null) usage.totalTokens = usage.inputTokens + usage.outputTokens;
+  return usage;
 }
 
 function addTokenUsage(total, usage) {
@@ -54,18 +59,16 @@ function tokenUsageTotal(usage) {
   if (Number.isFinite(total) && total > 0) return total;
   const input = Number(usage?.inputTokens ?? 0);
   const output = Number(usage?.outputTokens ?? 0);
-  const reasoning = Number(usage?.reasoningOutputTokens ?? 0);
   return Math.max(
     0,
     (Number.isFinite(input) ? input : 0) +
-      (Number.isFinite(output) ? output : 0) +
-      (Number.isFinite(reasoning) ? reasoning : 0)
+      (Number.isFinite(output) ? output : 0)
   );
 }
 
 function codexRateCard(model) {
   const value = String(model || "").toLowerCase();
-  return CODEX_RATE_CARDS.find((card) => card.pattern.test(value)) ?? DEFAULT_CODEX_RATE_CARD;
+  return CODEX_RATE_CARDS.find((card) => card.pattern.test(value)) ?? null;
 }
 
 function quotaSpeedMultiplier(model, serviceTier = null) {
@@ -76,7 +79,7 @@ function quotaSpeedMultiplier(model, serviceTier = null) {
     tier === "fast" ||
     tier === "priority" ||
     tier === "turbo";
-  return isFast ? codexRateCard(model).fastMultiplier : 1;
+  return isFast ? codexRateCard(model)?.fastMultiplier ?? null : 1;
 }
 
 function weightedTokenUsage(usage, model, serviceTier = null) {
@@ -90,6 +93,7 @@ function weightedTokenUsage(usage, model, serviceTier = null) {
   const effectiveCachedInput = Math.min(cachedInput, input);
   const uncachedInput = Math.max(0, input - effectiveCachedInput);
   const rateCard = codexRateCard(model);
+  if (!rateCard) return null;
   const total = hasBreakdown
     ? (uncachedInput * rateCard.input +
         effectiveCachedInput * rateCard.cachedInput +

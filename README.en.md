@@ -1,5 +1,15 @@
 # CodexAuth Switch
 
+## 0.1.7: local compatibility and statistics
+
+- Quotas are separated by limit ID, with correct weekly-only window placement. Null usage means unknown.
+- Token totals use event deltas across sessions and archived sessions, with copied-event deduplication, per-model/day attribution and gzip/Zstandard support where the runtime supports it. Cached input and reasoning output are subsets, not additional tokens. Exact counts and scan coverage are shown. Counter resets or missing baselines are reported rather than guessed.
+- Quota estimates learn only from this account's local samples for the same model, explicit speed tier, limit ID and window. Unknown/new models do not inherit GPT-5.5 prices. At least three local samples are required; snapshots remain visible without calibration.
+- Earned reset counts are shown only from structured local Codex records. Missing data is Unknown, not zero. Stale or expired records are labeled; there are no online queries or reset-redemption actions.
+- Local diagnostics show the running app version, credential sync and log availability. A corrupted account index is recovered from decryptable snapshots after preserving the damaged index and encrypted blobs in a recovery directory.
+- Run `npm run local-data:validate` for the fixture-based parser, recovery and integration checks.
+
+
 ![CodexAuth Switch poster](docs/assets/readme-poster.png)
 
 English README | [中文说明](README.md)
@@ -33,7 +43,7 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - Automatically back up the original `auth.json` before switching, reauth, or deleting the active account.
 - Provide a main window, system tray menu, and floating quick-view widget.
 - Read quota and token usage from local Codex logs.
-- Use a local token-event ledger to reduce repeated scans and improve local estimate stability.
+- Cache parsed local token events by file size and modification time to reduce repeated scans.
 - Show quota pace hints, Reviews, and model-level limit cards.
 - Disable network requests in renderer pages; quota reading also stays local-only.
 
@@ -149,9 +159,9 @@ The quota panel uses local estimate mode only. It reads logs already written by 
 Local estimate mode reads:
 
 - `codex.rate_limits` records in session JSONL files.
-- `codex.rate_limits` and usage-limit records in `logs_2.sqlite`.
+- `codex.rate_limits` and usage-limit records in the latest automatically discovered `logs_N.sqlite`.
 - `token_count` events in session files.
-- `local-token-ledger.json` in the app data directory, which stores only token counts, model, timestamps, rate-limit snapshots, and file state for incremental de-duplication and steadier local estimation.
+- Complete log events, cached by file size and modification time and deduplicated across files. Account metadata stores quota snapshots and calibration samples isolated by model and service tier. The legacy `local-token-ledger.json` no longer participates in statistics.
 
 The app watches local log file changes with a short debounce and uses a low-frequency SQLite modification-time polling fallback to avoid missed filesystem events.
 
@@ -245,10 +255,10 @@ npm run lint
 ### Validate Quota Logic
 
 ```powershell
-npm run quota:validate
+npm run local-data:validate
 ```
 
-This command replays local `.codex` session logs and validates the quota-estimation logic. It only reads local session files and does not write to them.
+This command uses isolated fixtures to validate token deltas, duplicates and forks, account boundaries, quota pools, weekly windows, reset-credit provenance, calibration and account recovery. `quota:validate` remains a historical replay of the old price-weighted algorithm, not validation of the current algorithm.
 
 ### Build Windows Installer
 
