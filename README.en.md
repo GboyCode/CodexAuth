@@ -1,5 +1,11 @@
 # CodexAuth Switch
 
+## 0.1.8: local reset-credit cache support
+
+- Read existing Codex browser usage-response caches after matching both account ID and user ID to the active account.
+- Label the cache source and timestamp, with stale-data indicators. Missing or unverifiable data remains unknown; no official API requests are made.
+- Validate with `npm run browser-cache:validate`.
+
 ## 0.1.7: local compatibility and statistics
 
 - Quotas are separated by limit ID, with correct weekly-only window placement. Null usage means unknown.

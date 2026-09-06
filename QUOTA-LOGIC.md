@@ -1,4 +1,4 @@
-# 本地额度与 Token 统计（0.1.7）
+# 本地额度与 Token 统计（0.1.8）
 
 所有数据均来自本机；不请求官方额度 API，不自行刷新令牌，不兑换重置次数。
 
@@ -32,12 +32,16 @@
 
 ## 重置次数
 
-只接受结构化 token_count 事件内的 rateLimitResetCredits/rate_limit_reset_credits，或带匹配账号标签的本地 SQLite Codex 额度消息。不会解析 response_item 中的工具输出来取得余额。
+接受结构化 token_count 事件内的 rateLimitResetCredits/rate_limit_reset_credits，或带匹配账号标签的本地 SQLite Codex 额度消息。不会解析 response_item 中的工具输出来取得余额。
+
+0.1.8 另读取 Codex 内置浏览器已保存的 Chromium block-cache v3 缓存：只读取索引可达的 `/backend-api/wham/usage` 成功响应，要求 account_id 和 user_id 均与当前账号一致，然后提取 rate_limit_reset_credits.available_count。支持 Brotli/gzip/deflate；使用响应 Date 时间，标注“浏览器缓存”。单独的重置接口缓存没有账号标识，不采用。读取文件有大小限制，缺失、锁定、损坏或不支持的格式保持未知；不会打开网页或触发网络请求。网页未刷新时缓存可能落后，始终保留最新已知快照。
 
 availableCount=0 是已知零次；字段缺失则是未知。记录超过 5 分钟或包含已到期条目时明确标成待更新，不自行推算剩余次数。账号缓存不互相共享；功能不发出官方 API 查询，也不发起重置。
 
 ## 验证
 
 npm run local-data:validate 使用隔离的合成日志覆盖事件增量、分叉/子代理、切换边界、压缩日志、多个额度池、周窗口、未知值、重置来源、校准隔离、索引恢复和主进程集成。
+
+npm run browser-cache:validate 检查缓存索引、账号和用户双重校验、压缩响应、零值、日期以及缓存损坏降级。
 
 历史的 quota:validate 脚本只用于旧价格权重算法回放，不作为算法 4 的精度验收；新模型缺少价格表时不推测权重。

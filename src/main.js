@@ -50,6 +50,7 @@ const {
 const { scopedTokenDelta } = require("./quota/usage-math");
 const { createRecordCache, aggregateUsage, quotaFromRecords, normalizeBucket, combineBuckets, windowFor, normalizeResetCredits, numberOrNull } = require("./quota/local-records");
 const { estimateLocalQuota } = require("./quota/local-estimate");
+const { readBrowserResetCredits } = require("./quota/browser-reset-cache");
 const { recoverAccountIndex } = require("./account-recovery");
 const readRecordFile = createRecordCache();
 let detectedCodexVersion = null;
@@ -833,6 +834,9 @@ async function readLocalResetCredits(scope, records) {
     return null;
   });
   if(fromDb&&(!latest||Date.parse(fromDb.checkedAt)>Date.parse(latest.checkedAt)))latest=fromDb;
+  const browser = scope.hasCurrentAuth ? await localDataCache.cached(`browser-reset:${scope.accountId}`, () =>
+    readBrowserResetCredits(app.getPath("appData"), scope.account)) : null;
+  if (browser && (!latest || Date.parse(browser.checkedAt) > Date.parse(latest.checkedAt))) latest = browser;
   return latest;
 }
 
@@ -3682,7 +3686,9 @@ async function resolveQuotaWithMode(scope, files) {
   const baseQuota = resolveQuota(scope, latestQuota);
   const records = await readLocalRecords(files, scope.since);
   const estimated = latestQuota ? estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration}) : baseQuota;
-  estimated.resetCredits = await readLocalResetCredits(scope, records) ?? scope.accountQuotaSnapshot?.resetCredits ?? null;
+  const reset = await readLocalResetCredits(scope, records);
+  const savedReset = scope.accountQuotaSnapshot?.resetCredits;
+  estimated.resetCredits = reset && (!savedReset || Date.parse(reset.checkedAt) >= Date.parse(savedReset.checkedAt)) ? reset : savedReset ?? null;
   if (latestQuota && scope.accountId) await saveAccountQuotaSnapshot(scope.accountId, estimated);
   const {calibration, ...publicQuota} = estimated;
   return publicQuota;
