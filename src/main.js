@@ -9,6 +9,7 @@ const {
   screen,
   shell,
   session: electronSession,
+  dialog,
 } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
@@ -137,11 +138,17 @@ const quotaEventParseCache = new Map();
 const sqliteResponseEventCache = new Map();
 const reauthCheckTimers = new Map();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+let startupReady = false;
+let pendingWindow = null;
 
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
+    if (!startupReady) {
+      pendingWindow = hasStartupArg(argv) ? "widget" : "main";
+      return;
+    }
     if (hasStartupArg(argv)) {
       showWidgetWindow();
       return;
@@ -4459,11 +4466,13 @@ if (hasSingleInstanceLock) {
     registerIpc();
     installNetworkGuards();
     createTray();
-    if (shouldStartWithWidgetOnly(settings)) {
+    startupReady = true;
+    if (pendingWindow === "widget" || (!pendingWindow && shouldStartWithWidgetOnly(settings))) {
       showWidgetWindow();
     } else {
       createWindow();
     }
+    pendingWindow = null;
     await startAuthWatcher();
     await startLocalLogWatcher();
     await startSessionsWatcher();
@@ -4472,6 +4481,10 @@ if (hasSingleInstanceLock) {
     app.on("activate", () => {
       showMainWindow();
     });
+  }).catch((error) => {
+    console.error("CodexAuth initialization failed:", error);
+    dialog.showErrorBox("CodexAuth 启动失败", "初始化未完成，请重新打开 CodexAuth。已保存的账号不会因此被清空。");
+    app.quit();
   });
 }
 

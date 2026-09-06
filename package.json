@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -44,7 +44,8 @@
     "pack:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:app && npm run sidebar:win && node scripts/prepare-builder.js && electron-builder --win nsis --x64 --publish never",
     "pack:mac": "npm run icon:app && electron-builder --mac --x64 --arm64 --publish never",
     "local-data:validate": "node scripts/validate-local-data.js",
-    "browser-cache:validate": "node scripts/validate-browser-reset-cache.js"
+    "browser-cache:validate": "node scripts/validate-browser-reset-cache.js",
+    "startup:validate": "node scripts/validate-startup.js"
   },
   "devDependencies": {
     "electron": "^39.8.10",

@@ -1,5 +1,10 @@
 # CodexAuth Switch
 
+## 0.1.11: startup race fix
+
+- Repeated launches wait for initialization and IPC registration before opening either window, preventing the missing `state:get` handler error.
+- Initialization failures show an error and exit. Validate with `npm run startup:validate`.
+
 ## 0.1.10: widget minimum-height fix
 
 - Reserve enough minimum height for two complete account rows, including the additional-pool summary. Previously saved smaller bounds are corrected automatically.
