@@ -1214,6 +1214,14 @@ code {
 }
 
 .local-diagnostics summary { cursor: pointer; font-size: 13px; }
+.credential-transfer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface-strong); }
+.credential-transfer strong { font-size: 13px; }
+.credential-transfer p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#transferDialog { max-height: calc(100vh - 32px); overflow-y: auto; }
+#transferDialog label { font-size: 13px; }
+#transferDialog .dialog-input { display: block; margin: 6px 0 12px; }
+#transferDialog .transfer-error { color: var(--danger); overflow-wrap: anywhere; }
 .local-diagnostics p { white-space: pre-line; overflow-wrap: anywhere; }
 .metric-card { min-width: 0; }
 .metric-card strong { font-size: clamp(16px, 2.1vw, 24px); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }

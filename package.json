@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -33,7 +33,7 @@
     "start": "npm run icon:app && electron .",
     "dev": "npm run icon:app && electron .",
     "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",
-    "lint": "node --check src/main.js && node --check src/platform-support.js && node --check src/codex-config.js && node --check src/preload.js && node --check src/quota/constants.js && node --check src/quota/token-math.js && node --check src/quota/usage-math.js && node --check src/quota/local-data-cache.js && node --check src/ui/shared-quota.js && node --check src/ui/app.js && node --check src/ui/widget.js && node --check src/quota/local-records.js && node --check src/quota/local-estimate.js && node --check src/account-recovery.js && node --check src/quota/browser-reset-cache.js",
+    "lint": "node --check src/main.js && node --check src/platform-support.js && node --check src/codex-config.js && node --check src/preload.js && node --check src/quota/constants.js && node --check src/quota/token-math.js && node --check src/quota/usage-math.js && node --check src/quota/local-data-cache.js && node --check src/ui/shared-quota.js && node --check src/ui/app.js && node --check src/ui/widget.js && node --check src/quota/local-records.js && node --check src/quota/local-estimate.js && node --check src/account-recovery.js && node --check src/quota/browser-reset-cache.js && node --check src/portable-credentials.js",
     "codex-config:validate": "node scripts/validate-codex-config.js",
     "platform:validate": "node scripts/validate-platform-support.js",
     "quota:validate": "node scripts/validate-quota-estimate.js",
@@ -45,7 +45,8 @@
     "pack:mac": "npm run icon:app && electron-builder --mac --x64 --arm64 --publish never",
     "local-data:validate": "node scripts/validate-local-data.js",
     "browser-cache:validate": "node scripts/validate-browser-reset-cache.js",
-    "startup:validate": "node scripts/validate-startup.js"
+    "startup:validate": "node scripts/validate-startup.js",
+    "portable:validate": "node scripts/validate-portable-credentials.js"
   },
   "devDependencies": {
     "electron": "^39.8.10",

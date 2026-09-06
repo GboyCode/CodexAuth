@@ -38,6 +38,18 @@ const els = {
   usageCoverage: document.querySelector("#usageCoverage"),
   displayNameInput: document.querySelector("#displayNameInput"),
   importBtn: document.querySelector("#importBtn"),
+  exportCredentialsBtn: document.querySelector("#exportCredentialsBtn"),
+  importCredentialsBtn: document.querySelector("#importCredentialsBtn"),
+  transferDialog: document.querySelector("#transferDialog"),
+  transferForm: document.querySelector("#transferForm"),
+  transferTitle: document.querySelector("#transferTitle"),
+  transferDescription: document.querySelector("#transferDescription"),
+  transferPassword: document.querySelector("#transferPassword"),
+  transferConfirm: document.querySelector("#transferConfirm"),
+  transferConfirmGroup: document.querySelector("#transferConfirmGroup"),
+  transferError: document.querySelector("#transferError"),
+  transferCancel: document.querySelector("#transferCancel"),
+  transferSubmit: document.querySelector("#transferSubmit"),
   accountList: document.querySelector("#accountList"),
   restartAfterSwitch: document.querySelector("#restartAfterSwitch"),
   statsRefreshBtn: document.querySelector("#statsRefreshBtn"),
@@ -769,6 +781,56 @@ async function loadDashboard(silent = false, options = {}) {
   await withAction(els.statsRefreshBtn, "刷新中", () => readDashboard(silent));
 }
 
+let transferMode = "export";
+let transferBusy = false;
+
+function openCredentialTransfer(mode) {
+  transferMode = mode;
+  const exporting = mode === "export";
+  els.transferForm.reset();
+  els.transferError.textContent = "";
+  els.transferTitle.textContent = exporting ? "导出当前账号" : "导入账号凭证";
+  els.transferDescription.textContent = exporting
+    ? "导出当前 Codex 登录的最新凭证为加密 .codexauth 文件。B 电脑导入时需要相同的迁移密码。"
+    : "输入导出时设置的迁移密码，然后选择 .codexauth 文件。导入后在账号列表点击“切换”即可使用。";
+  els.transferConfirmGroup.hidden = !exporting;
+  els.transferConfirm.required = exporting;
+  els.transferSubmit.textContent = exporting ? "选择保存位置" : "选择迁移文件";
+  els.transferDialog.showModal();
+  els.transferPassword.focus();
+}
+
+async function submitCredentialTransfer(event) {
+  event.preventDefault();
+  if (transferBusy || !els.transferForm.reportValidity()) return;
+  if (transferMode === "export" && els.transferPassword.value !== els.transferConfirm.value) {
+    els.transferError.textContent = "两次输入的迁移密码不一致。";
+    return;
+  }
+  transferBusy = true;
+  els.transferError.textContent = "";
+  els.transferSubmit.disabled = true;
+  els.transferCancel.disabled = true;
+  let password = els.transferPassword.value;
+  els.transferPassword.value = "";
+  els.transferConfirm.value = "";
+  try {
+    const result = transferMode === "export" ? await api.exportPortable(password) : await api.importPortable(password);
+    if (!result.canceled) {
+      if (result.snapshot) { render(result.snapshot); state.dashboardLoaded = false; }
+      els.transferDialog.close();
+      showToast(transferMode === "export" ? "加密凭证已导出，可在另一台电脑导入"
+        : result.alreadyActive ? "该账号已在本机登录，已保留本机凭证" : "账号已导入，在列表点击“切换”即可使用");
+    }
+  } catch (error) { els.transferError.textContent = error.message; }
+  finally {
+    password = "";
+    transferBusy = false;
+    els.transferSubmit.disabled = false;
+    els.transferCancel.disabled = false;
+  }
+}
+
 async function importCurrent() {
   await withAction(els.importBtn, "导入中", async () => {
     const snapshot = await api.importCurrent(els.displayNameInput.value);
@@ -861,6 +923,12 @@ function wireEvents() {
     api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked }).catch((error) => showToast(error.message));
   });
   els.importBtn.addEventListener("click", () => importCurrent());
+  els.exportCredentialsBtn.addEventListener("click", () => openCredentialTransfer("export"));
+  els.importCredentialsBtn.addEventListener("click", () => openCredentialTransfer("import"));
+  els.transferForm.addEventListener("submit", submitCredentialTransfer);
+  els.transferCancel.addEventListener("click", () => els.transferDialog.close());
+  els.transferDialog.addEventListener("cancel", (event) => { if (transferBusy) event.preventDefault(); });
+  els.transferDialog.addEventListener("close", () => { els.transferForm.reset(); els.transferError.textContent = ""; });
   els.restartBtn.addEventListener("click", () => restartCodex());
   els.storePath.addEventListener("click", () => api.openPath(state.snapshot.storeRoot));
   els.confirmDialog.addEventListener("close", () => {

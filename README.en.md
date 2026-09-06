@@ -1,5 +1,13 @@
 # CodexAuth Switch
 
+## 0.1.13: portable account credentials
+
+Use **Export current account** on computer A with a migration password of at least 10 characters. Install this version or newer on computer B, import the encrypted `.codexauth` file with the same password, then select **Switch** for the imported account. Importing does not automatically change the active login or restart Codex.
+
+The file encrypts account labels and credentials using scrypt and AES-256-GCM. Imported credentials are protected again by the destination's DPAPI or macOS Keychain. Updating an existing inactive account requires confirmation and creates a local encrypted backup; an already active account keeps its local credentials. Passwords are not saved or recoverable.
+
+Valid credentials may avoid signing in again, but cannot bypass verification. Expiration, revocation or refresh-token rotation can require a new export or official sign-in. Validate with `npm run portable:validate`.
+
 ## 0.1.12: simplified quota display
 
 - Remove additional quota pools from the widget, account details and usage dashboard. Session quota, weekly quota and reset counts remain available.

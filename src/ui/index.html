@@ -58,6 +58,14 @@
           <button id="importBtn" class="primary-btn">导入当前 Codex 登录</button>
         </section>
 
+        <section class="credential-transfer">
+          <div><strong>跨电脑迁移</strong><p>用迁移密码保护账号凭证，在另一台电脑导入后即可选择切换。</p></div>
+          <div class="transfer-actions">
+            <button id="exportCredentialsBtn" class="ghost-btn">导出当前账号</button>
+            <button id="importCredentialsBtn" class="ghost-btn">导入凭证文件</button>
+          </div>
+        </section>
+
         <section class="content-layout">
           <div class="account-list" id="accountList"></div>
           <aside class="side-panel">
@@ -179,6 +187,24 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <dialog id="transferDialog" class="confirm-dialog">
+      <form id="transferForm">
+        <h3 id="transferTitle">导出当前账号</h3>
+        <p id="transferDescription"></p>
+        <label for="transferPassword">迁移密码（至少 10 个字符）</label>
+        <input id="transferPassword" class="name-input dialog-input" type="password" minlength="10" maxlength="1024" required autocomplete="off" />
+        <div id="transferConfirmGroup">
+          <label for="transferConfirm">再次输入密码</label>
+          <input id="transferConfirm" class="name-input dialog-input" type="password" minlength="10" maxlength="1024" autocomplete="off" />
+        </div>
+        <p class="small-copy">凭证有效时可直接使用；过期、撤销或触发验证时仍需官方登录。请妥善保管迁移文件和密码。</p>
+        <p id="transferError" class="transfer-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="transferCancel" type="button" class="ghost-btn">取消</button>
+          <button id="transferSubmit" type="submit" class="primary-btn">选择保存位置</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="renameDialog" class="confirm-dialog rename-dialog">
       <form method="dialog">
         <h3>重命名账号</h3>

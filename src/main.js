@@ -53,6 +53,7 @@ const { createRecordCache, aggregateUsage, quotaFromRecords, normalizeBucket, co
 const { estimateLocalQuota } = require("./quota/local-estimate");
 const { readBrowserResetCredits } = require("./quota/browser-reset-cache");
 const { recoverAccountIndex } = require("./account-recovery");
+const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
 const readRecordFile = createRecordCache();
 let detectedCodexVersion = null;
 let selectedLogsDb = null;
@@ -1041,6 +1042,80 @@ async function importCurrentAccount(displayName) {
     index.activeAccountId = account.id;
   });
   return currentState();
+}
+
+async function exportCurrentCredentials(password) {
+  validatePassword(password);
+  const selected = await dialog.showSaveDialog(mainWindow, {
+    title: "导出当前账号凭证", defaultPath: `CodexAuth-account-${new Date().toISOString().slice(0, 10)}.codexauth`,
+    filters: [{ name: "CodexAuth 加密迁移文件", extensions: ["codexauth"] }],
+  });
+  if (selected.canceled || !selected.filePath) return { canceled: true };
+  const exportPath = selected.filePath.toLowerCase().endsWith(".codexauth") ? selected.filePath : `${selected.filePath}.codexauth`;
+  return runAccountOperation(async () => {
+    const auth = await readCurrentAuth(); // Export the latest refreshed credential, not an old saved copy.
+    const index = await readIndex();
+    const account = index.accounts.find((a) => identityKey(a.identity) === identityKey(auth.identity));
+    const encrypted = await encryptPortableCredentials({ auth: auth.content,
+      displayName: safeAccountName(account?.displayName, auth.identity).slice(0, 200) }, password);
+    await writeTextAtomic(exportPath, encrypted);
+    return { canceled: false };
+  });
+}
+
+async function importPortableCredentials(password) {
+  validatePassword(password);
+  const selected = await dialog.showOpenDialog(mainWindow, { title: "导入账号凭证", properties: ["openFile"],
+    filters: [{ name: "CodexAuth 加密迁移文件", extensions: ["codexauth"] }],
+  });
+  if (selected.canceled || !selected.filePaths?.[0]) return { canceled: true };
+  const handle = await fs.open(selected.filePaths[0], "r");
+  let encoded;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > MAX_BUNDLE_BYTES) throw new Error("迁移文件过大或格式无效。");
+    const buffer = Buffer.alloc(MAX_BUNDLE_BYTES + 1);
+    let size = 0;
+    while (size < buffer.length) {
+      const read = await handle.read(buffer, size, buffer.length - size, size);
+      if (!read.bytesRead) break;
+      size += read.bytesRead;
+    }
+    if (size > MAX_BUNDLE_BYTES) throw new Error("迁移文件过大。");
+    encoded = buffer.subarray(0, size).toString("utf8");
+  } finally { await handle.close(); }
+  const payload = await decryptPortableCredentials(encoded, password);
+  const auth = { content: payload.auth, ...validateAuthJson(payload.auth) };
+  const key = identityKey(auth.identity);
+  return runAccountOperation(async () => {
+    const index = await readIndex();
+    const existing = index.accounts.find((a) => identityKey(a.identity) === key);
+    let currentKey = null;
+    try { currentKey = identityKey((await readCurrentAuth()).identity); } catch { /* B may not be logged in. */ }
+    if (existing && currentKey === key) return { canceled: false, alreadyActive: true, snapshot: await currentState() };
+    if (existing) {
+      const confirmation = await dialog.showMessageBox(mainWindow, { type: "question", title: "更新已保存的账号",
+        message: `账号 ${identityLabel(auth.identity)} 已存在，是否用迁移文件更新它的凭证？`,
+        detail: "原凭证会先在本机加密备份。当前正在使用的其他账号不会切换。", buttons: ["取消", "更新凭证"], defaultId: 0, cancelId: 0 });
+      if (confirmation.response !== 1) return { canceled: true };
+    }
+    await mutateIndex(async (next) => {
+      let account = next.accounts.find((a) => identityKey(a.identity) === key);
+      const now = new Date().toISOString();
+      if (account) {
+        await fs.copyFile(accountBlobPath(account.id), path.join(backupsDir(), `auth-before-portable-import-${crypto.randomUUID()}.${credentialFileExtension()}`));
+        markAccountAuthSnapshot(account, auth, auth.content, now);
+      } else {
+        account = createAccountRecord(auth, safeAccountName(payload.displayName, auth.identity), now);
+        account.lastSwitchedAt = null;
+        next.accounts.push(account);
+      }
+      await saveAccountAuth(account.id, auth.content);
+      account.lastSyncedAt = now;
+      next.deletedIdentityKeys = (next.deletedIdentityKeys ?? []).filter((item) => item !== key);
+    });
+    return { canceled: false, snapshot: await currentState() };
+  });
 }
 
 async function backupCurrentAuth(content, reason) {
@@ -4376,6 +4451,12 @@ function handleWidgetPointerLeave() {
 function registerIpc() {
   ipcMain.handle("diagnostics:get", async () => (await currentState()).diagnostics);
   ipcMain.handle("state:get", () => currentState());
+  ipcMain.handle("account:export-portable", (_event, password) => exportCurrentCredentials(password));
+  ipcMain.handle("account:import-portable", async (_event, password) => {
+    const result = await importPortableCredentials(password);
+    if (!result.canceled) broadcastStateChanged();
+    return result;
+  });
   ipcMain.handle("account:import-current", async (_event, displayName) => {
     const result = await importCurrentAccount(displayName);
     broadcastStateChanged();

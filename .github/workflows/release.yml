@@ -27,7 +27,7 @@ jobs:
         run: npm ci
 
       - name: Check source
-        run: npm run lint && npm run platform:validate && npm run codex-config:validate && npm run usage:validate && npm run local-data:validate && npm run browser-cache:validate && npm run startup:validate
+        run: npm run lint && npm run platform:validate && npm run codex-config:validate && npm run usage:validate && npm run local-data:validate && npm run browser-cache:validate && npm run startup:validate && npm run portable:validate
 
       - name: Build installer
         run: npm run pack:win
@@ -59,7 +59,7 @@ jobs:
         run: npm ci
 
       - name: Check source
-        run: npm run lint && npm run platform:validate && npm run codex-config:validate && npm run usage:validate && npm run local-data:validate && npm run browser-cache:validate && npm run startup:validate
+        run: npm run lint && npm run platform:validate && npm run codex-config:validate && npm run usage:validate && npm run local-data:validate && npm run browser-cache:validate && npm run startup:validate && npm run portable:validate
 
       - name: Build Intel and Apple Silicon DMGs
         run: npm run pack:mac
