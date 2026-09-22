@@ -25,7 +25,7 @@ async function scenario(target, fail = false) {
     __dirname: path.dirname(filename), process, Buffer, console: { error() {} }, setTimeout, clearTimeout, setInterval, clearInterval });
   vm.runInContext(fs.readFileSync(filename, "utf8"), context);
   for (const name of ["ensureStoreDirs", "recoverStoreIfNeeded", "ensureCodexFileCredentialStore", "migratePlaintextBackups",
-    "cleanupStoreArtifacts", "cleanupMismatchedQuotaSnapshots", "startAuthWatcher", "startLocalLogWatcher", "startSessionsWatcher", "startSessionsPolling"])
+    "cleanupStoreArtifacts", "cleanupMismatchedQuotaSnapshots", "startAuthWatcher", "startLocalLogWatcher", "startSessionsWatcher", "startSessionsPolling", "startAutoRecovery"])
     context[name] = async () => {};
   context.syncLaunchAtLoginFromSettings = async () => ({});
   context.hydrateStoredAccountMetadata = async () => { await metadata; if (fail) throw new Error("fixture startup failure"); };

@@ -39,6 +39,7 @@ const els = {
   displayNameInput: document.querySelector("#displayNameInput"),
   importBtn: document.querySelector("#importBtn"),
   exportCredentialsBtn: document.querySelector("#exportCredentialsBtn"),
+  exportScopeDialog: document.querySelector("#exportScopeDialog"),
   importCredentialsBtn: document.querySelector("#importCredentialsBtn"),
   transferDialog: document.querySelector("#transferDialog"),
   transferForm: document.querySelector("#transferForm"),
@@ -52,6 +53,8 @@ const els = {
   transferSubmit: document.querySelector("#transferSubmit"),
   accountList: document.querySelector("#accountList"),
   restartAfterSwitch: document.querySelector("#restartAfterSwitch"),
+  autoSwitchOnLimit: document.querySelector("#autoSwitchOnLimit"),
+  autoRecoveryStatus: document.querySelector("#autoRecoveryStatus"),
   statsRefreshBtn: document.querySelector("#statsRefreshBtn"),
   scopeCurrentBtn: document.querySelector("#scopeCurrentBtn"),
   scopeAllBtn: document.querySelector("#scopeAllBtn"),
@@ -224,6 +227,13 @@ function renderSettings(snapshot) {
   if (els.restartAfterSwitch) {
     els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
+  if (els.autoSwitchOnLimit) {
+    els.autoSwitchOnLimit.checked = snapshot?.settings?.autoSwitchOnLimit === true;
+    els.autoSwitchOnLimit.disabled = snapshot?.platform !== "win32";
+  }
+  if (els.autoRecoveryStatus) els.autoRecoveryStatus.textContent = snapshot?.platform !== "win32"
+    ? "自动续任务目前仅支持 Windows Codex 桌面版。"
+    : snapshot?.autoRecovery?.message ?? "未开启自动切换与续任务。";
 }
 
 function renderStatus(snapshot) {
@@ -783,19 +793,33 @@ async function loadDashboard(silent = false, options = {}) {
 
 let transferMode = "export";
 let transferBusy = false;
+let importSelection = null;
+
+async function startCredentialImport() {
+  await withAction(els.importCredentialsBtn, "选择文件中", async () => {
+    const selection = await api.selectPortable();
+    if (selection.canceled) return;
+    importSelection = selection;
+    openCredentialTransfer("import");
+  });
+}
 
 function openCredentialTransfer(mode) {
   transferMode = mode;
-  const exporting = mode === "export";
+  const exporting = mode === "export" || mode === "export-all";
+  const all = mode === "export-all";
   els.transferForm.reset();
   els.transferError.textContent = "";
-  els.transferTitle.textContent = exporting ? "导出当前账号" : "导入账号凭证";
-  els.transferDescription.textContent = exporting
+  els.transferTitle.textContent = all ? "导出全部账号" : exporting ? "导出当前账号" : "导入账号凭证";
+  els.transferDescription.textContent = all
+    ? "导出全部已保存账号及当前登录账号。所选位置会新建一个文件夹，每个账号对应一个加密 .codexauth 文件，共用本次迁移密码。"
+    : exporting
     ? "导出当前 Codex 登录的最新凭证为加密 .codexauth 文件。B 电脑导入时需要相同的迁移密码。"
-    : "输入导出时设置的迁移密码，然后选择 .codexauth 文件。导入后在账号列表点击“切换”即可使用。";
+    : `已选择 ${importSelection.count} 个凭证文件。输入这批文件共用的迁移密码即可批量导入；不同密码的文件请分批选择。`;
+  els.transferDescription.title = exporting ? "" : importSelection.names.join("\n");
   els.transferConfirmGroup.hidden = !exporting;
   els.transferConfirm.required = exporting;
-  els.transferSubmit.textContent = exporting ? "选择保存位置" : "选择迁移文件";
+  els.transferSubmit.textContent = all ? "选择保存文件夹" : exporting ? "选择保存位置" : "导入所选账号";
   els.transferDialog.showModal();
   els.transferPassword.focus();
 }
@@ -803,7 +827,8 @@ function openCredentialTransfer(mode) {
 async function submitCredentialTransfer(event) {
   event.preventDefault();
   if (transferBusy || !els.transferForm.reportValidity()) return;
-  if (transferMode === "export" && els.transferPassword.value !== els.transferConfirm.value) {
+  const exporting = transferMode === "export" || transferMode === "export-all";
+  if (exporting && els.transferPassword.value !== els.transferConfirm.value) {
     els.transferError.textContent = "两次输入的迁移密码不一致。";
     return;
   }
@@ -815,12 +840,13 @@ async function submitCredentialTransfer(event) {
   els.transferPassword.value = "";
   els.transferConfirm.value = "";
   try {
-    const result = transferMode === "export" ? await api.exportPortable(password) : await api.importPortable(password);
+    const result = exporting ? await api.exportPortable(password, transferMode === "export-all" ? "all" : "current") : await api.importPortable(password, importSelection.selectionId);
     if (!result.canceled) {
       if (result.snapshot) { render(result.snapshot); state.dashboardLoaded = false; }
       els.transferDialog.close();
-      showToast(transferMode === "export" ? "加密凭证已导出，可在另一台电脑导入"
-        : result.alreadyActive ? "该账号已在本机登录，已保留本机凭证" : "账号已导入，在列表点击“切换”即可使用");
+      showToast(transferMode === "export-all" ? `已导出 ${result.count} 个账号的加密凭证`
+        : exporting ? "加密凭证已导出，可在另一台电脑导入"
+        : `已导入 ${result.importedCount} 个账号${result.skippedCount ? `，${result.skippedCount} 个当前账号保留本机凭证` : ""}，在列表点击“切换”即可使用`);
     }
   } catch (error) { els.transferError.textContent = error.message; }
   finally {
@@ -922,13 +948,36 @@ function wireEvents() {
   els.restartAfterSwitch?.addEventListener("change", () => {
     api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked }).catch((error) => showToast(error.message));
   });
+  els.autoSwitchOnLimit?.addEventListener("change", async () => {
+    const enabled = els.autoSwitchOnLimit.checked;
+    els.autoSwitchOnLimit.disabled = true;
+    try {
+      const snapshot = await api.updateSettings({ autoSwitchOnLimit: enabled });
+      state.snapshot = snapshot;
+      renderSettings(snapshot);
+      showToast(enabled ? "已开启额度耗尽自动切换与续任务" : "已关闭自动恢复；已开始的任务会继续运行");
+    } catch (error) {
+      els.autoSwitchOnLimit.checked = !enabled;
+      showToast(error.message);
+    } finally { els.autoSwitchOnLimit.disabled = state.snapshot?.platform !== "win32"; }
+  });
   els.importBtn.addEventListener("click", () => importCurrent());
-  els.exportCredentialsBtn.addEventListener("click", () => openCredentialTransfer("export"));
-  els.importCredentialsBtn.addEventListener("click", () => openCredentialTransfer("import"));
+  els.exportCredentialsBtn.addEventListener("click", () => {
+    els.exportScopeDialog.returnValue = "";
+    els.exportScopeDialog.showModal();
+  });
+  els.exportScopeDialog.addEventListener("close", () => {
+    if (els.exportScopeDialog.returnValue === "current") openCredentialTransfer("export");
+    else if (els.exportScopeDialog.returnValue === "all") openCredentialTransfer("export-all");
+  });
+  els.importCredentialsBtn.addEventListener("click", () => startCredentialImport());
   els.transferForm.addEventListener("submit", submitCredentialTransfer);
   els.transferCancel.addEventListener("click", () => els.transferDialog.close());
   els.transferDialog.addEventListener("cancel", (event) => { if (transferBusy) event.preventDefault(); });
-  els.transferDialog.addEventListener("close", () => { els.transferForm.reset(); els.transferError.textContent = ""; });
+  els.transferDialog.addEventListener("close", () => {
+    els.transferForm.reset(); els.transferError.textContent = "";
+    if (importSelection) { api.cancelPortable(importSelection.selectionId).catch(() => {}); importSelection = null; }
+  });
   els.restartBtn.addEventListener("click", () => restartCodex());
   els.storePath.addEventListener("click", () => api.openPath(state.snapshot.storeRoot));
   els.confirmDialog.addEventListener("close", () => {

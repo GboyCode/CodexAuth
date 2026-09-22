@@ -55,6 +55,12 @@ const { readBrowserResetCredits } = require("./quota/browser-reset-cache");
 const { recoverAccountIndex } = require("./account-recovery");
 const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
 const { createUpdateChecker } = require("./github-updates");
+const { createAutoRecovery, POLL_MS } = require("./auto-recovery");
+const { createRecoveryCountdown } = require("./recovery-countdown");
+const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
+let autoRecovery = null;
+let autoRecoveryTimer = null;
+let recoveryCountdown = null;
 let updateChecker = null;
 let updateDialogPending = false;
 const readRecordFile = createRecordCache();
@@ -420,6 +426,8 @@ function defaultSettings() {
     quotaMode: QUOTA_MODE_LOCAL,
     launchAtLogin: false,
     restartAfterSwitch: true,
+    autoSwitchOnLimit: false,
+    autoSwitchEnabledAt: null,
     widgetBounds: null,
   };
 }
@@ -434,6 +442,8 @@ function normalizeSettings(settings) {
     ...normalized,
     launchAtLogin: normalized.launchAtLogin === true,
     restartAfterSwitch: normalized.restartAfterSwitch !== false,
+    autoSwitchOnLimit: normalized.autoSwitchOnLimit === true,
+    autoSwitchEnabledAt: Number.isFinite(normalized.autoSwitchEnabledAt) ? normalized.autoSwitchEnabledAt : null,
     widgetBounds: normalizeWidgetBounds(normalized.widgetBounds),
   };
 }
@@ -992,6 +1002,7 @@ async function currentState() {
     authPath: authPath(),
     storeRoot: storeRoot(),
     settings: normalizeSettingsForState(index.settings),
+    autoRecovery: autoRecovery?.getStatus() ?? { state: "disabled", message: "未开启自动切换与续任务。" },
     current,
     accounts: index.accounts.map((account) =>
       normalizePublicAccount(account, index.activeAccountId, currentIdentityKey)
@@ -1007,12 +1018,66 @@ async function updateSettings(patch) {
   let nextSettings = null;
   await mutateIndex(async (index) => {
     const previous = JSON.stringify(normalizeSettings(index.settings));
+    delete nextPatch.autoSwitchEnabledAt;
+    if (Object.prototype.hasOwnProperty.call(nextPatch, "autoSwitchOnLimit")) {
+      if (nextPatch.autoSwitchOnLimit === true && !isWindows) throw new Error("自动续任务目前仅支持 Windows Codex 桌面版。");
+      if (nextPatch.autoSwitchOnLimit === true && !index.settings.autoSwitchOnLimit) nextPatch.autoSwitchEnabledAt = Date.now();
+      if (nextPatch.autoSwitchOnLimit !== true) nextPatch.autoSwitchEnabledAt = null;
+    }
     index.settings = normalizeSettings({ ...index.settings, ...nextPatch });
     nextSettings = index.settings;
     return previous === JSON.stringify(index.settings) ? { write: false } : {};
   });
   runtimeSettings = normalizeSettings(nextSettings ?? runtimeSettings);
+  configureAutoRecovery();
   return currentState();
+}
+
+function configureAutoRecovery() {
+  if (!autoRecovery) return;
+  autoRecovery.configure(runtimeSettings?.autoSwitchOnLimit === true, runtimeSettings?.autoSwitchEnabledAt);
+  autoRecovery.tick().catch(() => {});
+}
+
+async function startAutoRecovery() {
+  const journalPath = path.join(storeRoot(), "auto-recovery.json");
+  recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow });
+  autoRecovery = createAutoRecovery({
+    bridge: createDesktopBridge(),
+    getAnchor: () => readLocalThreadAnchor(codexDir()),
+    getLocalThreads: () => readLocalThreadMetadata(codexDir()),
+    loadJournal: async () => {
+      try { return JSON.parse(await fs.readFile(journalPath, "utf8")); }
+      catch (error) { if (error.code === "ENOENT") return null; throw new Error("无法读取自动恢复记录，请检查 auto-recovery.json。"); }
+    },
+    saveJournal: (journal) => writeJsonAtomic(journalPath, journal),
+    beforeSwitch: (details, signal) => recoveryCountdown.request(details, signal),
+    getAccounts: async () => {
+      const index = await readIndex();
+      const current = await readCurrentAuth();
+      const active = index.accounts.find((account) => identityKey(account.identity) === identityKey(current.identity));
+      return { accounts: index.accounts, activeAccountId: active?.id ?? null, activeSince: Date.parse(active?.lastSwitchedAt) || 0 };
+    },
+    switchAccount: (targetId, sourceId, allowed) => runAccountOperation(async () => {
+      const index = await readIndex();
+      const current = await readCurrentAuth();
+      const source = index.accounts.find((account) => account.id === sourceId);
+      const target = index.accounts.find((account) => account.id === targetId);
+      if (!allowed() || index.settings.autoSwitchOnLimit !== true) throw new Error("自动恢复已关闭。");
+      if (!source || identityKey(source.identity) !== identityKey(current.identity)) throw new Error("当前账号已改变，已取消自动切换。");
+      if (!target || target.needsReauth) throw new Error("备用账号不可用，请重新登录。");
+      // Validate the encrypted snapshot before changing the active auth file.
+      validateAuthJson(await loadAccountAuth(targetId));
+      if (!allowed()) throw new Error("自动恢复已关闭。");
+      await switchAccountLocked(targetId, { restartCodex: true });
+    }),
+    onStatus: () => broadcastStateChanged(),
+  });
+  configureAutoRecovery();
+  autoRecoveryTimer = setInterval(() => {
+    if (runtimeSettings?.autoSwitchOnLimit === true) autoRecovery.tick().catch(() => {});
+  }, POLL_MS);
+  autoRecoveryTimer.unref?.();
 }
 
 async function syncLaunchAtLoginFromSettings() {
@@ -1065,13 +1130,65 @@ async function exportCurrentCredentials(password) {
   });
 }
 
-async function importPortableCredentials(password) {
+async function exportAllCredentials(password) {
   validatePassword(password);
-  const selected = await dialog.showOpenDialog(mainWindow, { title: "导入账号凭证", properties: ["openFile"],
-    filters: [{ name: "CodexAuth 加密迁移文件", extensions: ["codexauth"] }],
+  const selected = await dialog.showOpenDialog(mainWindow, {
+    title: "导出全部账号凭证", properties: ["openDirectory", "createDirectory"],
   });
   if (selected.canceled || !selected.filePaths?.[0]) return { canceled: true };
-  const handle = await fs.open(selected.filePaths[0], "r");
+  return runAccountOperation(async () => {
+    const index = await readIndex();
+    let current = null;
+    try { current = await readCurrentAuth(); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw new Error("无法读取当前登录凭证，请检查登录状态后重试。");
+    }
+    const currentKey = current ? identityKey(current.identity) : null;
+    const accounts = new Map();
+    for (const account of index.accounts) {
+      const key = identityKey(account.identity);
+      if (accounts.has(key)) continue;
+      let auth;
+      try {
+        const content = key === currentKey ? current.content : await loadAccountAuth(account.id);
+        auth = { content, ...validateAuthJson(content) };
+        if (identityKey(auth.identity) !== key) throw new Error("Identity mismatch");
+      } catch {
+        throw new Error(`账号“${safeAccountName(account.displayName, account.identity)}”的凭证无法读取，未导出任何账号。请重新保存该账号后重试。`);
+      }
+      accounts.set(key, { auth: auth.content, displayName: safeAccountName(account.displayName, auth.identity).slice(0, 200) });
+    }
+    if (current && !accounts.has(currentKey)) {
+      accounts.set(currentKey, { auth: current.content, displayName: safeAccountName("", current.identity).slice(0, 200) });
+    }
+    if (!accounts.size) throw new Error("暂无可导出的账号，请先登录或保存账号。");
+    // Finish validation/encryption before creating any output; never write plaintext.
+    const files = [];
+    for (const payload of accounts.values()) {
+      const label = payload.displayName.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 60).replace(/[. ]+$/, "") || "account";
+      files.push({ name: `${String(files.length + 1).padStart(3, "0")}-${label}.codexauth`,
+        content: await encryptPortableCredentials(payload, password) });
+    }
+    const parent = path.resolve(selected.filePaths[0]);
+    const folder = await fs.mkdtemp(path.join(parent, `CodexAuth-accounts-${new Date().toISOString().slice(0, 10)}-`));
+    try {
+      for (const file of files) await writeTextAtomic(path.join(folder, file.name), file.content);
+    } catch (error) {
+      // Only remove the fresh directory created by this export, never its parent.
+      if (path.dirname(path.resolve(folder)) === parent && path.basename(folder).startsWith("CodexAuth-accounts-")) {
+        await fs.rm(folder, { recursive: true, force: true });
+      }
+      throw error;
+    }
+    return { canceled: false, count: files.length };
+  });
+}
+
+const MAX_IMPORT_FILES = 100;
+let pendingCredentialImport = null;
+
+async function readPortableFile(filename) {
+  const handle = await fs.open(filename, "r");
   let encoded;
   try {
     const stat = await handle.stat();
@@ -1086,37 +1203,99 @@ async function importPortableCredentials(password) {
     if (size > MAX_BUNDLE_BYTES) throw new Error("迁移文件过大。");
     encoded = buffer.subarray(0, size).toString("utf8");
   } finally { await handle.close(); }
-  const payload = await decryptPortableCredentials(encoded, password);
-  const auth = { content: payload.auth, ...validateAuthJson(payload.auth) };
-  const key = identityKey(auth.identity);
+  return encoded;
+}
+
+async function selectPortableCredentials() {
+  pendingCredentialImport = null;
+  const selected = await dialog.showOpenDialog(mainWindow, {
+    title: "选择账号凭证（可多选）", properties: ["openFile", "multiSelections"],
+    filters: [{ name: "CodexAuth 加密凭证", extensions: ["codexauth"] }],
+  });
+  if (selected.canceled || !selected.filePaths?.length) return { canceled: true };
+  const paths = [...new Set(selected.filePaths)];
+  if (paths.length > MAX_IMPORT_FILES) throw new Error(`一次最多选择 ${MAX_IMPORT_FILES} 个凭证文件。`);
+  const files = [];
+  for (const filename of paths) {
+    try { files.push({ name: path.basename(filename), encoded: await readPortableFile(filename) }); }
+    catch { throw new Error(`无法读取“${path.basename(filename)}”，请选择有效的凭证文件。`); }
+  }
+  const selectionId = crypto.randomUUID();
+  pendingCredentialImport = { selectionId, files };
+  return { canceled: false, selectionId, count: files.length, names: files.map((file) => file.name) };
+}
+
+function cancelPortableImport(selectionId) {
+  if (pendingCredentialImport?.selectionId === selectionId) pendingCredentialImport = null;
+}
+
+async function importPortableCredentials(password, selectionId) {
+  validatePassword(password);
+  const selection = pendingCredentialImport;
+  if (!selection || selection.selectionId !== selectionId) throw new Error("请先选择要导入的凭证文件。");
   return runAccountOperation(async () => {
+    const imports = new Map();
+    // Validate the entire batch before touching any saved account.
+    for (const file of selection.files) {
+      try {
+        const payload = await decryptPortableCredentials(file.encoded, password);
+        const auth = { content: payload.auth, ...validateAuthJson(payload.auth) };
+        const key = identityKey(auth.identity);
+        const duplicate = imports.get(key);
+        if (duplicate && duplicate.auth.content !== auth.content) throw new Error("同一账号包含不同凭证，请仅选择一份。");
+        imports.set(key, { payload, auth, key });
+      } catch (error) {
+        throw new Error(`“${file.name}”：${error.message} 本批次未导入，请重试密码或重新选择同一密码的文件。`);
+      }
+    }
     const index = await readIndex();
-    const existing = index.accounts.find((a) => identityKey(a.identity) === key);
     let currentKey = null;
-    try { currentKey = identityKey((await readCurrentAuth()).identity); } catch { /* B may not be logged in. */ }
-    if (existing && currentKey === key) return { canceled: false, alreadyActive: true, snapshot: await currentState() };
-    if (existing) {
+    try { currentKey = identityKey((await readCurrentAuth()).identity); } catch { /* No active login. */ }
+    const skipped = [...imports.keys()].filter((key) => key === currentKey && index.accounts.some((a) => identityKey(a.identity) === key));
+    const updates = index.accounts.filter((a) => imports.has(identityKey(a.identity)) && !skipped.includes(identityKey(a.identity)));
+    if (updates.length) {
       const confirmation = await dialog.showMessageBox(mainWindow, { type: "question", title: "更新已保存的账号",
-        message: `账号 ${identityLabel(auth.identity)} 已存在，是否用迁移文件更新它的凭证？`,
-        detail: "原凭证会先在本机加密备份。当前正在使用的其他账号不会切换。", buttons: ["取消", "更新凭证"], defaultId: 0, cancelId: 0 });
+        message: `所选凭证中有 ${updates.length} 个已保存账号，是否更新？`,
+        detail: "原凭证会先在本机加密备份。当前已登录账号保留本机凭证，不自动切换账号。",
+        buttons: ["取消", "更新凭证"], defaultId: 0, cancelId: 0 });
       if (confirmation.response !== 1) return { canceled: true };
     }
-    await mutateIndex(async (next) => {
-      let account = next.accounts.find((a) => identityKey(a.identity) === key);
-      const now = new Date().toISOString();
-      if (account) {
-        await fs.copyFile(accountBlobPath(account.id), path.join(backupsDir(), `auth-before-portable-import-${crypto.randomUUID()}.${credentialFileExtension()}`));
-        markAccountAuthSnapshot(account, auth, auth.content, now);
-      } else {
-        account = createAccountRecord(auth, safeAccountName(payload.displayName, auth.identity), now);
-        account.lastSwitchedAt = null;
-        next.accounts.push(account);
+    const rollback = [];
+    let importedCount = 0;
+    try {
+      await mutateIndex(async (next) => {
+        for (const { payload, auth, key } of imports.values()) {
+          if (skipped.includes(key)) continue;
+          let account = next.accounts.find((a) => identityKey(a.identity) === key);
+          const now = new Date().toISOString();
+          if (account) {
+            const previous = await fs.readFile(accountBlobPath(account.id), "utf8");
+            await writeTextAtomic(path.join(backupsDir(), `auth-before-portable-import-${crypto.randomUUID()}.${credentialFileExtension()}`), previous);
+            rollback.push({ id: account.id, previous });
+            markAccountAuthSnapshot(account, auth, auth.content, now);
+          } else {
+            account = createAccountRecord(auth, safeAccountName(payload.displayName, auth.identity), now);
+            account.lastSwitchedAt = null;
+            next.accounts.push(account);
+            rollback.push({ id: account.id, previous: null });
+          }
+          await saveAccountAuth(account.id, auth.content);
+          account.lastSyncedAt = now;
+          next.deletedIdentityKeys = (next.deletedIdentityKeys ?? []).filter((item) => item !== key);
+          importedCount++;
+        }
+        return { write: importedCount > 0 };
+      });
+    } catch (error) {
+      for (const item of rollback.reverse()) {
+        if (item.previous === null) await fs.rm(accountBlobPath(item.id), { force: true });
+        else await writeTextAtomic(accountBlobPath(item.id), item.previous);
       }
-      await saveAccountAuth(account.id, auth.content);
-      account.lastSyncedAt = now;
-      next.deletedIdentityKeys = (next.deletedIdentityKeys ?? []).filter((item) => item !== key);
-    });
-    return { canceled: false, snapshot: await currentState() };
+      throw new Error("导入写入失败，已恢复原凭证，请重试。");
+    }
+    cancelPortableImport(selectionId);
+    return { canceled: false, importedCount, skippedCount: skipped.length,
+      alreadyActive: importedCount === 0 && skipped.length > 0, snapshot: await currentState() };
   });
 }
 
@@ -3975,6 +4154,29 @@ function scheduleWidgetBoundsSave(delayMs = 350) {
   }, delayMs);
 }
 
+function createRecoveryCountdownWindow() {
+  const anchor = widgetWindow && !widgetWindow.isDestroyed() ? widgetWindow.getBounds()
+    : clampWidgetBoundsToDisplay(normalizeWidgetBounds(runtimeSettings?.widgetBounds));
+  const area = screen.getDisplayMatching(anchor).workArea;
+  const width = 380, height = 302;
+  const beside = anchor.x - width - 12 >= area.x ? anchor.x - width - 12 : anchor.x + anchor.width + 12;
+  const win = new BrowserWindow({
+    width, height,
+    x: Math.max(area.x, Math.min(beside, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(anchor.y, area.y + area.height - height)),
+    title: "CodexAuth 自动切换确认", icon: appIconPath(), show: false,
+    frame: false, resizable: false, maximizable: false, minimizable: false,
+    alwaysOnTop: true, skipTaskbar: true, backgroundColor: "#f7f9ff",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
+  });
+  hardenWindowNavigation(win);
+  win.loadFile(path.join(__dirname, "ui", "recovery-countdown.html")).catch(() => {
+    if (!win.isDestroyed()) win.destroy();
+  });
+  return win;
+}
+
 function createWidgetWindow() {
   if (widgetWindow && !widgetWindow.isDestroyed()) return widgetWindow;
   const savedBounds = normalizeWidgetBounds(runtimeSettings?.widgetBounds);
@@ -4505,13 +4707,21 @@ async function checkForUpdates(event) {
 }
 
 function registerIpc() {
+  ipcMain.handle("recovery-countdown:ready", (event) => recoveryCountdown?.ready(event.sender) ?? null);
+  ipcMain.handle("recovery-countdown:cancel", (event) => recoveryCountdown?.cancel(event.sender) ?? false);
   ipcMain.handle("app:version", () => app.getVersion());
   ipcMain.handle("updates:check", checkForUpdates);
   ipcMain.handle("diagnostics:get", async () => (await currentState()).diagnostics);
   ipcMain.handle("state:get", () => currentState());
-  ipcMain.handle("account:export-portable", (_event, password) => exportCurrentCredentials(password));
-  ipcMain.handle("account:import-portable", async (_event, password) => {
-    const result = await importPortableCredentials(password);
+  ipcMain.handle("account:export-portable", (_event, password, scope = "current") => {
+    if (scope === "current") return exportCurrentCredentials(password);
+    if (scope === "all") return exportAllCredentials(password);
+    throw new Error("请选择导出当前或导出全部。");
+  });
+  ipcMain.handle("account:select-portable", () => selectPortableCredentials());
+  ipcMain.handle("account:cancel-portable", (_event, selectionId) => cancelPortableImport(selectionId));
+  ipcMain.handle("account:import-portable", async (_event, password, selectionId) => {
+    const result = await importPortableCredentials(password, selectionId);
     if (!result.canceled) broadcastStateChanged();
     return result;
   });
@@ -4616,6 +4826,7 @@ if (hasSingleInstanceLock) {
     await startLocalLogWatcher();
     await startSessionsWatcher();
     await startSessionsPolling();
+    await startAutoRecovery();
 
     app.on("activate", () => {
       showMainWindow();
@@ -4645,6 +4856,8 @@ app.on("before-quit", () => {
   if (localLogWatcher) localLogWatcher.close();
   if (sessionsWatcher) sessionsWatcher.close();
   if (sessionsPollingInterval) clearInterval(sessionsPollingInterval);
+  if (autoRecoveryTimer) clearInterval(autoRecoveryTimer);
+  autoRecovery?.configure(false, null);
   clearWidgetDockTimers();
   for (const timer of reauthCheckTimers.values()) clearTimeout(timer);
   reauthCheckTimers.clear();

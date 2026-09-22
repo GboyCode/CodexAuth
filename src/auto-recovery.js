@@ -1,0 +1,330 @@
+const { normalizePlanType } = require("./quota/token-math");
+
+const CONTINUE_PROMPT = "刚才任务因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号。请基于本任务已有上下文和当前文件状态，继续完成我上一条请求中尚未完成的工作。先确认已完成的步骤，避免重复执行；保留原有模型、权限与审批要求。";
+const POLL_MS = 15000;
+const MAX_SNAPSHOT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function windowScore(window, now) {
+  if (!window || typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) return null;
+  const reset = Number(window.resetsAt) * 1000;
+  if (!Number.isFinite(reset) || reset <= 0 || window.usedPercent < 0 || window.usedPercent > 100) return null;
+  if (reset <= now) {
+    // This is a candidate estimate only. Recovery verifies the actual signed-in
+    // account and live availability before submitting any continuation prompt.
+    const duration = Number(window.windowMinutes) * 60000;
+    const nextReset = Number.isFinite(duration) && duration > 0
+      ? reset + (Math.floor((now - reset) / duration) + 1) * duration : Infinity;
+    return { remaining: 100, reset: nextReset, inferred: true };
+  }
+  return { remaining: 100 - window.usedPercent, reset, inferred: false };
+}
+
+function accountPriority(account) {
+  const quota = account.quotaSnapshot;
+  const plan = normalizePlanType(account.identity?.planType) || normalizePlanType(quota?.planType);
+  if (plan === "plus") return 0;
+  if (plan === "business") {
+    if ([quota?.session, quota?.weekly].some((window) => Number(window?.windowMinutes) === 300)) return 1;
+    // Only a recorded weekly-only snapshot establishes the absence of a 5h limit.
+    // Missing/unknown window metadata must not be mistaken for this plan variant.
+    if (quota?.session === null && Number(quota?.weekly?.windowMinutes) >= 10080) return 2;
+  }
+  return 3;
+}
+
+function rankAccounts(accounts, activeId, excluded = {}, now = Date.now()) {
+  return accounts.flatMap((account) => {
+    if (account.id === activeId || account.needsReauth || Number(excluded[account.id]) > now) return [];
+    const quota = account.quotaSnapshot;
+    const checkedAt = Date.parse(quota?.checkedAt);
+    if (quota?.schemaVersion !== 2 || quota.source === "unavailable" || !Number.isFinite(checkedAt)
+      || checkedAt > now + 60000 || now - checkedAt > MAX_SNAPSHOT_AGE_MS) return [];
+    const raw = [quota.session, quota.weekly].filter(Boolean);
+    const windows = raw.map((window) => windowScore(window, now));
+    if (!windows.length || windows.some((window) => !window || window.remaining <= 0)) return [];
+    return [{ account, priority: accountPriority(account), inferred: windows.some((window) => window.inferred) || now - checkedAt > 86400000,
+      remaining: Math.min(...windows.map((window) => window.remaining)),
+      reset: Math.min(...windows.map((window) => window.reset)) }];
+  }).sort((a, b) => a.priority - b.priority || b.remaining - a.remaining || a.reset - b.reset || a.account.id.localeCompare(b.account.id));
+}
+
+function isQuotaFailure(result, since = 0) {
+  const thread = result?.thread, turn = result?.turns?.[0];
+  const code = turn?.error?.codexErrorInfo;
+  // Do not infer exhaustion from 429, arbitrary transcripts, or tool/image failures.
+  return thread?.kind === "codex" && thread.hostId === "local"
+    && thread.status?.type !== "active" && turn?.status === "failed"
+    && (code === "usageLimitExceeded" || (code === "other" && /\busage_limit_reached\b/.test(turn.error?.message ?? "")))
+    && Number.isFinite(turn.completedAt) && turn.completedAt * 1000 >= since;
+}
+
+function localThreads(list) {
+  return [...(list?.pinnedThreads ?? []), ...(list?.threads ?? [])]
+    .filter((thread) => thread.kind === "codex" && thread.hostId === "local");
+}
+
+function canRestart(list) {
+  if (list?.unavailableHosts?.length || list?.unavailableSources?.length) return false;
+  // The list API has no pagination. A full page cannot prove all tasks are idle.
+  if ((list?.threads?.length ?? 0) >= 50 && list.localCoverageComplete !== true) return false;
+  return !localThreads(list).some((thread) => ["active", "running", "inProgress"].includes(thread.status?.type ?? thread.status));
+}
+
+function createAutoRecovery(deps) {
+  const now = deps.now ?? Date.now;
+  let enabled = false, since = 0, generation = 0, busy = false, journal = null, warningAbort = null;
+  let status = { state: "disabled", message: "未开启自动切换与续任务。" };
+  const cache = new Map();
+  const setStatus = (state, message) => {
+    if (status.state === state && status.message === message) return;
+    status = { state, message, updatedAt: new Date(now()).toISOString() };
+    deps.onStatus?.(status);
+  };
+  const save = () => deps.saveJournal(journal);
+  const key = (id, turnId) => `${id}:${turnId}`;
+  const failure = (message) => setStatus("attention", message);
+  async function dismissJobs(jobs, state, message) {
+    journal.handled = [...new Set([...journal.handled, ...jobs.map((job) => key(job.threadId, job.turnId))])].slice(-1000);
+    journal.pending = null;
+    await save();
+    setStatus(state, message);
+  }
+  async function approveSwitch(target, sourceId, jobs, anchor, allowed, cutoff = 0) {
+    if (!allowed()) return null;
+    const abort = new AbortController();
+    warningAbort = abort;
+    setStatus("countdown", "自动切换前倒计时 15 秒，可在浮窗弹窗中取消本次。" );
+    let decision;
+    try {
+      decision = await deps.beforeSwitch({ targetLabel: target.displayName || target.identity?.email || "候选账号",
+        taskCount: jobs.length }, abort.signal);
+    } finally {
+      if (warningAbort === abort) warningAbort = null;
+    }
+    if (!allowed()) return null;
+    if (decision !== "elapsed") {
+      await dismissJobs(jobs, decision === "cancelled" ? "cancelled" : "attention", decision === "cancelled"
+        ? "已取消本次自动切换；这次中断不会再次自动重试，新中断仍会监听。"
+        : "切换提醒未能完整显示，已取消本次自动切换，请手动继续任务。");
+      return null;
+    }
+    // The user may have resumed a task or changed an account during the warning.
+    const freshAccounts = await deps.getAccounts();
+    if (!allowed()) return null;
+    if (freshAccounts.activeAccountId !== sourceId) {
+      await dismissJobs(jobs, "cancelled", "账号已被手动切换，已取消本次自动恢复。");
+      return null;
+    }
+    if (!rankAccounts(freshAccounts.accounts, sourceId, journal.excluded, now()).some((item) => item.account.id === target.id)) {
+      setStatus("waiting", "候选账号状态已改变，稍后重新选择账号并倒计时。");
+      return null;
+    }
+    if (!await desktopIsIdle(anchor, allowed)) return null;
+    const freshJobs = [];
+    for (const job of jobs) {
+      const result = await deps.bridge.readThread(job.threadId);
+      if (!allowed()) return null;
+      if (isQuotaFailure(result, cutoff) && result.turns[0].id === job.turnId) freshJobs.push(job);
+      else job.phase = "skipped";
+    }
+    if (!freshJobs.length) {
+      await dismissJobs(jobs, "cancelled", "原任务状态已改变，已取消本次自动切换。");
+      return null;
+    }
+    return freshJobs;
+  }
+  async function desktopIsIdle(anchor, allowed) {
+    const list = await deps.bridge.listThreads(anchor);
+    if (!allowed()) return false;
+    const metadata = deps.getLocalThreads ? await deps.getLocalThreads() : null;
+    if (!allowed()) return false;
+    if (!canRestart({ ...list, localCoverageComplete: metadata !== null })) {
+      setStatus("waiting", "仍有其他本地任务在运行，暂缓切换账号。" ); return false;
+    }
+    if (metadata) {
+      setStatus("checking", "正在检查其他本地任务是否已结束。" );
+      const visible = new Set(localThreads(list).map((thread) => thread.id));
+      const others = metadata.filter((thread) => !visible.has(thread.id));
+      for (let i = 0; i < others.length; i += 4) {
+        const results = await Promise.all(others.slice(i, i + 4).map((thread) => deps.bridge.readThread(thread.id)));
+        if (!allowed()) return false;
+        if (results.some((result) => !result?.thread || result.thread.status?.type === "active")) {
+          setStatus("waiting", "仍有其他本地任务在运行，暂缓切换账号。" ); return false;
+        }
+      }
+    }
+    return true;
+  }
+  function configure(nextEnabled, nextSince) {
+    const next = nextEnabled === true;
+    if (enabled === next && since === nextSince) return;
+    enabled = next; since = Number(nextSince) || now(); generation += 1;
+    warningAbort?.abort();
+    cache.clear();
+    setStatus(enabled ? "watching" : "disabled", enabled ? "正在监听额度耗尽的任务。" : "未开启自动切换与续任务。" );
+  }
+  async function tick() {
+    if (busy) return;
+    busy = true;
+    const revision = generation;
+    const allowed = () => enabled && revision === generation;
+    try {
+      if (!journal) {
+        journal = await deps.loadJournal() ?? { version: 1, handled: [], excluded: {}, pending: null };
+        if (journal.version !== 1 || !Array.isArray(journal.handled) || !journal.excluded || typeof journal.excluded !== "object") {
+          throw new Error("自动恢复记录格式异常，请检查本地 auto-recovery.json。" );
+        }
+      }
+      if (!allowed()) {
+        if (journal.pending) { journal.pending = null; await save(); }
+        return;
+      }
+      const accounts = await deps.getAccounts();
+      if (!allowed()) return;
+      if (!accounts.activeAccountId) { failure("请先导入当前 Codex 登录账号。" ); return; }
+      if (journal.pending) {
+        const pending = journal.pending;
+        if (pending.enabledAt !== since) { journal.pending = null; await save(); return; }
+        if (pending.stage === "switching") {
+          failure("上次切换过程被中断，请确认 Codex 登录状态并手动继续任务。" );
+          journal.pending = null; await save(); return;
+        }
+        if (accounts.activeAccountId !== pending.targetId) {
+          failure("账号已被手动切换，已取消待恢复任务。" );
+          journal.pending = null; await save(); return;
+        }
+        if (pending.nextAttemptAt > now()) return;
+        const job = pending.jobs.find((item) => !["done", "skipped", "uncertain"].includes(item.phase));
+        if (!job) {
+          const done = pending.jobs.filter((item) => item.phase === "done").length;
+          const uncertain = pending.jobs.some((item) => item.phase === "uncertain");
+          journal.pending = null; await save();
+          setStatus(uncertain ? "attention" : "resumed", uncertain
+            ? `已确认恢复 ${done} 个任务；部分发送结果不确定，请在 Codex 中检查，未重复发送。`
+            : `已切换账号并确认恢复 ${done} 个任务。`);
+          return;
+        }
+        const result = await deps.bridge.readThread(job.threadId);
+        if (!allowed()) return;
+        const turn = result?.turns?.[0];
+        if (turn?.id !== job.turnId) {
+          job.phase = ["sending", "sent"].includes(job.phase) && turn?.id ? "done" : "skipped";
+          await save(); return;
+        }
+        if (["sending", "sent"].includes(job.phase)) {
+          if (now() - job.sentAt < 60000) return;
+          job.phase = "uncertain"; await save(); return;
+        }
+        if (!isQuotaFailure(result)) { job.phase = "skipped"; await save(); return; }
+        const target = accounts.accounts.find((item) => item.id === pending.targetId);
+        const usage = await deps.bridge.readUsage(job.threadId);
+        if (!allowed()) return;
+        if (target?.identity?.userId && usage?.accountId === target.identity.userId && usage.ordinaryUsageAllowed === false) {
+          journal.excluded[target.id] = now() + 30 * 60 * 1000;
+          const next = rankAccounts(accounts.accounts, target.id, journal.excluded, now())[0]?.account;
+          if (!next) {
+            pending.nextAttemptAt = now() + 60000;
+            await save();
+            setStatus("waiting", "备用账号的实际额度仍不可用，等待账号额度恢复后重试。" ); return;
+          }
+          await save();
+          if (!await desktopIsIdle(job.threadId, allowed)) return;
+          if (!await approveSwitch(next, target.id, pending.jobs.filter((item) => item.phase === "waiting"), job.threadId, allowed)) return;
+          pending.stage = "switching"; pending.sourceId = target.id; pending.targetId = next.id; pending.createdAt = now();
+          delete pending.nextAttemptAt;
+          await save();
+          if (!allowed()) return;
+          setStatus("switching", "候选账号实际额度不可用，正在切换下一个账号。" );
+          await deps.switchAccount(next.id, target.id, allowed);
+          deps.bridge.reset(); pending.stage = "switched"; await save();
+          if (allowed()) setStatus("resuming", "已切换下一账号，等待核验额度后继续原任务。" );
+          return;
+        }
+        if (!target?.identity?.userId || usage?.accountId !== target.identity.userId || usage.ordinaryUsageAllowed !== true) {
+          failure("切换后尚未确认新账号可用，已暂停续任务，请在 Codex 中检查登录与额度。" );
+          if (now() - pending.createdAt > 120000) { journal.pending = null; await save(); }
+          return;
+        }
+        // Persist before dispatch. A crash/timeout must never cause a duplicate prompt.
+        job.phase = "sending"; job.sentAt = now(); await save();
+        if (!allowed()) return;
+        try {
+          await deps.bridge.continueThread(job.threadId, CONTINUE_PROMPT);
+          job.phase = "sent";
+        } catch {
+          job.phase = "uncertain";
+        }
+        await save();
+        if (allowed()) setStatus("resuming", "已请求原任务继续，正在确认任务状态。" );
+        return;
+      }
+      const anchor = await deps.getAnchor();
+      if (!anchor || !allowed()) return;
+      const list = await deps.bridge.listThreads(anchor);
+      if (!allowed()) return;
+      const cutoff = Math.max(since, accounts.activeSince || 0);
+      const metadata = deps.getLocalThreads ? await deps.getLocalThreads() : null;
+      if (!allowed()) return;
+      const candidates = new Map(localThreads(list).map((thread) => [thread.id, thread]));
+      for (const thread of metadata ?? []) {
+        if (!candidates.has(thread.id) && thread.updatedAt * 1000 >= cutoff) candidates.set(thread.id, { ...thread, kind: "codex", hostId: "local" });
+      }
+      const failures = [];
+      for (const thread of candidates.values()) {
+        if ((thread.status?.type ?? thread.status) === "active" || Number(thread.updatedAt) * 1000 < cutoff) continue;
+        const signature = `${thread.updatedAt}:${JSON.stringify(thread.status)}`;
+        let entry = cache.get(thread.id);
+        if (entry?.signature !== signature) {
+          const result = await deps.bridge.readThread(thread.id);
+          if (!allowed()) return;
+          entry = { signature, result }; cache.set(thread.id, entry);
+        }
+        const result = entry.result;
+        if (!isQuotaFailure(result, cutoff) || journal.handled.includes(key(thread.id, result.turns[0].id))) continue;
+        failures.push({ threadId: thread.id, turnId: result.turns[0].id, phase: "waiting" });
+      }
+      if (cache.size > 200) cache.clear();
+      if (!failures.length) {
+        if (status.state === "waiting") setStatus("watching", "正在监听额度耗尽的任务。" );
+        return;
+      }
+      if (!canRestart({ ...list, localCoverageComplete: metadata !== null })) { setStatus("waiting", "检测到额度中断；等待其他任务结束后再切换，避免重启打断它们。" ); return; }
+      const ranked = rankAccounts(accounts.accounts, accounts.activeAccountId, journal.excluded, now());
+      if (!ranked.length) { setStatus("waiting", "没有额度记录有效且仍有余额的备用账号；请更新备用账号额度或重新登录。" ); return; }
+      const target = ranked[0].account;
+      // Recheck immediately before changing global authentication/restarting the app.
+      if (!await desktopIsIdle(anchor, allowed)) return;
+      const freshFailures = [];
+      for (const job of failures) {
+        const result = await deps.bridge.readThread(job.threadId);
+        if (!allowed()) return;
+        if (isQuotaFailure(result, cutoff) && result.turns[0].id === job.turnId) freshFailures.push(job);
+      }
+      if (!freshFailures.length) return;
+      const approvedJobs = await approveSwitch(target, accounts.activeAccountId, freshFailures, anchor, allowed, cutoff);
+      if (!approvedJobs || !allowed()) return;
+      journal.pending = { stage: "switching", enabledAt: since, sourceId: accounts.activeAccountId,
+        targetId: target.id, createdAt: now(), jobs: approvedJobs };
+      journal.handled = [...journal.handled, ...approvedJobs.map((job) => key(job.threadId, job.turnId))].slice(-1000);
+      journal.excluded = Object.fromEntries(Object.entries(journal.excluded).filter(([, until]) => until > now()));
+      journal.excluded[accounts.activeAccountId] = now() + 30 * 60 * 1000;
+      await save();
+      if (!allowed()) return;
+      setStatus("switching", "正在切换到剩余额度较高的账号并重启 Codex。" );
+      await deps.switchAccount(target.id, accounts.activeAccountId, allowed);
+      deps.bridge.reset();
+      journal.pending.stage = "switched";
+      await save();
+      if (allowed()) setStatus("resuming", "账号已切换，等待 Codex 就绪后继续原任务。" );
+    } catch (error) {
+      if (allowed()) failure(error.message || "自动恢复失败，请检查 Codex 状态。" );
+    } finally {
+      // Disabling during any asynchronous step cancels all subsequent work.
+      if (!enabled && journal?.pending) { journal.pending = null; await save().catch(() => {}); }
+      busy = false;
+    }
+  }
+  return { configure, tick, getStatus: () => ({ ...status }) };
+}
+
+module.exports = { createAutoRecovery, rankAccounts, isQuotaFailure, canRestart, POLL_MS, CONTINUE_PROMPT };

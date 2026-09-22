@@ -64,7 +64,7 @@
         <section class="credential-transfer">
           <div><strong>跨电脑迁移</strong><p>用迁移密码保护账号凭证，在另一台电脑导入后即可选择切换。</p></div>
           <div class="transfer-actions">
-            <button id="exportCredentialsBtn" class="ghost-btn">导出当前账号</button>
+            <button id="exportCredentialsBtn" class="ghost-btn">导出账号凭证</button>
             <button id="importCredentialsBtn" class="ghost-btn">导入凭证文件</button>
           </div>
         </section>
@@ -77,6 +77,24 @@
               <input id="restartAfterSwitch" type="checkbox" checked />
               <span>切换后重启 Codex App</span>
             </label>
+            <div class="recovery-option">
+              <label class="toggle-row">
+                <input id="autoSwitchOnLimit" type="checkbox" />
+                <span>额度耗尽后自动切换并继续</span>
+              </label>
+              <span class="info-tip">
+                <button id="autoRecoveryInfo" class="info-tip-button" type="button" aria-label="自动切换说明" aria-describedby="autoRecoveryHelp">!</button>
+                <span id="autoRecoveryHelp" class="info-tip-content" role="tooltip">
+                  <strong>账号优先顺序</strong>
+                  Plus → 有五小时限制的 Business → 仅有周额度的 Business。同类账号优先剩余额度高、下次重置早的账号；其他套餐及限制不明确的账号排在最后。
+                  <strong>如何继续任务</strong>
+                  切换前弹出 15 秒倒计时，可取消本次。随后重启 Codex、核验账号与额度，并在原任务发送继续指令。其他本地任务运行时暂缓切换。
+                  <strong>生效范围</strong>
+                  仅处理开启后因额度耗尽而失败的本地任务。取消本次后不再重试同一次中断；新的中断仍会监听。
+                </span>
+              </span>
+            </div>
+            <p id="autoRecoveryStatus" class="small-copy" role="status">未开启自动切换与续任务。</p>
             <div class="divider"></div>
             <p class="small-copy">
               凭证使用 <span id="credentialProtection">操作系统当前用户安全存储</span> 加密保存。切换前会备份并保存当前
@@ -190,7 +208,18 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <dialog id="transferDialog" class="confirm-dialog">
+    <dialog id="exportScopeDialog" class="confirm-dialog" aria-labelledby="exportScopeTitle">
+      <form method="dialog">
+        <h3 id="exportScopeTitle">导出账号凭证</h3>
+        <p>请选择要导出的账号。</p>
+        <div class="dialog-actions">
+          <button value="cancel" class="ghost-btn">取消</button>
+          <button value="current" class="ghost-btn">导出当前</button>
+          <button value="all" class="primary-btn">导出全部</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="transferDialog" class="confirm-dialog" aria-labelledby="transferTitle">
       <form id="transferForm">
         <h3 id="transferTitle">导出当前账号</h3>
         <p id="transferDescription"></p>

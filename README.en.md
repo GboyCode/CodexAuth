@@ -1,5 +1,39 @@
 # CodexAuth Switch
 
+## 0.1.23: Countdown and cancellation before switching
+
+The long explanation is now behind a hover/focus information icon. Before every automatic switch, including fallback accounts, an always-on-top reminder beside the floating widget shows the target account and a 15-second countdown. Cancel, close, or Escape skips this batch of interrupted turns without disabling recovery for new failures. Cancellation persists across application restarts.
+
+The countdown starts after the reminder loads. Disabling recovery, a failed reminder, or a sleep/stall that skips the countdown cancels the operation. Accounts and task activity are checked again afterward. Recovery sends a continuation message to the original task; it does not restore an interrupted process. A real quota-exhaustion recovery has not been tested end to end.
+
+## 0.1.22: Account priority by plan and five-hour limit
+
+Automatic recovery now prefers **Plus → Business with a five-hour limit → weekly-only Business without a five-hour limit**. The local `team` plan name is treated as Business; a recorded 300-minute quota window identifies the five-hour variant. Within each group, higher estimated remaining quota comes first, then the earlier upcoming reset. Other plans and ambiguous window metadata come last. Existing availability checks and exhausted-account exclusions still apply.
+
+## 0.1.21: Optional automatic account switching and task continuation
+
+Enable the new toggle in the account page's switching settings (off by default). Every 15 seconds, CodexAuth checks local tasks for explicit quota exhaustion failures occurring after enablement. It uses the plan priority above, then ranks each group by the lower estimated remaining session/weekly percentage, breaking ties by the earliest upcoming reset. Invalid, unknown, not-yet-reset exhausted windows and snapshots older than seven days are excluded. Passed reset times may make an account a candidate, but are never treated as verified availability: after switching, Codex verifies the active account and actual quota before continuing. An unavailable candidate is skipped for another account and excluded for 30 minutes.
+
+Recovery waits for other local tasks to finish, switches credentials using the existing backup flow, restarts Codex, verifies the target account and available quota, then sends a visible continuation prompt to the original task without changing its model or permissions. Restart is required regardless of the manual-switch restart preference. A durable local `auto-recovery.json` journal prevents duplicate sends. Disabling cancels subsequent recovery steps; already started tasks continue. Reset credits are never automatically consumed.
+
+Currently Windows only. Keep CodexAuth running and the Codex task window available. The desktop app-tools interface is version-dependent; incompatibility or recovery errors appear beside the toggle. Read-only desktop integration and simulated recovery have been validated; a real quota-exhaustion account switch has not been tested.
+
+## 0.1.20: Select files before entering the import password
+
+The credential importer now opens a multi-select file picker first (up to 100 files), then asks once for their shared migration password. Retry an incorrect password without selecting the files again. Import files with different passwords separately. The whole batch is validated before writing; existing accounts use one update confirmation, and the current login is preserved.
+
+## 0.1.19: Refresh credential icons after installation
+
+Notify Explorer after the `.codexauth` file type and icon have been registered, so an open folder does not keep the old generic file type and blank icon after an upgrade.
+
+## 0.1.18: Credential file icon
+
+The Windows installer now installs a standalone ICO for `.codexauth` credentials and registers it as the file type icon. Reinstalling refreshes the association and notifies Explorer. Credentials are still imported through the main window.
+
+## 0.1.17: Export the current account or all accounts
+
+Click **Export account credentials** and choose the current account or all accounts. Export all creates a new folder containing one encrypted `.codexauth` file per saved account, including the current login without duplicates. All files use the chosen migration password, and the current account uses its latest credentials. Each file works with the existing importer.
+
 ## 0.1.16: Reset-credit cache and snapshot fixes
 
 Discover redirected Codex cache profiles from Windows Store / MSIX installations and continue past damaged responses in cache hash chains. Account-verified reset credits can now be read without a switch timestamp and saved without a new quota event. Concurrent refreshes preserve the newest reset record, including snapshots with no quota windows. All quota reads remain local; missing records remain unknown.
@@ -95,7 +129,7 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - Read quota and token usage from local Codex logs.
 - Cache parsed local token events by file size and modification time to reduce repeated scans.
 - Show session quota, weekly quota and saved reset counts per account, with explicit missing or stale data labels.
-- Disable network requests in renderer pages; quota reading also stays local-only.
+- Disable network requests in renderer pages; displayed quota snapshots stay local-only. Optional automatic recovery asks Codex itself to verify the signed-in account's current quota before continuing a task.
 
 ## Screenshots
 
@@ -140,7 +174,7 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 - It does not refresh OpenAI tokens by itself.
 - It does not call remote quota endpoints.
 
-The only features that intentionally affect Codex App runtime state are account switching, reauth, deleting the active account, and restarting Codex App. These actions may update `config.toml`, replace or remove the current `auth.json`, and restart Codex App so the new local login state takes effect.
+Features that intentionally affect Codex App runtime state include account switching, reauth, deleting the active account, restarting Codex App, and opt-in automatic switching and continuation. These actions may update `config.toml`, replace or remove the current `auth.json`, and restart Codex App so the new local login state takes effect. Automatic continuation also asks the local Codex interface to verify the active account's quota and send a continuation prompt; Codex itself performs the associated service requests.
 
 ## How It Works
 

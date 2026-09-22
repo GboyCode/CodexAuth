@@ -5,14 +5,23 @@ contextBridge.exposeInMainWorld("codexAuth", {
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   getState: () => ipcRenderer.invoke("state:get"),
   importCurrent: (displayName) => ipcRenderer.invoke("account:import-current", displayName),
-  exportPortable: (password) => ipcRenderer.invoke("account:export-portable", password),
-  importPortable: (password) => ipcRenderer.invoke("account:import-portable", password),
+  exportPortable: (password, scope = "current") => ipcRenderer.invoke("account:export-portable", password, scope),
+  selectPortable: () => ipcRenderer.invoke("account:select-portable"),
+  cancelPortable: (selectionId) => ipcRenderer.invoke("account:cancel-portable", selectionId),
+  importPortable: (password, selectionId) => ipcRenderer.invoke("account:import-portable", password, selectionId),
   switchAccount: (accountId, options) => ipcRenderer.invoke("account:switch", accountId, options),
   reorderAccounts: (accountIds) => ipcRenderer.invoke("account:reorder", accountIds),
   reauthAccount: (accountId) => ipcRenderer.invoke("account:reauth", accountId),
   updateAccount: (accountId, patch) => ipcRenderer.invoke("account:update", accountId, patch),
   deleteAccount: (accountId) => ipcRenderer.invoke("account:delete", accountId),
   updateSettings: (patch) => ipcRenderer.invoke("settings:update", patch),
+  readyRecoveryCountdown: () => ipcRenderer.invoke("recovery-countdown:ready"),
+  cancelRecoveryCountdown: () => ipcRenderer.invoke("recovery-countdown:cancel"),
+  onRecoveryCountdown: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("recovery-countdown:changed", handler);
+    return () => ipcRenderer.removeListener("recovery-countdown:changed", handler);
+  },
   restartCodex: () => ipcRenderer.invoke("codex:restart"),
   getQuota: () => ipcRenderer.invoke("quota:get"),
   getDashboard: () => ipcRenderer.invoke("dashboard:get"),
