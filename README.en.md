@@ -1,5 +1,9 @@
 # CodexAuth Switch
 
+## 0.1.24: Fix multiplatform releases
+
+Credential file associations now use platform-specific configuration: Windows keeps its dedicated ICO, while macOS uses the generated application icon. This fixes the missing ICNS resource during Mac packaging. Includes the countdown, cancellation, automatic recovery and batch credential migration updates from 0.1.23. Automatic recovery remains Windows only.
+
 ## 0.1.23: Countdown and cancellation before switching
 
 The long explanation is now behind a hover/focus information icon. Before every automatic switch, including fallback accounts, an always-on-top reminder beside the floating widget shows the target account and a 15-second countdown. Cancel, close, or Escape skips this batch of interrupted turns without disabling recovery for new failures. Cancellation persists across application restarts.

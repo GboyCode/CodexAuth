@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -75,17 +75,17 @@
       "!debug.log"
     ],
     "asar": true,
-    "fileAssociations": [
-      {
-        "ext": "codexauth",
-        "name": "CodexAuth.Credential",
-        "description": "CodexAuth 加密凭证",
-        "icon": "src/ui/assets/codex-color.ico",
-        "role": "Viewer"
-      }
-    ],
     "win": {
       "icon": "src/ui/assets/codex-color.ico",
+      "fileAssociations": [
+        {
+          "ext": "codexauth",
+          "name": "CodexAuth.Credential",
+          "description": "CodexAuth 加密凭证",
+          "icon": "src/ui/assets/codex-color.ico",
+          "role": "Viewer"
+        }
+      ],
       "signAndEditExecutable": false,
       "target": [
         "nsis"
@@ -93,6 +93,14 @@
     },
     "mac": {
       "icon": "src/ui/assets/codex-color.png",
+      "fileAssociations": [
+        {
+          "ext": "codexauth",
+          "name": "CodexAuth.Credential",
+          "description": "CodexAuth 加密凭证",
+          "role": "Viewer"
+        }
+      ],
       "category": "public.app-category.utilities",
       "target": [
         {
