@@ -56,7 +56,7 @@ function parseToolResult(result) {
   throw new Error("Codex 任务接口返回格式不兼容。" );
 }
 
-function createDesktopBridge({ request = pipeRequest, platform = process.platform, env = process.env } = {}) {
+function createDesktopBridge({ request = pipeRequest, platform = process.platform, env = process.env, goals } = {}) {
   let endpoint = null;
   async function discover() {
     // This adapter is currently verified only against the Windows desktop pipe.
@@ -99,11 +99,17 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
     reset: () => { endpoint = null; },
     readThread: async (id) => {
       const result = await call("read_thread", { threadId: id, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 0 }, id);
-      return { thread: result.thread, turns: (result.turns ?? []).map(({ id, status, error, startedAt, completedAt }) => ({ id, status, error, startedAt, completedAt })) };
+      return { thread: result.thread, goal: goals ? await goals.readGoal(id) : null,
+        turns: (result.turns ?? []).map(({ id, status, error, startedAt, completedAt }) => ({ id, status, error, startedAt, completedAt })) };
     },
     listThreads: (anchor) => call("list_threads", { limit: 50 }, anchor),
     readUsage: (anchor) => call("get_usage_limits", {}, anchor),
     continueThread: (id, prompt) => call("send_message_to_thread", { threadId: id, hostId: "local", prompt }, id),
+    listGoals: () => goals ? goals.listGoals() : Promise.resolve([]),
+    resumeGoal: (id, expected, allowed) => {
+      if (!goals) throw new Error("当前版本未连接目标恢复接口。");
+      return goals.resumeGoal(id, expected, allowed);
+    },
   };
 }
 

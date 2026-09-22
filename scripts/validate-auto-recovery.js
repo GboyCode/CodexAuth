@@ -3,7 +3,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { createAutoRecovery, rankAccounts, isQuotaFailure, canRestart } = require("../src/auto-recovery");
+const { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart } = require("../src/auto-recovery");
 const { createRecoveryCountdown, COUNTDOWN_MS } = require("../src/recovery-countdown");
 const { pipeRequest, parseToolResult } = require("../src/codex-desktop-bridge");
 
@@ -26,7 +26,7 @@ function fixture(options = {}) {
     continueThread: async (id) => {
       sends++;
       if (options.sendError) throw new Error("connection closed after sending");
-      results.set(id, { thread: { ...results.get(id).thread, status: { type: "active" } }, turns: [{ id: "new-turn", status: "inProgress" }] });
+      results.set(id, { ...results.get(id), thread: { ...results.get(id).thread, status: { type: "active" } }, turns: [{ id: "new-turn", status: "inProgress" }] });
     }, reset() {},
   };
   let recovery;
@@ -111,6 +111,65 @@ async function run() {
   await happy.recovery.tick(); await happy.recovery.tick(); await happy.recovery.tick();
   assert.equal(happy.stats().sends, 1); assert.equal(happy.stats().switches, 1);
   assert.equal(happy.recovery.getStatus().state, "resumed");
+
+  const goal = { threadId: "task", goalId: "goal-1", objectiveHash: "original-goal", status: "usageLimited",
+    tokenBudget: 10000, tokensUsed: 1200, timeUsedSeconds: 36, createdAt: NOW - 60000, updatedAt: NOW };
+  for (const status of ["paused", "blocked", "complete", "budgetLimited"]) {
+    assert.equal(recoveryJob({ ...failed(), goal: { ...goal, status } }), null, `do not resume ${status} goals even with a quota-failed turn`);
+  }
+  assert.equal(recoveryJob({ ...failed(), goal: { ...goal, tokensUsed: 10000 } }), null);
+  assert.equal(recoveryJob({ ...failed(), goal }, NOW + 1), null, "do not resume old stopped goals");
+
+  const goalBatch = fixture();
+  let goalResumes = 0;
+  goalBatch.results.set("task", { ...failed(), goal: clone(goal) });
+  goalBatch.results.set("second", { ...failed("second"), turns: [], goal: { ...goal, threadId: "second", goalId: "goal-2" } });
+  goalBatch.bridge.listGoals = async () => [...goalBatch.results.values()].map((value) => value.goal);
+  goalBatch.bridge.resumeGoal = async (id, expected, allowed) => {
+    assert.equal(allowed(), true); assert.equal(expected.status, "usageLimited");
+    goalResumes++; goalBatch.results.get(id).goal.status = "active";
+  };
+  for (let i = 0; i < 6; i++) await goalBatch.recovery.tick();
+  assert.equal(goalBatch.stats().switches, 1); assert.equal(goalResumes, 2); assert.equal(goalBatch.stats().sends, 2);
+  assert.equal(goalBatch.recovery.getStatus().state, "resumed");
+  assert.equal(goalBatch.results.get("task").goal.tokensUsed, 1200);
+
+  const goalChanged = fixture({ beforeSwitch: async () => { goalChanged.results.get("task").goal.status = "paused"; return "elapsed"; } });
+  goalChanged.results.get("task").goal = clone(goal);
+  await goalChanged.recovery.tick(); assert.equal(goalChanged.stats().switches, 0, "manual goal pause cancels countdown recovery");
+  const replacedGoal = fixture(); replacedGoal.results.get("task").goal = clone(goal);
+  await replacedGoal.recovery.tick(); replacedGoal.results.get("task").goal.goalId = "replacement";
+  await replacedGoal.recovery.tick(); assert.equal(replacedGoal.stats().sends, 0);
+
+  const goalUnconfirmed = fixture(); goalUnconfirmed.results.get("task").goal = clone(goal);
+  goalUnconfirmed.bridge.resumeGoal = async () => {}; // Faulty adapter: a new turn alone must not count as goal recovery.
+  for (let i = 0; i < 4; i++) await goalUnconfirmed.recovery.tick();
+  assert.equal(goalUnconfirmed.recovery.getStatus().state, "attention");
+  assert.equal(goalUnconfirmed.stats().sends, 1);
+  const goalUncertain = fixture(); goalUncertain.results.get("task").goal = clone(goal);
+  goalUncertain.bridge.resumeGoal = async () => {
+    goalUncertain.results.get("task").goal.status = "active";
+    goalUncertain.results.get("task").goal.updatedAt += 1000;
+    throw new Error("lost response after activation");
+  };
+  for (let i = 0; i < 6; i++) await goalUncertain.recovery.tick();
+  assert.equal(goalUncertain.stats().sends, 0); assert.equal(goalUncertain.recovery.getStatus().state, "attention");
+  assert.equal(goalUncertain.stats().switches, 1, "activation timestamp changes must not retry an uncertain goal");
+
+  const betweenTurns = fixture();
+  betweenTurns.results.set("other", { ...failed("other"), turns: [{ id: "last-completed", status: "completed" }],
+    goal: { ...goal, threadId: "other", status: "active" } });
+  betweenTurns.bridge.listGoals = async () => [betweenTurns.results.get("other").goal];
+  await betweenTurns.recovery.tick();
+  assert.equal(betweenTurns.stats().switches, 0, "an active goal between turns prevents restart");
+
+  const goalOnlyUpdate = fixture({ list: { threads: [] } });
+  goalOnlyUpdate.results.get("task").goal = clone(goal);
+  goalOnlyUpdate.results.get("task").turns = [];
+  goalOnlyUpdate.deps.getLocalThreads = async () => [{ id: "task", updatedAt: (NOW - 86400000) / 1000 }];
+  goalOnlyUpdate.bridge.listGoals = async () => [goalOnlyUpdate.results.get("task").goal];
+  await goalOnlyUpdate.recovery.tick();
+  assert.equal(goalOnlyUpdate.stats().switches, 1, "goal update finds a stopped task outside the recent thread page without a failed turn");
 
   const gated = fixture();
   let releaseWarning, shownWarning;

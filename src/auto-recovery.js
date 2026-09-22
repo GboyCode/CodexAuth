@@ -1,6 +1,8 @@
 const { normalizePlanType } = require("./quota/token-math");
+const { sameGoal } = require("./codex-goals");
 
 const CONTINUE_PROMPT = "刚才任务因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号。请基于本任务已有上下文和当前文件状态，继续完成我上一条请求中尚未完成的工作。先确认已完成的步骤，避免重复执行；保留原有模型、权限与审批要求。";
+const GOAL_CONTINUE_PROMPT = "刚才本任务的目标因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号并恢复原目标。请读取当前目标状态，基于已有上下文和文件进度继续原目标，遵守原预算、模型、权限与审批要求；避免重复已完成的步骤。";
 const POLL_MS = 15000;
 const MAX_SNAPSHOT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -58,6 +60,30 @@ function isQuotaFailure(result, since = 0) {
     && Number.isFinite(turn.completedAt) && turn.completedAt * 1000 >= since;
 }
 
+function recoveryJob(result, since = 0) {
+  const { thread, goal, turns } = result ?? {};
+  const turn = turns?.[0];
+  if (thread?.kind !== "codex" || thread.hostId !== "local" || thread.status?.type === "active"
+    || ["inProgress", "running"].includes(turn?.status)) return null;
+  if (goal) {
+    if (!["usageLimited", "active"].includes(goal.status)
+      || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return null;
+    if (goal.status === "usageLimited") {
+      if (!Number.isFinite(goal.updatedAt) || goal.updatedAt < since) return null;
+    } else if (!isQuotaFailure(result, since) || goal.createdAt > turn.completedAt * 1000 + 1000) return null;
+    return { threadId: thread.id, turnId: turn?.id ?? null, phase: "waiting", goal,
+      failureKey: `${thread.id}:goal:${goal.goalId}:${turn?.id ?? goal.updatedAt}` };
+  }
+  return isQuotaFailure(result, since) ? { threadId: thread.id, turnId: turn.id, phase: "waiting" } : null;
+}
+
+function matchesJob(result, job, since = 0) {
+  const fresh = recoveryJob(result, since);
+  return !!fresh && fresh.turnId === job.turnId && (job.goal
+    ? sameGoal(fresh.goal, job.goal) && fresh.goal.updatedAt === job.goal.updatedAt && fresh.goal.status === job.goal.status
+    : !fresh.goal);
+}
+
 function localThreads(list) {
   return [...(list?.pinnedThreads ?? []), ...(list?.threads ?? [])]
     .filter((thread) => thread.kind === "codex" && thread.hostId === "local");
@@ -82,9 +108,10 @@ function createAutoRecovery(deps) {
   };
   const save = () => deps.saveJournal(journal);
   const key = (id, turnId) => `${id}:${turnId}`;
+  const jobKey = (job) => job.failureKey ?? key(job.threadId, job.turnId);
   const failure = (message) => setStatus("attention", message);
   async function dismissJobs(jobs, state, message) {
-    journal.handled = [...new Set([...journal.handled, ...jobs.map((job) => key(job.threadId, job.turnId))])].slice(-1000);
+    journal.handled = [...new Set([...journal.handled, ...jobs.map(jobKey)])].slice(-1000);
     journal.pending = null;
     await save();
     setStatus(state, message);
@@ -124,7 +151,7 @@ function createAutoRecovery(deps) {
     for (const job of jobs) {
       const result = await deps.bridge.readThread(job.threadId);
       if (!allowed()) return null;
-      if (isQuotaFailure(result, cutoff) && result.turns[0].id === job.turnId) freshJobs.push(job);
+      if (matchesJob(result, job, cutoff)) freshJobs.push(job);
       else job.phase = "skipped";
     }
     if (!freshJobs.length) {
@@ -140,6 +167,16 @@ function createAutoRecovery(deps) {
     if (!allowed()) return false;
     if (!canRestart({ ...list, localCoverageComplete: metadata !== null })) {
       setStatus("waiting", "仍有其他本地任务在运行，暂缓切换账号。" ); return false;
+    }
+    // Active goals can be idle briefly between their automatically scheduled
+    // turns. Treat them as running unless their latest turn exhausted quota.
+    for (const goal of await deps.bridge.listGoals?.() ?? []) {
+      if (goal.status !== "active") continue;
+      const result = await deps.bridge.readThread(goal.threadId);
+      if (!allowed()) return false;
+      if (!isQuotaFailure(result)) {
+        setStatus("waiting", "仍有其他目标在运行，暂缓切换账号。" ); return false;
+      }
     }
     if (metadata) {
       setStatus("checking", "正在检查其他本地任务是否已结束。" );
@@ -200,22 +237,24 @@ function createAutoRecovery(deps) {
           const uncertain = pending.jobs.some((item) => item.phase === "uncertain");
           journal.pending = null; await save();
           setStatus(uncertain ? "attention" : "resumed", uncertain
-            ? `已确认恢复 ${done} 个任务；部分发送结果不确定，请在 Codex 中检查，未重复发送。`
+            ? `已确认恢复 ${done} 个任务；部分任务或目标恢复未确认，请在 Codex 中检查，未重复发送。`
             : `已切换账号并确认恢复 ${done} 个任务。`);
           return;
         }
         const result = await deps.bridge.readThread(job.threadId);
         if (!allowed()) return;
         const turn = result?.turns?.[0];
-        if (turn?.id !== job.turnId) {
+        if ((turn?.id ?? null) !== job.turnId) {
           job.phase = ["sending", "sent"].includes(job.phase) && turn?.id ? "done" : "skipped";
+          if (job.phase === "done" && job.goal && (!sameGoal(result.goal, job.goal)
+            || !["active", "complete"].includes(result.goal.status))) job.phase = "uncertain";
           await save(); return;
         }
         if (["sending", "sent"].includes(job.phase)) {
           if (now() - job.sentAt < 60000) return;
           job.phase = "uncertain"; await save(); return;
         }
-        if (!isQuotaFailure(result)) { job.phase = "skipped"; await save(); return; }
+        if (!matchesJob(result, job)) { job.phase = "skipped"; await save(); return; }
         const target = accounts.accounts.find((item) => item.id === pending.targetId);
         const usage = await deps.bridge.readUsage(job.threadId);
         if (!allowed()) return;
@@ -249,7 +288,11 @@ function createAutoRecovery(deps) {
         job.phase = "sending"; job.sentAt = now(); await save();
         if (!allowed()) return;
         try {
-          await deps.bridge.continueThread(job.threadId, CONTINUE_PROMPT);
+          // A goal has independent persisted state. Preserve its objective and
+          // accounting, then let the desktop run the next turn with its tools.
+          if (job.goal?.status === "usageLimited") await deps.bridge.resumeGoal(job.threadId, job.goal, allowed);
+          if (!allowed()) { job.phase = "uncertain"; await save(); return; }
+          await deps.bridge.continueThread(job.threadId, job.goal ? GOAL_CONTINUE_PROMPT : CONTINUE_PROMPT);
           job.phase = "sent";
         } catch {
           job.phase = "uncertain";
@@ -265,13 +308,18 @@ function createAutoRecovery(deps) {
       const cutoff = Math.max(since, accounts.activeSince || 0);
       const metadata = deps.getLocalThreads ? await deps.getLocalThreads() : null;
       if (!allowed()) return;
+      const goals = await deps.bridge.listGoals?.() ?? [];
+      if (!allowed()) return;
+      const goalMap = new Map(goals.map((goal) => [goal.threadId, goal]));
       const candidates = new Map(localThreads(list).map((thread) => [thread.id, thread]));
       for (const thread of metadata ?? []) {
-        if (!candidates.has(thread.id) && thread.updatedAt * 1000 >= cutoff) candidates.set(thread.id, { ...thread, kind: "codex", hostId: "local" });
+        if (!candidates.has(thread.id) && Math.max(thread.updatedAt * 1000, goalMap.get(thread.id)?.updatedAt ?? 0) >= cutoff)
+          candidates.set(thread.id, { ...thread, kind: "codex", hostId: "local" });
       }
       const failures = [];
       for (const thread of candidates.values()) {
-        if ((thread.status?.type ?? thread.status) === "active" || Number(thread.updatedAt) * 1000 < cutoff) continue;
+        if ((thread.status?.type ?? thread.status) === "active"
+          || Math.max(Number(thread.updatedAt) * 1000 || 0, goalMap.get(thread.id)?.updatedAt ?? 0) < cutoff) continue;
         const signature = `${thread.updatedAt}:${JSON.stringify(thread.status)}`;
         let entry = cache.get(thread.id);
         if (entry?.signature !== signature) {
@@ -279,9 +327,10 @@ function createAutoRecovery(deps) {
           if (!allowed()) return;
           entry = { signature, result }; cache.set(thread.id, entry);
         }
-        const result = entry.result;
-        if (!isQuotaFailure(result, cutoff) || journal.handled.includes(key(thread.id, result.turns[0].id))) continue;
-        failures.push({ threadId: thread.id, turnId: result.turns[0].id, phase: "waiting" });
+        const result = deps.bridge.listGoals ? { ...entry.result, goal: goalMap.get(thread.id) ?? null } : entry.result;
+        const job = recoveryJob(result, cutoff);
+        if (!job || journal.handled.includes(jobKey(job))) continue;
+        failures.push(job);
       }
       if (cache.size > 200) cache.clear();
       if (!failures.length) {
@@ -298,14 +347,14 @@ function createAutoRecovery(deps) {
       for (const job of failures) {
         const result = await deps.bridge.readThread(job.threadId);
         if (!allowed()) return;
-        if (isQuotaFailure(result, cutoff) && result.turns[0].id === job.turnId) freshFailures.push(job);
+        if (matchesJob(result, job, cutoff)) freshFailures.push(job);
       }
       if (!freshFailures.length) return;
       const approvedJobs = await approveSwitch(target, accounts.activeAccountId, freshFailures, anchor, allowed, cutoff);
       if (!approvedJobs || !allowed()) return;
       journal.pending = { stage: "switching", enabledAt: since, sourceId: accounts.activeAccountId,
         targetId: target.id, createdAt: now(), jobs: approvedJobs };
-      journal.handled = [...journal.handled, ...approvedJobs.map((job) => key(job.threadId, job.turnId))].slice(-1000);
+      journal.handled = [...journal.handled, ...approvedJobs.map(jobKey)].slice(-1000);
       journal.excluded = Object.fromEntries(Object.entries(journal.excluded).filter(([, until]) => until > now()));
       journal.excluded[accounts.activeAccountId] = now() + 30 * 60 * 1000;
       await save();
@@ -327,4 +376,4 @@ function createAutoRecovery(deps) {
   return { configure, tick, getStatus: () => ({ ...status }) };
 }
 
-module.exports = { createAutoRecovery, rankAccounts, isQuotaFailure, canRestart, POLL_MS, CONTINUE_PROMPT };
+module.exports = { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart, POLL_MS, CONTINUE_PROMPT };

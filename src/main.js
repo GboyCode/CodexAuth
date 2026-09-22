@@ -56,6 +56,7 @@ const { recoverAccountIndex } = require("./account-recovery");
 const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
 const { createUpdateChecker } = require("./github-updates");
 const { createAutoRecovery, POLL_MS } = require("./auto-recovery");
+const { createGoalBridge } = require("./codex-goals");
 const { createRecoveryCountdown } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
 let autoRecovery = null;
@@ -1043,7 +1044,7 @@ async function startAutoRecovery() {
   const journalPath = path.join(storeRoot(), "auto-recovery.json");
   recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow });
   autoRecovery = createAutoRecovery({
-    bridge: createDesktopBridge(),
+    bridge: createDesktopBridge({ goals: createGoalBridge({ codexHome: codexDir() }) }),
     getAnchor: () => readLocalThreadAnchor(codexDir()),
     getLocalThreads: () => readLocalThreadMetadata(codexDir()),
     loadJournal: async () => {

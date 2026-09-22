@@ -1,5 +1,13 @@
 # CodexAuth Switch
 
+## 0.1.25: Goal mode recovery
+
+The existing automatic recovery toggle now recognizes local goals entering `usageLimited` after enablement, including interruptions between goal turns. Multiple goals share the existing batch recovery and cancellable countdown. Manually paused, blocked, completed, budget-limited and historical goals are excluded. Other active goals prevent restarting, including idle gaps between turns.
+
+After verifying the new account and quota, Codex's `thread/goal/get` and `thread/goal/set` APIs restore only the original goal's status, preserving its objective, budget, token usage and elapsed time. A short-lived metadata helper never loads a thread or starts model work; continuation uses the desktop app. Recovery confirms both a new turn and the original goal's running state. Incompatibility or uncertain results require manual inspection without duplicate sends. Requires a compatible Windows Codex desktop installation.
+
+Validated simulated batch recovery and cancellation/state-change guards, plus the installed Codex goal API in an isolated home with preserved accounting and no model turn. Real quota exhaustion, account switching, restart and sustained goal continuation have not been tested end to end.
+
 ## 0.1.24: Fix multiplatform releases
 
 Credential file associations now use platform-specific configuration: Windows keeps its dedicated ICO, while macOS uses the generated application icon. This fixes the missing ICNS resource during Mac packaging. Includes the countdown, cancellation, automatic recovery and batch credential migration updates from 0.1.23. Automatic recovery remains Windows only.

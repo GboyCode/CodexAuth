@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -33,7 +33,7 @@
     "start": "npm run icon:app && electron .",
     "dev": "npm run icon:app && electron .",
     "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",
-    "lint": "node --check src/main.js && node --check src/platform-support.js && node --check src/codex-config.js && node --check src/preload.js && node --check src/quota/constants.js && node --check src/quota/token-math.js && node --check src/quota/usage-math.js && node --check src/quota/local-data-cache.js && node --check src/ui/shared-quota.js && node --check src/ui/app.js && node --check src/ui/widget.js && node --check src/quota/local-records.js && node --check src/quota/local-estimate.js && node --check src/account-recovery.js && node --check src/quota/browser-reset-cache.js && node --check src/portable-credentials.js && node --check src/github-updates.js && node --check src/ui/updates.js && node --check src/auto-recovery.js && node --check src/codex-desktop-bridge.js && node --check src/recovery-countdown.js && node --check src/ui/recovery-countdown.js",
+    "lint": "node --check src/main.js && node --check src/platform-support.js && node --check src/codex-config.js && node --check src/preload.js && node --check src/quota/constants.js && node --check src/quota/token-math.js && node --check src/quota/usage-math.js && node --check src/quota/local-data-cache.js && node --check src/ui/shared-quota.js && node --check src/ui/app.js && node --check src/ui/widget.js && node --check src/quota/local-records.js && node --check src/quota/local-estimate.js && node --check src/account-recovery.js && node --check src/quota/browser-reset-cache.js && node --check src/portable-credentials.js && node --check src/github-updates.js && node --check src/ui/updates.js && node --check src/auto-recovery.js && node --check src/codex-desktop-bridge.js && node --check src/recovery-countdown.js && node --check src/ui/recovery-countdown.js && node --check src/codex-goals.js",
     "codex-config:validate": "node scripts/validate-codex-config.js",
     "platform:validate": "node scripts/validate-platform-support.js",
     "quota:validate": "node scripts/validate-quota-estimate.js",
@@ -48,7 +48,7 @@
     "startup:validate": "node scripts/validate-startup.js",
     "portable:validate": "node scripts/validate-portable-credentials.js",
     "updates:validate": "node scripts/validate-github-updates.js",
-    "auto-recovery:validate": "node scripts/validate-auto-recovery.js"
+    "auto-recovery:validate": "node scripts/validate-auto-recovery.js && node scripts/validate-goals.js"
   },
   "devDependencies": {
     "electron": "^39.8.10",
