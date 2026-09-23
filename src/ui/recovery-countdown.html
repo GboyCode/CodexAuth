@@ -9,13 +9,11 @@
   </head>
   <body>
     <main aria-labelledby="title">
-      <header><span class="brand">CodexAuth · 自动恢复</span><button id="closeBtn" aria-label="取消本次并关闭">×</button></header>
-      <div class="headline"><span class="warning" aria-hidden="true">!</span><h1 id="title">即将切换账号</h1><strong class="timer"><span id="seconds">15</span><small> 秒</small></strong></div>
-      <p class="target-caption">切换到</p>
-      <p id="targetAccount" class="target">正在读取账号…</p>
-      <p id="taskSummary" class="summary">将重启 Codex，并在原任务发送继续指令。</p>
-      <button id="cancelBtn" class="cancel">取消本次</button>
-      <p class="footnote">取消后不再重试本次中断，自动恢复开关保持开启。</p>
+      <header><img src="./assets/codex-color.png" alt="" /><h1 id="title">自动切换账号</h1><span>重启 Codex</span></header>
+      <div class="countdown-row">
+        <div class="timer" role="timer" aria-label="距离自动切换"><strong id="seconds">15</strong><span>秒后继续任务</span></div>
+        <button id="cancelBtn" class="cancel" title="仅取消本次，自动恢复保持开启">取消本次</button>
+      </div>
     </main>
     <script src="./recovery-countdown.js"></script>
   </body>

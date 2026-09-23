@@ -58,7 +58,13 @@
             placeholder="账号备注，例如 work / personal"
             autocomplete="off"
           />
-          <button id="importBtn" class="primary-btn">导入当前 Codex 登录</button>
+          <button id="importBtn" class="ghost-btn">导入当前登录</button>
+          <button id="loginAccountBtn" class="primary-btn">登录并添加账号</button>
+        </section>
+        <section class="account-login-status" aria-live="polite">
+          <span id="accountLoginStatus">在官方页面登录，完成后自动添加；当前 Codex 登录保持不变。</span>
+          <button id="openAccountLoginBtn" class="ghost-btn" type="button" hidden>重新打开登录页</button>
+          <button id="cancelAccountLoginBtn" class="ghost-btn" type="button" hidden>取消登录</button>
         </section>
 
         <section class="credential-transfer">
@@ -87,6 +93,7 @@
                 <span id="autoRecoveryHelp" class="info-tip-content" role="tooltip">
                   <strong>账号优先顺序</strong>
                   Plus → 有五小时限制的 Business → 仅有周额度的 Business。同类账号优先剩余额度高、下次重置早的账号；其他套餐及限制不明确的账号排在最后。
+                  任一额度窗口剩余不超过 2% 且未到重置时间时跳过。无额度记录的 Business 在有记录的候选都不可用后尝试，切换后核验实际额度。
                   <strong>如何继续任务</strong>
                   切换前弹出 15 秒倒计时，可取消本次。随后重启 Codex、核验账号与额度，并在原任务发送继续指令。其他本地任务运行时暂缓切换。
                   <strong>生效范围</strong>
@@ -96,20 +103,31 @@
             </div>
             <p id="autoRecoveryStatus" class="small-copy" role="status">未开启自动切换与续任务。</p>
             <div class="divider"></div>
-            <p class="small-copy">
-              凭证使用 <span id="credentialProtection">操作系统当前用户安全存储</span> 加密保存。切换前会备份并保存当前
-              <code>auth.json</code>，减少刷新令牌丢失。
-            </p>
-            <p class="small-copy">
-              如果 Codex 提示 refresh token 已被使用，需要在 Codex App 重新登录该账号，
-              然后回到这里重新导入当前登录。
-            </p>
+            <details class="local-diagnostics" open>
+              <summary>凭证保存原理</summary>
+              <p class="small-copy">凭证使用 <span id="credentialProtection">操作系统当前用户安全存储</span> 加密保存。切换前会备份并保存当前 <code>auth.json</code>，减少刷新令牌丢失。</p>
+              <p class="small-copy">如果 Codex 提示 refresh token 已被使用，需要在 Codex App 重新登录该账号，然后回到这里重新导入当前登录。</p>
+            </details>
             <div class="divider"></div>
             <details class="local-diagnostics" open>
               <summary>本地兼容性自检</summary>
               <p id="diagnosticsInfo" class="small-copy" role="status">读取中</p>
               <p id="recoveryInfo" class="small-copy" hidden></p>
             </details>
+            <div class="divider"></div>
+            <section class="app-about" aria-label="项目与更新">
+              <div class="about-heading"><strong>CodexAuth</strong><span class="about-version" data-app-version>版本…</span></div>
+              <a class="about-link" href="https://github.com/GboyCode/CodexAuth" data-app-link="github" target="_blank" rel="noopener noreferrer" title="在浏览器打开 GitHub 项目主页">
+                <span class="about-link-label"><img src="./assets/github.svg" width="17" height="17" alt="" />GitHub</span>
+                <span class="about-link-value">项目主页 <span aria-hidden="true">↗</span></span>
+              </a>
+              <a class="about-link" href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer" title="在浏览器打开开发者微信二维码">
+                <span class="about-link-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>开发者微信</span>
+                <span class="about-link-value">Ryan Lin <span aria-hidden="true">↗</span></span>
+              </a>
+              <button class="about-update-btn" type="button" data-check-updates><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.2 6a8 8 0 0 1 13.6 6M4.2 12a8 8 0 0 0 13.6 6" /></svg>检查更新</button>
+              <p id="updateStatus" class="about-update-status" role="status">从 GitHub 获取正式版本</p>
+            </section>
           </aside>
         </section>
       </section>
@@ -123,7 +141,7 @@
             </div>
             <div class="section-head-actions">
               <div class="scope-tabs" role="tablist" aria-label="Usage scope">
-                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true">当前账号</button>
+                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true">本次本地</button>
                 <button id="scopeAllBtn" class="scope-tab" type="button" role="tab" aria-selected="false">全部本地</button>
               </div>
               <button id="statsRefreshBtn" class="ghost-btn">刷新</button>
@@ -165,9 +183,10 @@
             </article>
           </div>
 
+          <p id="localUsageScope" class="usage-title">最近切换后的本地用量</p>
           <div class="usage-grid">
             <article class="metric-card">
-              <span>总用量</span>
+              <span>本地总用量</span>
               <strong id="totalTokens">--</strong>
             </article>
             <article class="metric-card">
@@ -186,13 +205,8 @@
           <p id="tokenBreakdown" class="usage-note"></p>
           <p id="usageCoverage" class="usage-note"></p>
           <p class="usage-note">
-            Token 按本地事件增量统计，缓存输入已含在输入中，推理输出已含在输出中，不重复相加。当前账号统计自最近切换起；其他设备或未落盘的用量无法从本机补齐。
+            本次本地仅统计最近切换后的日志；全部本地包含不同账号，均不等于官方账号累计。官方个人面板按服务器统计截止日期显示，可能不含今天的用量。缓存输入和推理输出已包含在各自总数中。
           </p>
-
-          <div class="usage-detail">
-            <div class="daily-bars" id="dailyBars"></div>
-            <div class="recent-sessions" id="recentSessions"></div>
-          </div>
 
           <div class="usage-detail" style="margin-top: 12px">
             <div class="daily-bars" id="projectStats"></div>
@@ -200,7 +214,13 @@
           </div>
 
           <section class="all-accounts-section" id="allAccountsSection">
-            <p class="usage-title">全部账号额度总览</p>
+            <div class="all-accounts-heading">
+              <p class="usage-title">全部账号额度总览</p>
+              <button id="overviewPrivacyBtn" class="privacy-toggle" type="button" aria-label="隐藏邮箱" aria-pressed="false" title="隐藏邮箱">
+                <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a20 20 0 0 1-3.1 4M6.2 6.2A21 21 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.1-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+              </button>
+            </div>
             <div class="all-accounts-grid" id="allAccountsGrid"></div>
           </section>
         </section>

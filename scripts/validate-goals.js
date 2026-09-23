@@ -38,6 +38,9 @@ async function run() {
     current = { ...expected }; calls = [];
     await assert.rejects(bridge.resumeGoal("task", expected, () => false));
     assert.equal(calls.length, 1);
+    calls = [];
+    await assert.rejects(bridge.resumeGoal("task", expected, async () => false));
+    assert.equal(calls.length, 1, "async identity guard must finish before goal/set");
     for (const change of [{ status: "paused" }, { objective: "changed" }, { tokensUsed: 5000 }, { tokenBudget: 20000 }]) {
       response = { ...original, ...change }; calls = [];
       await assert.rejects(bridge.resumeGoal("task", expected));

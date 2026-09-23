@@ -24,7 +24,7 @@ async function scenario(target, fail = false) {
   const context = vm.createContext({ require: (name) => name === "electron" ? electron : realRequire(name),
     __dirname: path.dirname(filename), process, Buffer, console: { error() {} }, setTimeout, clearTimeout, setInterval, clearInterval });
   vm.runInContext(fs.readFileSync(filename, "utf8"), context);
-  for (const name of ["ensureStoreDirs", "recoverStoreIfNeeded", "ensureCodexFileCredentialStore", "migratePlaintextBackups",
+  for (const name of ["ensureStoreDirs", "cleanupLoginSessions", "recoverStoreIfNeeded", "ensureCodexFileCredentialStore", "migratePlaintextBackups",
     "cleanupStoreArtifacts", "cleanupMismatchedQuotaSnapshots", "startAuthWatcher", "startLocalLogWatcher", "startSessionsWatcher", "startSessionsPolling", "startAutoRecovery"])
     context[name] = async () => {};
   context.syncLaunchAtLoginFromSettings = async () => ({});
@@ -55,6 +55,18 @@ async function scenario(target, fail = false) {
     events.get("second-instance")({}, argv);
     assert.deepEqual(windows, [target, target]);
     assert.equal(errorShown, false);
+    let finishLogin, busy = true, shutdowns = 0, prevented = 0;
+    context.loginFixture = {
+      isBusy: () => busy,
+      shutdown: () => { shutdowns++; return new Promise((resolve) => { finishLogin = () => { busy = false; resolve(); }; }); },
+    };
+    vm.runInContext("accountLogin = loginFixture", context);
+    events.get("before-quit")({ preventDefault: () => prevented++ });
+    events.get("before-quit")({ preventDefault: () => prevented++ });
+    assert.equal(prevented, 2, "repeated quit must wait for temporary-login cleanup");
+    assert.equal(shutdowns, 1); assert.equal(quit, false);
+    finishLogin(); await tick();
+    assert.equal(quit, true);
   }
 }
 

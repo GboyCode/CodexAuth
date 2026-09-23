@@ -78,9 +78,72 @@ function bucketsFromRecord(payload) {
   return raw && typeof raw === "object" ? [raw] : [];
 }
 
+function createRecordState(previous) {
+  if (previous) return { ...previous, result: { ...previous.result, segments: previous.result.segments.slice(),
+    events: previous.result.events.slice(), resets: previous.result.resets.slice() } };
+  return { previous:null, model:null, tier:null, turnId:null, inherited:false,
+    result: { id:null, forkedFrom:null, cwd:null, startedAt:null, model:null, segments:[], events:[], resets:[], invalidLines:0, counterResets:0, missingBaselines:0 } };
+}
+
+function consumeRecordLine(state, file, line) {
+  const result = state.result;
+  if (!line.trim()) return;
+  let entry;
+  try { entry = JSON.parse(line); } catch { result.invalidLines++; return; }
+  const p = entry.payload;
+  if (entry.type === "session_meta") {
+    result.id = p?.id ?? result.id;
+    result.cwd = p?.cwd ?? result.cwd;
+    result.startedAt = p?.timestamp ?? entry.timestamp ?? result.startedAt;
+    result.forkedFrom = p?.forked_from_id ?? p?.forked_from ?? null;
+    // A subagent parent is not a fork: its first request is its own usage.
+    state.inherited = !!result.forkedFrom;
+  }
+  if (entry.type === "turn_context") {
+    state.model = p?.model ?? state.model;
+    state.tier = p?.service_tier ?? p?.serviceTier ?? p?.collaboration_mode?.settings?.service_tier ?? null;
+    state.turnId = p?.turn_id ?? p?.turnId ?? null;
+    result.cwd = p?.cwd ?? result.cwd;
+  }
+  // Never inspect response_item/tool output as usage or quota evidence.
+  if (entry.type !== "event_msg" || p?.type !== "token_count") return;
+  const timestamp = entry.timestamp, ms = Date.parse(timestamp);
+  if (!Number.isFinite(ms)) return;
+  const rawUsage = p.info?.total_token_usage ?? p.info?.totalTokenUsage;
+  const usage = rawUsage ? normalizeTokenUsage(rawUsage) : null;
+  const eventModel = p.model ?? state.model;
+  const eventTier = p.service_tier ?? p.serviceTier ?? state.tier ?? "unknown";
+  let delta = null, boundary = false;
+  if (usage) {
+    if (state.previous) {
+      if (tokenUsageTotal(usage) < tokenUsageTotal(state.previous)) {
+        // Rebase a reset; do not invent newly billed usage from a lower counter.
+        result.counterResets++;
+      } else delta = subtractTokenUsage(usage, state.previous);
+    } else if (!state.inherited) { delta = usage; boundary = true; }
+    else result.missingBaselines++;
+    state.previous = usage;
+  }
+  const eventKey = crypto.createHash("sha256").update(JSON.stringify([timestamp, state.turnId, usage])).digest("hex");
+  if (delta && tokenUsageTotal(delta) > 0) result.segments.push({ timestamp, ms, model:eventModel, cwd:result.cwd,
+    serviceTier:eventTier, tokenUsage:delta, key:eventKey, first:boundary, startedAt:result.startedAt });
+  const rates = bucketsFromRecord(p);
+  for (const raw of rates) {
+    const reset = normalizeResetCredits(raw.rateLimitResetCredits ?? raw.rate_limit_reset_credits, timestamp);
+    if (reset) result.resets.push(reset);
+  }
+  const reset = normalizeResetCredits(p.rateLimitResetCredits ?? p.rate_limit_reset_credits, timestamp);
+  if (reset) result.resets.push(reset);
+  result.events.push({ timestamp, ms, model:eventModel, serviceTier:eventTier, tokenUsage:usage, delta,
+    sessionId:result.id ?? file.path, key:eventKey, rates });
+}
+
+function recordValue(state, file) {
+  return { ...state.result, model:state.model, id:state.result.id ?? file.path };
+}
+
 async function parseRecordFile(file) {
-  const result = { id:null, cwd:null, startedAt:null, model:null, segments:[], events:[], resets:[], invalidLines:0, counterResets:0, missingBaselines:0 };
-  let previous = null, model = null, tier = null, turnId = null, inherited = false;
+  const state = createRecordState();
   const source = fs.createReadStream(file.path);
   let input = source;
   if (file.path.endsWith(".gz")) input = source.pipe(zlib.createGunzip());
@@ -91,88 +154,101 @@ async function parseRecordFile(file) {
   if(input!==source)source.on("error",(error)=>input.destroy(error));
   const lines = readline.createInterface({ input, crlfDelay:Infinity });
   try {
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      let entry;
-      try { entry = JSON.parse(line); } catch { result.invalidLines++; continue; }
-      const p = entry.payload;
-      if (entry.type === "session_meta") {
-        result.id = p?.id ?? result.id;
-        result.cwd = p?.cwd ?? result.cwd;
-        result.startedAt = p?.timestamp ?? entry.timestamp ?? result.startedAt;
-        // A subagent parent is not a fork: its first request is its own usage.
-        inherited = !!(p?.forked_from_id || p?.forked_from);
-      }
-      if (entry.type === "turn_context") {
-        model = p?.model ?? model;
-        tier = p?.service_tier ?? p?.serviceTier ?? p?.collaboration_mode?.settings?.service_tier ?? null;
-        turnId = p?.turn_id ?? p?.turnId ?? null;
-        result.cwd = p?.cwd ?? result.cwd;
-      }
-      // Deliberately never inspect response_item/tool output: it can contain echoed
-      // credentials, old quotas or a pasted transcript rather than an actual event.
-      if (entry.type !== "event_msg" || p?.type !== "token_count") continue;
-      const timestamp = entry.timestamp;
-      const ms = Date.parse(timestamp);
-      if (!Number.isFinite(ms)) continue;
-      const rawUsage = p.info?.total_token_usage ?? p.info?.totalTokenUsage;
-      const usage = rawUsage ? normalizeTokenUsage(rawUsage) : null;
-      const eventModel = p.model ?? model;
-      const eventTier = p.service_tier ?? p.serviceTier ?? tier ?? "unknown";
-      let delta = null;
-      let boundary = false;
-      if (usage) {
-        if (previous) {
-          if (tokenUsageTotal(usage) < tokenUsageTotal(previous)) {
-            result.counterResets++;
-            // A compaction/reset is not evidence that the new cumulative counter
-            // is newly billed usage. Rebase; report this unmeasurable interval.
-          } else delta = subtractTokenUsage(usage, previous);
-        } else if (!inherited) { delta = usage; boundary = true; }
-        else result.missingBaselines++;
-        previous = usage;
-      }
-      const eventKey = crypto.createHash("sha256").update(JSON.stringify([timestamp, turnId, usage])).digest("hex");
-      if (delta && tokenUsageTotal(delta) > 0) result.segments.push({ timestamp, ms, model:eventModel, serviceTier:eventTier, tokenUsage:delta, key:eventKey, first:boundary, startedAt:result.startedAt });
-      const rates = bucketsFromRecord(p);
-      for(const raw of rates) {
-        const reset=normalizeResetCredits(raw.rateLimitResetCredits??raw.rate_limit_reset_credits,timestamp);
-        if(reset)result.resets.push(reset);
-      }
-      const reset = normalizeResetCredits(p.rateLimitResetCredits ?? p.rate_limit_reset_credits, timestamp);
-      if (reset) result.resets.push(reset);
-      result.events.push({ timestamp, ms, model:eventModel, serviceTier:eventTier, tokenUsage:usage, delta, sessionId:result.id ?? file.path, key:eventKey, rates });
-    }
+    for await (const line of lines) consumeRecordLine(state, file, line);
   } finally { lines.close(); input.destroy(); source.destroy(); }
-  result.model = model;
-  result.id ??= file.path;
-  return result;
+  return recordValue(state, file);
 }
 
-function createRecordCache() {
-  const cache = new Map();
+async function fingerprintRange(handle, start, length) {
+  const buffer = Buffer.alloc(length);
+  const { bytesRead } = await handle.read(buffer, 0, length, start);
+  return { start, length, hash:crypto.createHash("sha256").update(buffer.subarray(0, bytesRead)).digest("hex") };
+}
+
+async function readRecordUpdate(file, hit, onRead) {
+  const handle = await fs.promises.open(file.path, "r");
+  try {
+    const stat = await handle.stat(), signature = `${stat.size}:${stat.mtimeMs}`;
+    if (hit?.signature === signature && hit.stat.ino === stat.ino && hit.stat.birthtimeMs === stat.birthtimeMs) return hit;
+    if (/\.(gz|zst)$/.test(file.path)) return { signature, stat, value:await parseRecordFile(file) };
+    let append = !!hit?.state && stat.size > hit.stat.size && stat.ino === hit.stat.ino
+      && stat.dev === hit.stat.dev && stat.birthtimeMs === hit.stat.birthtimeMs;
+    if (append) {
+      for (const old of hit.guards) {
+        const current = await fingerprintRange(handle, old.start, old.length);
+        if (current.hash !== old.hash) { append = false; break; }
+      }
+    }
+    const state = createRecordState(append ? hit.state : null);
+    let offset = append ? hit.offset : 0, parts = [], pendingBytes = 0;
+    const start = offset;
+    if (stat.size > start) {
+      const stream = handle.createReadStream({ start, end:stat.size - 1, autoClose:false });
+      for await (const chunk of stream) {
+        let cursor = 0, newline;
+        while ((newline = chunk.indexOf(10, cursor)) !== -1) {
+          const part = chunk.subarray(cursor, newline);
+          const line = parts.length ? Buffer.concat([...parts, part]) : part;
+          consumeRecordLine(state, file, line.toString("utf8"));
+          offset += pendingBytes + part.length + 1;
+          parts = []; pendingBytes = 0; cursor = newline + 1;
+        }
+        if (cursor < chunk.length) { const part = chunk.subarray(cursor); parts.push(part); pendingBytes += part.length; }
+      }
+    }
+    // Keep only complete lines in the checkpoint. A partial UTF-8/JSON tail is
+    // re-read on append, so it cannot poison the next delta or be counted twice.
+    let value = recordValue(state, file);
+    if (pendingBytes) {
+      const preview = createRecordState(state);
+      consumeRecordLine(preview, file, Buffer.concat(parts).toString("utf8"));
+      value = recordValue(preview, file);
+    }
+    const headLength = Math.min(stat.size, 4096), tailStart = Math.max(0, offset - 4096);
+    const guards = [await fingerprintRange(handle, 0, headLength), await fingerprintRange(handle, tailStart, offset - tailStart)];
+    onRead?.({ bytes:stat.size - start, incremental:append });
+    return { signature, stat, state, offset, guards, value };
+  } finally { await handle.close(); }
+}
+
+function createRecordCache({ onRead, maxEntries = 512 } = {}) {
+  const cache = new Map(), pending = new Map();
   return async function read(file) {
+    if (pending.has(file.path)) { await pending.get(file.path); return read(file); }
     const signature = `${file.size}:${file.mtimeMs}`;
     const hit = cache.get(file.path);
     if (hit?.signature === signature) return hit.value;
-    const value = parseRecordFile(file);
-    cache.set(file.path, {signature,value});
-    try { return await value; } catch (error) { cache.delete(file.path); throw error; }
+    const job = readRecordUpdate(file, hit, onRead).then((next) => {
+      cache.delete(file.path); cache.set(file.path, next);
+      if (cache.size > maxEntries) cache.delete(cache.keys().next().value);
+      return next.value;
+    }).finally(() => { if (pending.get(file.path) === job) pending.delete(file.path); });
+    pending.set(file.path, job);
+    return job;
   };
 }
 
 function aggregateUsage(records, options = {}) {
   const since = options.since ? Date.parse(options.since) : null;
   const total = emptyTokenUsage(), seen = new Set(), sessions = new Map(), models = new Map(), days = new Map(), projects = new Map();
+  const parents = new Map(records.map((r) => [r.id, typeof r.forkedFrom === "string" ? r.forkedFrom : null]));
+  const origins = new Map();
+  for (const r of records) {
+    let id = r.id; const visited = new Set();
+    while (parents.get(id) && !visited.has(id)) { visited.add(id); id = parents.get(id); }
+    origins.set(r.id, id);
+  }
   let duplicates = 0, boundaryIntervals = 0;
   const entries = records.flatMap((r) => r.segments.map((s) => ({r,s}))).sort((a,b) => a.s.ms-b.s.ms);
   for (const {r,s} of entries) {
     if (Number.isFinite(since) && s.ms < since) continue;
     if (Number.isFinite(since) && s.first && !(Date.parse(s.startedAt) >= since)) { boundaryIntervals++; continue; }
-    if (seen.has(s.key)) { duplicates++; continue; } seen.add(s.key);
+    const key = `${origins.get(r.id)}:${s.key}`;
+    if (seen.has(key)) { duplicates++; continue; } seen.add(key);
     addTokenUsage(total, s.tokenUsage);
     const day = new Date(s.ms); const dayKey = `${day.getFullYear()}-${String(day.getMonth()+1).padStart(2,"0")}-${String(day.getDate()).padStart(2,"0")}`;
-    for (const [map,key,extra] of [[models,s.model??"unknown",{model:s.model??"unknown"}], [days,dayKey,{day:dayKey}], [projects,r.cwd??"unknown",{project:r.cwd?path.basename(r.cwd):"未知项目",cwd:r.cwd}]]) {
+    const cwd = Object.hasOwn(s, "cwd") ? s.cwd : r.cwd;
+    for (const [map,key,extra] of [[models,s.model??"unknown",{model:s.model??"unknown"}], [days,dayKey,{day:dayKey}], [projects,cwd??"unknown",{project:cwd?path.basename(cwd):"未知项目",cwd}]]) {
       if (!map.has(key)) map.set(key,{...extra,tokenUsage:emptyTokenUsage(),ids:new Set()});
       const item=map.get(key); addTokenUsage(item.tokenUsage,s.tokenUsage); item.ids.add(r.id);
     }

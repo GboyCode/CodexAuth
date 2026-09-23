@@ -7,8 +7,14 @@ const crypto = require("node:crypto");
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const REQUIRED_TOOLS = ["read_thread", "list_threads", "send_message_to_thread", "get_usage_limits"];
+const READ_ONLY_TOOLS = new Set(["read_thread", "list_threads", "get_usage_limits"]);
+const RETRYABLE_PIPE_ERRORS = new Set(["CODEX_PIPE_CONNECTION", "CODEX_PIPE_CLOSED", "CODEX_PIPE_TIMEOUT"]);
 
-function pipeRequest(pipePath, method, params, timeoutMs = 8000) {
+function pipeError(message, code) {
+  return Object.assign(new Error(message), { code });
+}
+
+function pipeRequest(pipePath, method, params, timeoutMs = 8000, beforeSend) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(pipePath);
     let buffer = Buffer.alloc(0), settled = false;
@@ -19,10 +25,17 @@ function pipeRequest(pipePath, method, params, timeoutMs = 8000) {
       socket.destroy();
       if (error) reject(error); else resolve(value);
     };
-    const timer = setTimeout(() => finish(new Error("Codex 本地接口响应超时。")), timeoutMs);
-    socket.on("error", () => finish(new Error("Codex 本地接口连接失败。")));
-    socket.on("close", () => finish(new Error("Codex 本地接口已断开。")));
-    socket.on("connect", () => {
+    const timer = setTimeout(() => finish(pipeError("Codex 本地接口响应超时。", "CODEX_PIPE_TIMEOUT")), timeoutMs);
+    socket.on("error", (error) => {
+      // Surface only known OS codes, never arbitrary native text or request data.
+      const code = ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "EBUSY", "EACCES", "EPERM"].includes(error.code) ? `（${error.code}）` : "";
+      finish(pipeError(`Codex 本地接口连接失败${code}。`, "CODEX_PIPE_CONNECTION"));
+    });
+    socket.on("close", () => finish(pipeError("Codex 本地接口已断开。", "CODEX_PIPE_CLOSED")));
+    socket.on("connect", async () => {
+      try { await beforeSend?.(); }
+      catch { finish(new Error("账号状态已改变，已取消发送继续指令。")); return; }
+      if (settled) return;
       const body = Buffer.from(JSON.stringify({ id: 1, jsonrpc: "2.0", method, params }));
       if (body.length > MAX_FRAME_BYTES) return finish(new Error("Codex 本地请求过大。"));
       const frame = Buffer.alloc(4 + body.length);
@@ -56,7 +69,8 @@ function parseToolResult(result) {
   throw new Error("Codex 任务接口返回格式不兼容。" );
 }
 
-function createDesktopBridge({ request = pipeRequest, platform = process.platform, env = process.env, goals } = {}) {
+function createDesktopBridge({ request = pipeRequest, platform = process.platform, env = process.env, goals,
+  listPipes = () => fs.readdir("\\\\.\\pipe\\") } = {}) {
   let endpoint = null;
   async function discover() {
     // This adapter is currently verified only against the Windows desktop pipe.
@@ -65,7 +79,7 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
     if (env.CODEX_APP_TOOLS_PIPE_PATH?.startsWith("\\\\.\\pipe\\codex-browser-use-")) {
       candidates.add(env.CODEX_APP_TOOLS_PIPE_PATH);
     }
-    const names = await fs.readdir("\\\\.\\pipe\\");
+    const names = await listPipes();
     for (const name of names) {
       if (/^codex-browser-use-[0-9a-f-]{36}$/i.test(name)) candidates.add(`\\\\.\\pipe\\${name}`);
     }
@@ -81,17 +95,21 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
     endpoint = matches[0];
     return endpoint;
   }
-  async function call(tool, args, threadId) {
-    if (!endpoint) await discover();
-    try {
-      return parseToolResult(await request(endpoint, "tools/call", {
-        namespace: "codex_app", tool, arguments: args, threadId,
-        callId: `codexauth-${crypto.randomUUID()}`, turnId: "codexauth-auto-recovery",
-      }, 15000));
-    } catch (error) {
-      endpoint = null;
-      // In particular, never retry send_message_to_thread after an uncertain response.
-      throw error;
+  async function call(tool, args, threadId, beforeSend) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const currentEndpoint = endpoint ?? await discover();
+      try {
+        await beforeSend?.();
+        return parseToolResult(await request(currentEndpoint, "tools/call", {
+          namespace: "codex_app", tool, arguments: args, threadId,
+          callId: `codexauth-${crypto.randomUUID()}`, turnId: "codexauth-auto-recovery",
+        }, 15000, beforeSend));
+      } catch (error) {
+        if (endpoint === currentEndpoint) endpoint = null;
+        // Reconnect read-only probes once after a desktop restart/pipe failure.
+        // Never replay a continuation: its first delivery may have succeeded.
+        if (attempt > 0 || !READ_ONLY_TOOLS.has(tool) || !RETRYABLE_PIPE_ERRORS.has(error.code)) throw error;
+      }
     }
   }
   return {
@@ -104,7 +122,8 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
     },
     listThreads: (anchor) => call("list_threads", { limit: 50 }, anchor),
     readUsage: (anchor) => call("get_usage_limits", {}, anchor),
-    continueThread: (id, prompt) => call("send_message_to_thread", { threadId: id, hostId: "local", prompt }, id),
+    continueThread: (id, prompt, beforeSend) => call("send_message_to_thread", { threadId: id, hostId: "local", prompt }, id, beforeSend),
+    openThread: (id) => call("navigate_to_codex_page", { threadId: id }, id),
     listGoals: () => goals ? goals.listGoals() : Promise.resolve([]),
     resumeGoal: (id, expected, allowed) => {
       if (!goals) throw new Error("当前版本未连接目标恢复接口。");

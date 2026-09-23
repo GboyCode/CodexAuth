@@ -44,6 +44,7 @@ async function withGoalApi(executable, codexHome, operation, spawnProcess = spaw
   });
   const pending = new Map();
   let sequence = 0, closed = false;
+  const exited = new Promise((resolve) => { child.once("exit", resolve); child.once("error", resolve); });
   const fail = () => {
     closed = true;
     for (const item of pending.values()) item.reject(new Error("Codex 目标接口未完成请求，请在 Codex 中检查目标状态。"));
@@ -75,6 +76,12 @@ async function withGoalApi(executable, codexHome, operation, spawnProcess = spaw
     return await operation(request);
   } finally {
     clearTimeout(timer); lines.close(); child.stdin.end(); child.kill(); fail();
+    let exitTimer;
+    try {
+      await Promise.race([exited, new Promise((_, reject) => {
+        exitTimer = setTimeout(() => reject(new Error("目标接口未退出，请关闭 Codex CLI 后再切换账号。")), 5000);
+      })]);
+    } finally { clearTimeout(exitTimer); }
   }
 }
 
@@ -98,7 +105,7 @@ function createGoalBridge({ codexHome, resolveExecutable = resolveGoalExecutable
       return api(executable, codexHome, async (request) => {
         const { goal } = await request("thread/goal/get", { threadId: id });
         const current = await readGoal(id);
-        if (!allowed() || !sameGoal(current, expected) || current.status !== "usageLimited"
+        if (!await allowed() || !sameGoal(current, expected) || current.status !== "usageLimited"
           || current.updatedAt !== expected.updatedAt || goal?.status !== "usageLimited" || !matchesApiGoal(goal, expected)) {
           throw new Error("目标状态已改变，已取消自动恢复，请在 Codex 中检查。");
         }

@@ -1,6 +1,12 @@
 const api = window.codexAuth;
 const q = window.CodexQuotaUI;
 const DASHBOARD_AUTO_REFRESH_MS = 8000;
+const OVERVIEW_PRIVACY_KEY = "codexauth.overview.hideEmails";
+
+function readOverviewPrivacy() {
+  try { return window.localStorage?.getItem(OVERVIEW_PRIVACY_KEY) === "true"; }
+  catch { return false; }
+}
 
 const state = {
   snapshot: null,
@@ -10,10 +16,13 @@ const state = {
   expandedAccountId: null,
   dashboardLoaded: false,
   dashboardLoading: false,
+  dashboardPromise: null,
   quotaLoading: false,
   quotaRefreshQueued: false,
   dashboardRefreshTimer: null,
   allAccountsRequestId: 0,
+  overviewEmailsHidden: readOverviewPrivacy(),
+  overviewNames: [],
   usageScope: "current", // "current" or "all"
 };
 
@@ -36,8 +45,13 @@ const els = {
   resetCreditsInfo: document.querySelector("#resetCreditsInfo"),
   tokenBreakdown: document.querySelector("#tokenBreakdown"),
   usageCoverage: document.querySelector("#usageCoverage"),
+  localUsageScope: document.querySelector("#localUsageScope"),
   displayNameInput: document.querySelector("#displayNameInput"),
   importBtn: document.querySelector("#importBtn"),
+  loginAccountBtn: document.querySelector("#loginAccountBtn"),
+  accountLoginStatus: document.querySelector("#accountLoginStatus"),
+  openAccountLoginBtn: document.querySelector("#openAccountLoginBtn"),
+  cancelAccountLoginBtn: document.querySelector("#cancelAccountLoginBtn"),
   exportCredentialsBtn: document.querySelector("#exportCredentialsBtn"),
   exportScopeDialog: document.querySelector("#exportScopeDialog"),
   importCredentialsBtn: document.querySelector("#importCredentialsBtn"),
@@ -74,11 +88,10 @@ const els = {
   inputTokens: document.querySelector("#inputTokens"),
   outputTokens: document.querySelector("#outputTokens"),
   sessionCount: document.querySelector("#sessionCount"),
-  dailyBars: document.querySelector("#dailyBars"),
-  recentSessions: document.querySelector("#recentSessions"),
   projectStats: document.querySelector("#projectStats"),
   modelStats: document.querySelector("#modelStats"),
   allAccountsGrid: document.querySelector("#allAccountsGrid"),
+  overviewPrivacyBtn: document.querySelector("#overviewPrivacyBtn"),
   toast: document.querySelector("#toast"),
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
@@ -432,7 +445,7 @@ function renderAccounts(snapshot) {
   if (!snapshot.accounts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "暂无账号。先在 Codex App 登录一个账号，然后导入当前登录。";
+    empty.textContent = "暂无账号。点击“登录并添加账号”，或导入当前 Codex 登录。";
     els.accountList.append(empty);
     return;
   }
@@ -485,7 +498,11 @@ function renderDashboard(dashboard) {
 
   const usage = dashboard?.usage;
   const tokenUsage = usage?.tokenUsage || {};
-  const exact=(n)=>new Intl.NumberFormat("zh-CN").format(Number(n??0));
+  const exact=(n)=>usage?.available === false ? "--" : new Intl.NumberFormat("zh-CN").format(Number(n??0));
+  els.localUsageScope.textContent = state.usageScope === "all"
+    ? "本机全部日志用量（包含不同账号）"
+    : usage?.available === false ? "尚无可归属的本次本地用量"
+      : `最近切换后的本地用量 · 自 ${formatDate(dashboard?.scope?.since)} 起`;
   els.totalTokens.textContent = exact(tokenUsage.totalTokens);
   els.inputTokens.textContent = exact(tokenUsage.inputTokens);
   els.outputTokens.textContent = exact(tokenUsage.outputTokens);
@@ -498,80 +515,15 @@ function renderDashboard(dashboard) {
     c.counterResets?`${c.counterResets} 次计数回退已重新设定基准`:null,
     (c.boundaryIntervals||c.missingBaselines)?`存在缺失基准的区间，未推算用量`:null,
   ].filter(Boolean).join(" · ");
-  els.sessionCount.textContent = String(usage?.sessionsAnalyzed ?? 0);
+  els.sessionCount.textContent = usage?.available === false ? "--" : String(usage?.sessionsAnalyzed ?? 0);
   if (usage?.totalFiles && usage.totalFiles > usage.scannedFiles) {
-    els.sessionCount.title = `已扫描最近 ${usage.scannedFiles} 个会话文件，本机共 ${usage.totalFiles} 个`;
+    els.sessionCount.title = `已读取当前统计范围内 ${usage.scannedFiles} 个会话文件，本机共 ${usage.totalFiles} 个`;
   } else {
     els.sessionCount.title = "";
   }
-  renderDailyBars(usage?.daily || []);
-  renderRecentSessions(usage?.recentSessions || []);
   renderProjectStats(usage?.projects || []);
   renderModelStats(usage?.models || []);
   renderAllAccountsQuota();
-}
-
-function renderDailyBars(days) {
-  els.dailyBars.replaceChildren();
-  const title = document.createElement("p");
-  title.className = "usage-title";
-  title.textContent = "每日用量";
-  els.dailyBars.append(title);
-
-  if (!days.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "未找到本地用量。";
-    els.dailyBars.append(empty);
-    return;
-  }
-
-  const maxTokens = Math.max(...days.map((day) => day.tokenUsage?.totalTokens || 0), 1);
-  const bars = document.createElement("div");
-  bars.className = "bars";
-  days.forEach((day) => {
-    const item = document.createElement("div");
-    item.className = "bar-item";
-    const bar = document.createElement("span");
-    bar.style.height = `${Math.max(8, ((day.tokenUsage?.totalTokens || 0) / maxTokens) * 100)}%`;
-    const label = document.createElement("em");
-    label.textContent = day.day.slice(5);
-    const value = document.createElement("small");
-    value.textContent = compactNumber(day.tokenUsage?.totalTokens);
-    item.append(value, bar, label);
-    bars.append(item);
-  });
-  els.dailyBars.append(bars);
-}
-
-function renderRecentSessions(sessions) {
-  els.recentSessions.replaceChildren();
-  const title = document.createElement("p");
-  title.className = "usage-title";
-  title.textContent = "最近会话";
-  els.recentSessions.append(title);
-
-  if (!sessions.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "未找到本地会话。";
-    els.recentSessions.append(empty);
-    return;
-  }
-
-  const list = document.createElement("div");
-  list.className = "session-list";
-  sessions.slice(0, 6).forEach((session) => {
-    const row = document.createElement("div");
-    row.className = "session-row";
-    const main = document.createElement("span");
-    main.textContent = session.title || "会话";
-    const sub = document.createElement("small");
-    sub.textContent = `${compactNumber(session.tokenUsage?.totalTokens)} Token · ${session.model || "未知模型"} · ${formatDate(session.updatedAt)}`;
-    row.append(main, sub);
-    list.append(row);
-  });
-  els.recentSessions.append(list);
 }
 
 function renderProjectStats(projects) {
@@ -670,6 +622,23 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
   return row;
 }
 
+function renderOverviewPrivacy() {
+  const label = state.overviewEmailsHidden ? "显示邮箱" : "隐藏邮箱";
+  els.overviewPrivacyBtn.title = label;
+  els.overviewPrivacyBtn.setAttribute("aria-label", label);
+  els.overviewPrivacyBtn.setAttribute("aria-pressed", String(state.overviewEmailsHidden));
+  state.overviewNames.forEach(({ element, label }, index) => {
+    element.textContent = state.overviewEmailsHidden ? `账号 ${index + 1}` : label;
+  });
+}
+
+function toggleOverviewPrivacy() {
+  state.overviewEmailsHidden = !state.overviewEmailsHidden;
+  try { window.localStorage?.setItem(OVERVIEW_PRIVACY_KEY, String(state.overviewEmailsHidden)); }
+  catch { /* Keep the toggle usable if local preferences cannot be saved. */ }
+  renderOverviewPrivacy();
+}
+
 async function renderAllAccountsQuota() {
   try {
     const requestId = ++state.allAccountsRequestId;
@@ -677,6 +646,7 @@ async function renderAllAccountsQuota() {
     if (requestId !== state.allAccountsRequestId) return;
     if (!data?.accounts) return;
     els.allAccountsGrid.replaceChildren();
+    state.overviewNames = [];
     for (const account of data.accounts) {
       const card = document.createElement("article");
       card.className = account.isActive ? "all-account-card active" : "all-account-card";
@@ -684,7 +654,8 @@ async function renderAllAccountsQuota() {
       const head = document.createElement("div");
       head.className = "all-account-head";
       const name = document.createElement("strong");
-      name.textContent = account.displayName;
+      state.overviewNames.push({ element: name, label: account.displayName });
+      name.textContent = state.overviewEmailsHidden ? `账号 ${state.overviewNames.length}` : account.displayName;
       const badge = document.createElement("span");
       badge.className = "plan-badge";
       badge.textContent = q.formatPlanType(account.planType);
@@ -730,6 +701,7 @@ async function renderAllAccountsQuota() {
 }
 
 function render(snapshot) {
+  renderAccountLogin(snapshot.accountLogin);
   state.snapshot = snapshot;
   renderSettings(snapshot);
   renderStatus(snapshot);
@@ -766,21 +738,32 @@ async function readQuota(silent = true) {
   }
 }
 
-async function readDashboard(silent) {
-  if (state.dashboardLoading) return;
+function readDashboard(silent) {
+  if (state.dashboardPromise) return state.dashboardPromise;
   state.dashboardLoading = true;
-  try {
-    if (state.usageScope === "all") {
-      const usage = await api.getAllUsage();
-      renderDashboard({ quota: null, usage, scope: null });
-    } else {
-      const dashboard = await api.getDashboard();
+  state.dashboardPromise = Promise.resolve().then(async () => {
+    for (;;) {
+      const scope = state.usageScope;
+      let dashboard;
+      try {
+        dashboard = scope === "all"
+          ? { quota: null, usage: await api.getAllUsage(), scope: null }
+          : await api.getDashboard();
+      } catch (error) {
+        if (scope !== state.usageScope) continue;
+        throw error;
+      }
+      // A slow response must not overwrite a newly selected statistics scope.
+      if (scope !== state.usageScope) continue;
       renderDashboard(dashboard);
+      if (!silent) showToast("已刷新");
+      break;
     }
-    if (!silent) showToast("已刷新");
-  } finally {
+  }).finally(() => {
     state.dashboardLoading = false;
-  }
+    state.dashboardPromise = null;
+  });
+  return state.dashboardPromise;
 }
 
 async function loadDashboard(silent = false, options = {}) {
@@ -868,6 +851,21 @@ async function importCurrent() {
   });
 }
 
+function renderAccountLogin(login = {}) {
+  const busy = ["starting", "waiting", "importing"].includes(login.state);
+  els.loginAccountBtn.disabled = busy;
+  els.loginAccountBtn.textContent = busy ? "等待登录完成…" : "登录并添加账号";
+  els.accountLoginStatus.textContent = login.message || "在官方页面登录，完成后自动添加；当前 Codex 登录保持不变。";
+  els.openAccountLoginBtn.hidden = login.canOpen !== true;
+  els.cancelAccountLoginBtn.hidden = login.canCancel !== true;
+}
+
+async function loginAccount() {
+  els.loginAccountBtn.disabled = true;
+  try { renderAccountLogin(await api.loginAccount(els.displayNameInput.value)); }
+  catch (error) { els.loginAccountBtn.disabled = false; showToast(error.message); }
+}
+
 async function switchToAccount(account, button) {
   await withAction(button, "切换中", async () => {
     const snapshot = await api.switchAccount(account.id, {
@@ -945,6 +943,8 @@ function wireEvents() {
   els.statsRefreshBtn.addEventListener("click", () => loadDashboard(false).catch((error) => showToast(error.message)));
   els.scopeCurrentBtn.addEventListener("click", () => setUsageScope("current"));
   els.scopeAllBtn.addEventListener("click", () => setUsageScope("all"));
+  els.overviewPrivacyBtn.addEventListener("click", toggleOverviewPrivacy);
+  renderOverviewPrivacy();
   els.restartAfterSwitch?.addEventListener("change", () => {
     api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked }).catch((error) => showToast(error.message));
   });
@@ -962,6 +962,13 @@ function wireEvents() {
     } finally { els.autoSwitchOnLimit.disabled = state.snapshot?.platform !== "win32"; }
   });
   els.importBtn.addEventListener("click", () => importCurrent());
+  els.loginAccountBtn.addEventListener("click", loginAccount);
+  els.cancelAccountLoginBtn.addEventListener("click", async () => {
+    try { renderAccountLogin(await api.cancelAccountLogin()); } catch (error) { showToast(error.message); }
+  });
+  els.openAccountLoginBtn.addEventListener("click", async () => {
+    try { renderAccountLogin(await api.openAccountLogin()); } catch (error) { showToast(error.message); }
+  });
   els.exportCredentialsBtn.addEventListener("click", () => {
     els.exportScopeDialog.returnValue = "";
     els.exportScopeDialog.showModal();

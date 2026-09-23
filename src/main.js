@@ -57,6 +57,9 @@ const { encryptPortableCredentials, decryptPortableCredentials, validatePassword
 const { createUpdateChecker } = require("./github-updates");
 const { createAutoRecovery, POLL_MS } = require("./auto-recovery");
 const { createGoalBridge } = require("./codex-goals");
+const { createAccountLogin, cleanupLoginHomes } = require("./account-login");
+let accountLogin = null;
+let loginQuitPending = false;
 const { createRecoveryCountdown } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
 let autoRecovery = null;
@@ -882,7 +885,7 @@ function refreshTokenFingerprint(parsed) {
   return typeof refreshToken === "string" && refreshToken ? fingerprint(refreshToken) : null;
 }
 
-function markAccountAuthSnapshot(account, auth, content, now) {
+function markAccountAuthSnapshot(account, auth, content, now, { trustedLogin = false } = {}) {
   const nextRefreshTokenFingerprint = refreshTokenFingerprint(auth.parsed);
   if (
     account.refreshTokenFingerprint &&
@@ -897,9 +900,26 @@ function markAccountAuthSnapshot(account, auth, content, now) {
   account.authFingerprint = fingerprint(content);
   account.refreshTokenFingerprint = nextRefreshTokenFingerprint;
   Object.assign(account, authTokenStatus(auth.parsed));
-  delete account.needsReauth;
-  delete account.reauthReason;
-  delete account.reauthMarkedAt;
+  // Reading/importing a structurally valid file does not prove a live login.
+  if (trustedLogin) {
+    delete account.needsReauth;
+    delete account.reauthReason;
+    delete account.reauthMarkedAt;
+  }
+}
+
+function portableSnapshotRisk(previous, incoming) {
+  if (JSON.stringify(previous.tokens) === JSON.stringify(incoming.tokens)) return null;
+  const before = Date.parse(authLastRefresh(previous));
+  const after = Date.parse(authLastRefresh(incoming));
+  if (Number.isFinite(before) && Number.isFinite(after) && after < before) return "older";
+  if (!Number.isFinite(before) || !Number.isFinite(after) || after === before) return "unknown";
+  return null;
+}
+
+function hasNewLoginSnapshot(account, auth) {
+  const next = refreshTokenFingerprint(auth.parsed);
+  return !!next && !!account.refreshTokenFingerprint && next !== account.refreshTokenFingerprint;
 }
 
 function stripWindowEstimate(window) {
@@ -1004,6 +1024,7 @@ async function currentState() {
     storeRoot: storeRoot(),
     settings: normalizeSettingsForState(index.settings),
     autoRecovery: autoRecovery?.getStatus() ?? { state: "disabled", message: "未开启自动切换与续任务。" },
+    accountLogin: accountLogin?.getState() ?? { state: "idle", message: "在官方页面登录，完成后自动添加；当前 Codex 登录保持不变。" },
     current,
     accounts: index.accounts.map((account) =>
       normalizePublicAccount(account, index.activeAccountId, currentIdentityKey)
@@ -1044,6 +1065,7 @@ async function startAutoRecovery() {
   const journalPath = path.join(storeRoot(), "auto-recovery.json");
   recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow });
   autoRecovery = createAutoRecovery({
+    isPaused: () => accountLogin?.isBusy() === true,
     bridge: createDesktopBridge({ goals: createGoalBridge({ codexHome: codexDir() }) }),
     getAnchor: () => readLocalThreadAnchor(codexDir()),
     getLocalThreads: () => readLocalThreadMetadata(codexDir()),
@@ -1053,6 +1075,7 @@ async function startAutoRecovery() {
     },
     saveJournal: (journal) => writeJsonAtomic(journalPath, journal),
     beforeSwitch: (details, signal) => recoveryCountdown.request(details, signal),
+    runAccountOperation,
     getAccounts: async () => {
       const index = await readIndex();
       const current = await readCurrentAuth();
@@ -1070,7 +1093,7 @@ async function startAutoRecovery() {
       // Validate the encrypted snapshot before changing the active auth file.
       validateAuthJson(await loadAccountAuth(targetId));
       if (!allowed()) throw new Error("自动恢复已关闭。");
-      await switchAccountLocked(targetId, { restartCodex: true });
+      await switchAccountLocked(targetId, { restartCodex: true, allowed });
     }),
     onStatus: () => broadcastStateChanged(),
   });
@@ -1090,6 +1113,61 @@ async function syncLaunchAtLoginFromSettings() {
 }
 
 async function importCurrentAccount(displayName) {
+  return runAccountOperation(() => importCurrentAccountLocked(displayName));
+}
+
+function loginSessionsRoot() { return path.join(storeRoot(), "login-sessions"); }
+
+async function cleanupLoginSessions() { await cleanupLoginHomes(loginSessionsRoot()); }
+
+function getAccountLogin() {
+  if (!accountLogin) accountLogin = createAccountLogin({ root: loginSessionsRoot(),
+    importAccount: saveLoggedInAccount, openExternal: (url) => shell.openExternal(url),
+    onChange: () => broadcastStateChanged(),
+  });
+  return accountLogin;
+}
+
+async function saveLoggedInAccount(content, displayName) {
+  const auth = { ...validateAuthJson(content), content };
+  const key = identityKey(auth.identity);
+  return runAccountOperation(async () => {
+    let rollback = null;
+    try { return await mutateIndex(async (index) => {
+    let current = null;
+    try { current = await readCurrentAuth(); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    let account = index.accounts.find((item) => identityKey(item.identity) === key);
+    const alreadyActive = current && identityKey(current.identity) === key;
+    // A second login to the active identity must not roll back its live token.
+    const saved = alreadyActive ? current : auth;
+    const now = new Date().toISOString();
+    const previous = account ? await fs.readFile(accountBlobPath(account.id), "utf8") : null;
+    if (previous) await writeTextAtomic(path.join(backupsDir(), `auth-before-login-${crypto.randomUUID()}.${credentialFileExtension()}`), previous);
+    if (!account) {
+      account = createAccountRecord(saved, safeAccountName(displayName, saved.identity), now);
+      account.lastSwitchedAt = null;
+      index.accounts.push(account);
+    } else {
+      markAccountAuthSnapshot(account, saved, saved.content, now, { trustedLogin: !alreadyActive });
+      if (displayName) account.displayName = safeAccountName(displayName, saved.identity);
+    }
+    rollback = { id: account.id, previous };
+    await saveAccountAuth(account.id, saved.content);
+    account.lastSyncedAt = now;
+    index.deletedIdentityKeys = (index.deletedIdentityKeys ?? []).filter((item) => item !== key);
+    // Do not change activeAccountId, lastSwitchedAt or the real auth/config.
+    return { value: { alreadyActive: !!alreadyActive } };
+    }); } catch (error) {
+      if (rollback) {
+        if (rollback.previous === null) await fs.rm(accountBlobPath(rollback.id), { force: true });
+        else await writeTextAtomic(accountBlobPath(rollback.id), rollback.previous);
+      }
+      throw error;
+    }
+  });
+}
+
+async function importCurrentAccountLocked(displayName) {
   const auth = await readCurrentAuth();
   const now = new Date().toISOString();
   const name = safeAccountName(displayName, auth.identity);
@@ -1102,7 +1180,7 @@ async function importCurrentAccount(displayName) {
       index.accounts.push(account);
     } else {
       account.displayName = name;
-      markAccountAuthSnapshot(account, auth, auth.content, now);
+      markAccountAuthSnapshot(account, auth, auth.content, now, { trustedLogin: true });
     }
 
     await saveAccountAuth(account.id, auth.content);
@@ -1254,10 +1332,17 @@ async function importPortableCredentials(password, selectionId) {
     try { currentKey = identityKey((await readCurrentAuth()).identity); } catch { /* No active login. */ }
     const skipped = [...imports.keys()].filter((key) => key === currentKey && index.accounts.some((a) => identityKey(a.identity) === key));
     const updates = index.accounts.filter((a) => imports.has(identityKey(a.identity)) && !skipped.includes(identityKey(a.identity)));
+    const risks = new Map();
+    for (const account of updates) {
+      const incoming = imports.get(identityKey(account.identity)).auth;
+      const previous = validateAuthJson(await loadAccountAuth(account.id));
+      const risk = portableSnapshotRisk(previous.parsed, incoming.parsed);
+      if (risk) risks.set(account.id, risk);
+    }
     if (updates.length) {
-      const confirmation = await dialog.showMessageBox(mainWindow, { type: "question", title: "更新已保存的账号",
+      const confirmation = await dialog.showMessageBox(mainWindow, { type: risks.size ? "warning" : "question", title: "更新已保存的账号",
         message: `所选凭证中有 ${updates.length} 个已保存账号，是否更新？`,
-        detail: "原凭证会先在本机加密备份。当前已登录账号保留本机凭证，不自动切换账号。",
+        detail: `${risks.size ? `其中 ${risks.size} 个凭证较旧或无法确认新旧，覆盖可能导致登录失效；导入后会标记为需要重新登录，并排除自动切换。\n` : ""}原凭证会先在本机加密备份。当前已登录账号保留本机凭证，不自动切换账号。`,
         buttons: ["取消", "更新凭证"], defaultId: 0, cancelId: 0 });
       if (confirmation.response !== 1) return { canceled: true };
     }
@@ -1265,15 +1350,27 @@ async function importPortableCredentials(password, selectionId) {
     let importedCount = 0;
     try {
       await mutateIndex(async (next) => {
+        // Recheck after the confirmation; background auth sync may have run.
+        let latestCurrentKey = null;
+        try { latestCurrentKey = identityKey((await readCurrentAuth()).identity); } catch { /* Logged out. */ }
         for (const { payload, auth, key } of imports.values()) {
+          if (key === latestCurrentKey && !skipped.includes(key)) skipped.push(key);
           if (skipped.includes(key)) continue;
           let account = next.accounts.find((a) => identityKey(a.identity) === key);
           const now = new Date().toISOString();
           if (account) {
+            const previousAuth = validateAuthJson(await loadAccountAuth(account.id));
+            const risk = portableSnapshotRisk(previousAuth.parsed, auth.parsed);
+            if (risk && !risks.has(account.id)) throw new Error("账号凭证在确认期间更新，请重新导入。");
             const previous = await fs.readFile(accountBlobPath(account.id), "utf8");
             await writeTextAtomic(path.join(backupsDir(), `auth-before-portable-import-${crypto.randomUUID()}.${credentialFileExtension()}`), previous);
             rollback.push({ id: account.id, previous });
             markAccountAuthSnapshot(account, auth, auth.content, now);
+            if (risk) {
+              account.needsReauth = true;
+              account.reauthReason = "导入的凭证较旧或无法确认新旧，请在 Codex 中重新登录后保存。";
+              account.reauthMarkedAt = now;
+            }
           } else {
             account = createAccountRecord(auth, safeAccountName(payload.displayName, auth.identity), now);
             account.lastSwitchedAt = null;
@@ -1395,7 +1492,7 @@ async function refreshStoredActiveAccount(index) {
     if (currentKey && activeKey && currentKey === activeKey) {
       await saveAccountAuth(active.id, current.content);
       const now = new Date().toISOString();
-      markAccountAuthSnapshot(active, current, current.content, now);
+      markAccountAuthSnapshot(active, current, current.content, now, { trustedLogin: hasNewLoginSnapshot(active, current) });
       active.lastSyncedAt = now;
       return current.content;
     }
@@ -1406,6 +1503,10 @@ async function refreshStoredActiveAccount(index) {
 }
 
 async function syncCurrentAuthToStoredAccount() {
+  return runAccountOperation(syncCurrentAuthToStoredAccountLocked);
+}
+
+async function syncCurrentAuthToStoredAccountLocked() {
   await ensureStoreDirs();
   const current = await readCurrentAuth();
   const currentKey = identityKey(current.identity);
@@ -1428,13 +1529,6 @@ async function syncCurrentAuthToStoredAccount() {
     const nextFingerprint = fingerprint(current.content);
     const nextLastRefresh = authLastRefresh(current.parsed);
     if (!isNewAccount && account.authFingerprint === nextFingerprint && account.lastRefresh === nextLastRefresh) {
-      if (account.needsReauth === true) {
-        markAccountAuthSnapshot(account, current, current.content, now);
-        account.lastSyncedAt = now;
-        index.activeAccountId = account.id;
-        clearReauthCheck(account.id);
-        return { value: true };
-      }
       if (index.activeAccountId !== account.id) {
         account.lastSwitchedAt = now;
         index.activeAccountId = account.id;
@@ -1445,7 +1539,7 @@ async function syncCurrentAuthToStoredAccount() {
 
     await saveAccountAuth(account.id, current.content);
     if (index.activeAccountId !== account.id) account.lastSwitchedAt = now;
-    markAccountAuthSnapshot(account, current, current.content, now);
+    markAccountAuthSnapshot(account, current, current.content, now, { trustedLogin: hasNewLoginSnapshot(account, current) });
     account.lastSyncedAt = now;
     index.activeAccountId = account.id;
     clearReauthCheck(account.id);
@@ -1475,7 +1569,7 @@ function scheduleReauthCheck(accountId, expectedFingerprint, expectedLastRefresh
           if (currentKey && accountKey && currentKey === accountKey) {
             const now = new Date().toISOString();
             await saveAccountAuth(account.id, current.content);
-            markAccountAuthSnapshot(account, current, current.content, now);
+            markAccountAuthSnapshot(account, current, current.content, now, { trustedLogin: hasNewLoginSnapshot(account, current) });
             account.lastSyncedAt = now;
             return { value: true };
           }
@@ -1642,11 +1736,21 @@ async function startSessionsPolling() {
 }
 
 async function switchAccount(accountId, options = {}) {
-  return runAccountOperation(() => switchAccountLocked(accountId, options));
+  const invalidated = autoRecovery?.invalidate();
+  return runAccountOperation(async () => { await invalidated; return switchAccountLocked(accountId, options); });
 }
 
 async function switchAccountLocked(accountId, options = {}) {
   localDataCache.invalidate();
+  // Validate the destination before closing the desktop or touching auth.json.
+  const before = await readIndex();
+  const candidate = before.accounts.find((account) => account.id === accountId);
+  if (!candidate) throw new Error("Account not found.");
+  const candidateAuth = validateAuthJson(await loadAccountAuth(accountId));
+  if (identityKey(candidateAuth.identity) !== identityKey(candidate.identity)) throw new Error("保存的凭证与账号不一致，请重新登录后保存。");
+  if (options.restartCodex === true) await stopCodexApp();
+  await assertCodexStopped();
+  if (options.allowed && !options.allowed()) throw new Error("登录操作已改变，已取消自动切换。");
   await ensureCodexFileCredentialStore();
   let reauthCheck = null;
   await mutateIndex(async (index) => {
@@ -1659,25 +1763,23 @@ async function switchAccountLocked(accountId, options = {}) {
     if (currentContent) {
       await backupCurrentAuth(currentContent, "before-switch");
     } else if (await pathExists(authPath())) {
-      try {
-        const raw = await fs.readFile(authPath(), "utf8");
-        await backupCurrentAuth(raw, "unmatched-before-switch");
-      } catch {
-        // Backup should not block switching if auth.json cannot be read.
-      }
+      const raw = await fs.readFile(authPath(), "utf8");
+      await backupCurrentAuth(raw, "unmatched-before-switch");
     }
 
     const targetContent = await loadAccountAuth(target.id);
     const validation = validateAuthJson(targetContent);
+    if (identityKey(validation.identity) !== identityKey(target.identity)) throw new Error("保存的凭证与账号不一致，请重新登录后保存。");
+    // Do not replace credentials if another client started while backing up.
+    await assertCodexStopped();
+    if (options.allowed && !options.allowed()) throw new Error("登录操作已改变，已取消自动切换。");
     await atomicWriteAuth(targetContent);
+    if (identityKey((await readCurrentAuth()).identity) !== identityKey(target.identity)) throw new Error("登录凭证被其他程序更改，已停止切换。");
     const now = new Date().toISOString();
     Object.assign(target, authTokenStatus(validation.parsed));
     target.lastSwitchedAt = now;
     target.updatedAt = now;
     index.activeAccountId = target.id;
-    delete target.needsReauth;
-    delete target.reauthReason;
-    delete target.reauthMarkedAt;
     reauthCheck = {
       accountId: target.id,
       fingerprint: target.authFingerprint,
@@ -1686,7 +1788,7 @@ async function switchAccountLocked(accountId, options = {}) {
   });
 
   if (options.restartCodex === true) {
-    await restartCodexApp();
+    await startCodexApp();
   }
 
   if (reauthCheck) {
@@ -1697,22 +1799,24 @@ async function switchAccountLocked(accountId, options = {}) {
 }
 
 async function startAccountReauth(accountId) {
-  return runAccountOperation(() => startAccountReauthLocked(accountId));
+  const invalidated = autoRecovery?.invalidate();
+  return runAccountOperation(async () => { await invalidated; return startAccountReauthLocked(accountId); });
 }
 
 async function startAccountReauthLocked(accountId) {
+  const before = await readIndex();
+  if (!before.accounts.some((account) => account.id === accountId)) throw new Error("Account not found.");
+  await stopCodexApp();
+  await assertCodexStopped();
   await ensureCodexFileCredentialStore();
   await mutateIndex(async (index) => {
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) throw new Error("Account not found.");
     clearReauthCheck(account.id);
     if (await pathExists(authPath())) {
-      try {
-        const raw = await fs.readFile(authPath(), "utf8");
-        await backupCurrentAuth(raw, "before-reauth");
-      } catch {
-        // Backup should not block reauth.
-      }
+      const raw = await fs.readFile(authPath(), "utf8");
+      await backupCurrentAuth(raw, "before-reauth");
+      await assertCodexStopped();
       await fs.rm(authPath(), { force: true });
     }
     const now = new Date().toISOString();
@@ -1722,7 +1826,7 @@ async function startAccountReauthLocked(accountId) {
     account.lastReauthStartedAt = now;
     index.activeAccountId = account.id;
   });
-  await restartCodexApp();
+  await startCodexApp();
   return currentState();
 }
 
@@ -1763,7 +1867,8 @@ async function reorderAccounts(accountIds) {
 }
 
 async function deleteAccount(accountId) {
-  return runAccountOperation(() => deleteAccountLocked(accountId));
+  const invalidated = autoRecovery?.invalidate();
+  return runAccountOperation(async () => { await invalidated; return deleteAccountLocked(accountId); });
 }
 
 async function deleteAccountLocked(accountId) {
@@ -1774,19 +1879,21 @@ async function deleteAccountLocked(accountId) {
     let removedCurrentAuth = false;
     const deletedKey = identityKey(account.identity ?? {});
     if (deletedKey) {
-      try {
-        const current = await readCurrentAuth();
+      let current;
+      try { current = await readCurrentAuth(); } catch { /* Missing/invalid login. */ }
+      if (current && identityKey(current.identity) === deletedKey) {
+        await stopCodexApp();
+        await assertCodexStopped();
+        // Capture the last refresh after shutdown, just like switching accounts.
+        current = await readCurrentAuth();
         if (identityKey(current.identity) === deletedKey) {
-          try {
-            await backupCurrentAuth(current.content, "before-delete-account");
-          } catch {
-            // Backup should not block deletion.
-          }
+          await backupCurrentAuth(current.content, "before-delete-account");
+          await assertCodexStopped();
           await fs.rm(authPath(), { force: true });
           removedCurrentAuth = true;
+        } else {
+          throw new Error("当前登录已改变，已取消删除。");
         }
-      } catch {
-        // Missing or invalid current auth still allows deleting the saved account.
       }
     }
 
@@ -1800,13 +1907,14 @@ async function deleteAccountLocked(accountId) {
     return { value: { removedCurrentAuth } };
   });
   if (result?.removedCurrentAuth) {
-    await restartCodexApp().catch(() => {});
+    await startCodexApp();
   }
   return currentState();
 }
 
 async function restartCodexAppQueued() {
-  return runAccountOperation(() => restartCodexApp());
+  const invalidated = autoRecovery?.invalidate();
+  return runAccountOperation(async () => { await invalidated; return restartCodexApp(); });
 }
 
 function wait(milliseconds) {
@@ -1823,7 +1931,7 @@ async function macProcessIsRunning(processName) {
   }
 }
 
-async function restartCodexAppMac() {
+async function stopCodexAppMac() {
   for (const processName of MAC_CODEX_APP_NAMES) {
     if (!(await macProcessIsRunning(processName))) continue;
     try {
@@ -1844,6 +1952,9 @@ async function restartCodexAppMac() {
     throw new Error("Codex App did not fully exit before restart.");
   }
 
+}
+
+async function startCodexAppMac() {
   const launchErrors = [];
   for (const appName of MAC_CODEX_APP_NAMES) {
     try {
@@ -1857,7 +1968,31 @@ async function restartCodexAppMac() {
 }
 
 async function restartCodexApp() {
-  if (isMac) return restartCodexAppMac();
+  await stopCodexApp();
+  return startCodexApp();
+}
+
+async function assertCodexStopped() {
+  if (isMac) {
+    if ((await Promise.all([...MAC_CODEX_APP_NAMES, "codex"].map(macProcessIsRunning))).some(Boolean)) {
+      throw new Error("仍有 Codex 客户端运行，请关闭 Codex App 和 CLI 后重试，凭证尚未切换。");
+    }
+    return;
+  }
+  if (!isWindows) throw new Error("Unsupported platform.");
+  await runPowerShell(`
+$ErrorActionPreference = 'Stop'
+$writers = @(Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -ieq 'codex.exe' -or ($_.Name -ieq 'ChatGPT.exe' -and (
+    -not $_.ExecutablePath -or $_.ExecutablePath -match '[\\\\/]OpenAI[.\\\\/]Codex'))
+})
+if ($writers.Count -gt 0) { throw '仍有 Codex 客户端运行，请关闭 Codex App 和 CLI 后重试，凭证尚未切换。' }
+`);
+}
+
+async function stopCodexApp() {
+  if (accountLogin?.isBusy()) throw new Error("请先完成或取消面板中的账号登录，再切换或重启 Codex。");
+  if (isMac) return stopCodexAppMac();
   if (!isWindows) throw new Error("Restart is supported on Windows and macOS only.");
   const script = `
 $ErrorActionPreference = 'Stop'
@@ -1881,6 +2016,16 @@ function Get-CodexAppProcesses {
 }
 
 $targets = @(Get-CodexAppProcesses)
+# The desktop's app-server lives outside the packaged application directory.
+# Stop only codex.exe descendants of this desktop, never unrelated CLI clients.
+$all = @(Get-CimInstance Win32_Process)
+$owned = @($targets | ForEach-Object { $_.Id })
+do {
+  $children = @($all | Where-Object { $_.ParentProcessId -in $owned -and $_.ProcessId -notin $owned })
+  $owned += @($children | ForEach-Object { $_.ProcessId })
+} while ($children.Count -gt 0)
+$servers = @($all | Where-Object { $_.Name -ieq 'codex.exe' -and $_.ProcessId -in $owned } | ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
+$targets = @($targets) + @($servers)
 if ($targets.Count -gt 0) {
   $targets | Stop-Process -Force -ErrorAction SilentlyContinue
   $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -1891,8 +2036,21 @@ if ($targets.Count -gt 0) {
   if ($remaining.Count -gt 0) {
     throw 'Codex App did not fully exit before restart.'
   }
+  foreach ($server in $servers) {
+    if (-not $server.WaitForExit(10000)) { throw 'Codex app-server did not fully exit.' }
+  }
 }
-Start-Sleep -Milliseconds 300
+`;
+  await runPowerShell(script);
+  await assertCodexStopped();
+}
+
+async function startCodexApp() {
+  if (isMac) return startCodexAppMac();
+  if (!isWindows) throw new Error("Unsupported platform.");
+  const script = `
+$ErrorActionPreference = 'Stop'
+$package = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
 $startApp = Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex_*!App' } | Select-Object -First 1
 if ($startApp -and $startApp.AppID) {
   Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\\$($startApp.AppID)"
@@ -3689,9 +3847,13 @@ async function readLatestLocalQuota(options = {}) {
 
 async function readLocalUsage(options = {}) {
   const files = options.files ?? await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
-  const records = await readLocalRecords(files);
+  const cutoff = Date.parse(options.since);
+  // Unchanged files from before this account boundary cannot contain new usage.
+  const candidates = Number.isFinite(cutoff)
+    ? files.filter((file) => !Number.isFinite(file.mtimeMs) || file.mtimeMs <= 0 || file.mtimeMs >= cutoff) : files;
+  const records = await readLocalRecords(candidates);
   const usage = aggregateUsage(records, {...options, indexMap:await readSessionIndexMap()});
-  return {...usage, scannedFiles:files.length, totalFiles:files.length, failedFiles:files.length-records.length, latestQuota:null};
+  return {...usage, scannedFiles:candidates.length, totalFiles:files.length, failedFiles:candidates.length-records.length, latestQuota:null};
 }
 
 function emptyLocalUsage(since = null) {
@@ -4002,11 +4164,14 @@ async function getQuota() {
 async function getDashboard() {
   const scope = await dashboardScope();
   if (!scope.hasCurrentAuth) {
-    return { quota: resolveQuota(scope, null), usage: emptyLocalUsage(scope.since), scope };
+    return { quota: resolveQuota(scope, null), usage: { ...emptyLocalUsage(scope.since), available: false }, scope };
   }
   return localDataCache.cached(localDataCache.buildDashboardKey(scope), async () => {
     const files = await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
-    const usage = await readLocalUsage({ since: scope.since, files });
+    // An untracked current account must never inherit all accounts' local history.
+    const usage = scope.accountId && Number.isFinite(Date.parse(scope.since))
+      ? await readLocalUsage({ since: scope.since, files })
+      : { ...emptyLocalUsage(scope.since), available: false };
     const quota = await resolveQuotaWithMode(scope, files, usage);
     return { quota, usage, scope };
   });
@@ -4159,7 +4324,7 @@ function createRecoveryCountdownWindow() {
   const anchor = widgetWindow && !widgetWindow.isDestroyed() ? widgetWindow.getBounds()
     : clampWidgetBoundsToDisplay(normalizeWidgetBounds(runtimeSettings?.widgetBounds));
   const area = screen.getDisplayMatching(anchor).workArea;
-  const width = 380, height = 302;
+  const width = 320, height = 112;
   const beside = anchor.x - width - 12 >= area.x ? anchor.x - width - 12 : anchor.x + anchor.width + 12;
   const win = new BrowserWindow({
     width, height,
@@ -4167,7 +4332,7 @@ function createRecoveryCountdownWindow() {
     y: Math.max(area.y, Math.min(anchor.y, area.y + area.height - height)),
     title: "CodexAuth 自动切换确认", icon: appIconPath(), show: false,
     frame: false, resizable: false, maximizable: false, minimizable: false,
-    alwaysOnTop: true, skipTaskbar: true, backgroundColor: "#f7f9ff",
+    alwaysOnTop: true, skipTaskbar: true, transparent: true, backgroundColor: "#00000000",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
       nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
   });
@@ -4677,6 +4842,13 @@ function handleWidgetPointerLeave() {
   return { ok: true };
 }
 
+async function openAppLink(link) {
+  const urls = { github: "https://github.com/GboyCode/CodexAuth", developer: "https://ryanlin.me/assets/contact/wechat-qr.png" };
+  if (typeof link !== "string" || !Object.hasOwn(urls, link)) throw new Error("不支持的项目链接。");
+  await shell.openExternal(urls[link]);
+  return { ok: true };
+}
+
 async function checkForUpdates(event) {
   if (updateDialogPending) return { ok: true, busy: true };
   updateDialogPending = true;
@@ -4699,7 +4871,7 @@ async function checkForUpdates(event) {
       detail: detail.join("\n\n"), buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
     if (canDownload && choice.response === 0) await shell.openExternal(result.installer.url);
     else if (choice.response === (canDownload ? 1 : 0)) await shell.openExternal(result.releaseUrl);
-    return { ok: true, latestVersion: result.latestVersion };
+    return { ok: true, latestVersion: result.latestVersion, comparison: result.comparison };
   } catch (error) {
     await show({ type: "warning", title: "CodexAuth 更新", message: "暂时无法检查更新",
       detail: error.message, buttons: ["关闭"], noLink: true });
@@ -4708,9 +4880,13 @@ async function checkForUpdates(event) {
 }
 
 function registerIpc() {
+  ipcMain.handle("account:login-start", (_event, label) => runAccountOperation(() => getAccountLogin().start(label)));
+  ipcMain.handle("account:login-cancel", () => getAccountLogin().cancel());
+  ipcMain.handle("account:login-open", () => getAccountLogin().reopen());
   ipcMain.handle("recovery-countdown:ready", (event) => recoveryCountdown?.ready(event.sender) ?? null);
   ipcMain.handle("recovery-countdown:cancel", (event) => recoveryCountdown?.cancel(event.sender) ?? false);
   ipcMain.handle("app:version", () => app.getVersion());
+  ipcMain.handle("app:open-link", (_event, link) => openAppLink(link));
   ipcMain.handle("updates:check", checkForUpdates);
   ipcMain.handle("diagnostics:get", async () => (await currentState()).diagnostics);
   ipcMain.handle("state:get", () => currentState());
@@ -4806,6 +4982,7 @@ if (hasSingleInstanceLock) {
     }
     Menu.setApplicationMenu(null);
     await ensureStoreDirs();
+    await cleanupLoginSessions();
     await recoverStoreIfNeeded();
     await ensureCodexFileCredentialStore();
     const settings = await syncLaunchAtLoginFromSettings();
@@ -4843,7 +5020,15 @@ app.on("window-all-closed", () => {
   if (isQuitting && process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (accountLogin?.isBusy()) {
+    event.preventDefault();
+    if (!loginQuitPending) {
+      loginQuitPending = true;
+      accountLogin.shutdown().finally(() => app.quit());
+    }
+    return;
+  }
   isQuitting = true;
   if (widgetBoundsSaveTimer) {
     clearTimeout(widgetBoundsSaveTimer);

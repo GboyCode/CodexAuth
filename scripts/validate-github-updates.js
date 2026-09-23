@@ -88,6 +88,14 @@ async function main() {
   vm.runInContext("updateChecker = {check: async () => { throw Error('fixture offline'); }}",context);
   assert.equal((await context.checkForUpdates({sender:{}})).ok,false);
   assert.equal(dialogs.at(-1).type,"warning");
+  const beforeLinks = opened.length;
+  await context.openAppLink("github");
+  await context.openAppLink("developer");
+  assert.deepEqual(opened.slice(beforeLinks), ["https://github.com/GboyCode/CodexAuth", "https://ryanlin.me/assets/contact/wechat-qr.png"]);
+  for (const link of ["https://example.test", "file:///fixture.exe", "__proto__", "constructor", null, {}]) {
+    await assert.rejects(context.openAppLink(link), /不支持/);
+  }
+  assert.equal(opened.length, beforeLinks + 2, "project links only accept fixed destinations");
   console.log("GitHub updates validated: version ordering, platform assets, URL boundary, transport failures/limits, caching, retry and native download/cancel actions.");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -5,18 +5,20 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart } = require("../src/auto-recovery");
 const { createRecoveryCountdown, COUNTDOWN_MS } = require("../src/recovery-countdown");
-const { pipeRequest, parseToolResult } = require("../src/codex-desktop-bridge");
+const { createDesktopBridge, pipeRequest, parseToolResult } = require("../src/codex-desktop-bridge");
 
 const NOW = 1800000000000;
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const account = (id, used = 20, reset = 7200) => ({ id, identity: { userId: `workspace-${id}` },
   quotaSnapshot: { schemaVersion: 2, source: "local", checkedAt: new Date(NOW - 1000).toISOString(),
     session: { usedPercent: used, resetsAt: NOW / 1000 + reset }, weekly: { usedPercent: used, resetsAt: NOW / 1000 + 86400 } } });
+const businessWithoutQuota = (id) => ({ ...account(id), identity: { userId: `workspace-${id}`, planType: "team" }, quotaSnapshot: null });
 const failed = (id = "task", turnId = "failed-turn") => ({ thread: { id, kind: "codex", hostId: "local", status: { type: "systemError" } },
   turns: [{ id: turnId, status: "failed", completedAt: NOW / 1000, error: { codexErrorInfo: "usageLimitExceeded" } }] });
 
 function fixture(options = {}) {
   let clock = NOW, stored = options.journal ?? null, activeId = "a", switches = 0, sends = 0, reads = 0, warnings = 0;
+  const opened = [];
   const results = new Map([["task", failed()]]);
   const accounts = [account("a", 100), account("b"), account("c", 30)];
   const bridge = {
@@ -27,10 +29,17 @@ function fixture(options = {}) {
       sends++;
       if (options.sendError) throw new Error("connection closed after sending");
       results.set(id, { ...results.get(id), thread: { ...results.get(id).thread, status: { type: "active" } }, turns: [{ id: "new-turn", status: "inProgress" }] });
-    }, reset() {},
+    },
+    openThread: async (id) => {
+      assert.equal(stored.pending.navigationAttempted, true, "persist navigation attempt before opening a page");
+      opened.push(id);
+      if (options.navigationError) throw new Error("navigation unavailable");
+    },
+    reset() {},
   };
   let recovery;
   const deps = {
+    runAccountOperation: (task) => task(),
     now: () => clock, bridge, getAnchor: async () => "task",
     getAccounts: async () => ({ activeAccountId: activeId, accounts }),
     loadJournal: async () => clone(stored), saveJournal: async (value) => { stored = clone(value); },
@@ -43,7 +52,7 @@ function fixture(options = {}) {
   recovery = createAutoRecovery(deps);
   recovery.configure(true, NOW - 1000);
   return { recovery, deps, bridge, accounts, results, setActive: (id) => { activeId = id; }, advance: (ms) => { clock += ms; },
-    stats: () => ({ switches, sends, reads, warnings, stored, activeId }) };
+    stats: () => ({ switches, sends, reads, warnings, stored, activeId, opened }) };
 }
 
 function countdownFixture() {
@@ -95,12 +104,78 @@ async function run() {
   const stale = account("stale"); stale.quotaSnapshot.checkedAt = new Date(NOW - 7 * 86400000 - 1).toISOString(); bad.push(stale);
   assert.equal(rankAccounts(bad, "a", {}, NOW).length, 0);
   assert.equal(rankAccounts([account("blocked")], "a", { blocked: NOW + 1000 }, NOW).length, 0);
+  for (const used of [98, 99, 100]) {
+    const low = account(`low-${used}`, used); low.identity.planType = "business";
+    assert.equal(rankAccounts([low], "a", {}, NOW).length, 0, "skip every unreset window with at most 2% remaining");
+    low.quotaSnapshot.session.resetsAt = NOW / 1000 - 1;
+    assert.equal(rankAccounts([low], "a", {}, NOW).length, 0, "a session reset cannot override a low unreset week");
+    low.quotaSnapshot.weekly.usedPercent = 25;
+    assert.equal(rankAccounts([low], "a", {}, NOW)[0].remaining, 75, "a past reset lifts only its own low-quota block");
+    low.quotaSnapshot.session.resetsAt = null;
+    assert.equal(rankAccounts([low], "a", {}, NOW).length, 0, "an unknown reset cannot excuse a known low balance");
+  }
+  assert.equal(rankAccounts([account("above-threshold", 97.99)], "a", {}, NOW).length, 1);
+  const missingBusiness = businessWithoutQuota("missing-business");
+  const fallbackRank = rankAccounts([missingBusiness, pro, businessWeek, business5h, plus], "a", {}, NOW);
+  assert.deepEqual(fallbackRank.map((item) => item.account.id), ["plus", "business-5h", "business-week", "pro", "missing-business"]);
+  assert.equal(fallbackRank.at(-1).remaining, null, "unknown quota must not be represented as available quota");
+  for (const planType of ["plus", "pro", ""]) {
+    const other = businessWithoutQuota("other"); other.identity.planType = planType;
+    assert.equal(rankAccounts([other], "a", {}, NOW).length, 0, "unknown fallback is limited to Business");
+  }
+  for (const snapshot of [
+    { schemaVersion: 2, source: "unavailable", session: null, weekly: null },
+    { schemaVersion: 2, source: "local", session: null, weekly: null },
+    { ...account("partial").quotaSnapshot, session: { usedPercent: null } },
+  ]) {
+    const partial = { ...missingBusiness, quotaSnapshot: snapshot };
+    assert.equal(rankAccounts([partial], "a", {}, NOW)[0].priority, 4);
+    partial.quotaSnapshot.weekly = { usedPercent: 98, resetsAt: NOW / 1000 + 86400 };
+    assert.equal(rankAccounts([partial], "a", {}, NOW).length, 0, "partial/unavailable quota cannot conceal a low known window");
+  }
+  assert.equal(rankAccounts([missingBusiness], missingBusiness.id, {}, NOW).length, 0);
+  assert.equal(rankAccounts([{ ...missingBusiness, needsReauth: true }], "a", {}, NOW).length, 0);
+  assert.equal(rankAccounts([missingBusiness], "a", { [missingBusiness.id]: NOW + 1000 }, NOW).length, 0);
+  const staleBusiness = { ...stale, identity: { ...stale.identity, planType: "team" } };
+  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW).length, 0, "expired recorded snapshots remain excluded");
+  staleBusiness.quotaSnapshot.source = "unavailable";
+  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW).length, 0, "unavailable data must not bypass the snapshot age limit");
   assert.equal(isQuotaFailure(failed(), NOW - 1), true);
   for (const code of ["rateLimitExceeded", "unauthorized", "sessionBudgetExceeded", "internalServerError"]) {
     const sample = failed(); sample.turns[0].error.codexErrorInfo = code;
     assert.equal(isQuotaFailure(sample), false, code);
   }
   const cancelled = failed(); cancelled.turns[0].status = "interrupted"; assert.equal(isQuotaFailure(cancelled), false);
+  const workspaceEmpty = failed(); workspaceEmpty.turns[0].error = { message: "Your workspace is out of credits. Add credits to continue.", additionalDetails: null };
+  assert.equal(isQuotaFailure(workspaceEmpty, NOW - 1), true, "native workspace exhaustion can omit codexErrorInfo");
+  assert.equal(isQuotaFailure(workspaceEmpty, NOW + 1), false, "old workspace failures remain excluded");
+  for (const status of ["completed", "interrupted", "inProgress"]) {
+    const sample = clone(workspaceEmpty); sample.turns[0].status = status;
+    assert.equal(isQuotaFailure(sample), false, `workspace message in ${status} turn is not a quota failure`);
+  }
+  for (const message of ["429 Too Many Requests", "Your API billing account is out of credits.", "Tool failed: Your workspace is out of credits. Add credits to continue."]) {
+    const sample = clone(workspaceEmpty); sample.turns[0].error.message = message;
+    assert.equal(isQuotaFailure(sample), false, "do not broaden message fallback to other billing/tool errors");
+  }
+  const explicitOtherError = clone(workspaceEmpty); explicitOtherError.turns[0].error.codexErrorInfo = "unauthorized";
+  assert.equal(isQuotaFailure(explicitOtherError), false, "an explicit non-quota error overrides message fallback");
+  const plusEmpty = failed();
+  plusEmpty.turns[0].error = { message: "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 10:12 PM.", additionalDetails: null };
+  assert.equal(isQuotaFailure(plusEmpty, NOW - 1), true, "observed Plus exhaustion omits codexErrorInfo too");
+  const straightQuote = clone(plusEmpty); straightQuote.turns[0].error.message = straightQuote.turns[0].error.message.replace("’", "'");
+  assert.equal(isQuotaFailure(straightQuote), true);
+  assert.equal(isQuotaFailure(plusEmpty, NOW + 1), false, "historical Plus failures remain excluded");
+  for (const status of ["completed", "interrupted", "inProgress"]) {
+    const sample = clone(plusEmpty); sample.turns[0].status = status;
+    assert.equal(isQuotaFailure(sample), false, `Plus message in ${status} turn must not trigger recovery`);
+  }
+  for (const message of ["You’ve hit your usage limit.", "Tool failed: " + plusEmpty.turns[0].error.message,
+    plusEmpty.turns[0].error.message.replace("chatgpt.com/explore", "example.com/explore")]) {
+    const sample = clone(plusEmpty); sample.turns[0].error.message = message;
+    assert.equal(isQuotaFailure(sample), false, "only the observed native template is accepted");
+  }
+  const plusWrongCode = clone(plusEmpty); plusWrongCode.turns[0].error.codexErrorInfo = "unauthorized";
+  assert.equal(isQuotaFailure(plusWrongCode), false);
   assert.equal(isQuotaFailure(failed(), NOW + 1), false);
   assert.equal(canRestart({ threads: [{ kind: "codex", hostId: "local", status: "active" }] }), false);
   assert.equal(canRestart({ threads: Array(50).fill({}) }), false);
@@ -108,9 +183,45 @@ async function run() {
   const happy = fixture();
   await happy.recovery.tick(); assert.equal(happy.stats().switches, 1);
   await happy.recovery.tick(); assert.equal(happy.stats().sends, 1);
+  assert.deepEqual(happy.stats().opened, [], "only open a task after confirming its new turn");
   await happy.recovery.tick(); await happy.recovery.tick(); await happy.recovery.tick();
   assert.equal(happy.stats().sends, 1); assert.equal(happy.stats().switches, 1);
   assert.equal(happy.recovery.getStatus().state, "resumed");
+  assert.deepEqual(happy.stats().opened, ["task"]);
+
+  const navigationFailed = fixture({ navigationError: true });
+  for (let i = 0; i < 5; i++) await navigationFailed.recovery.tick();
+  assert.equal(navigationFailed.recovery.getStatus().state, "resumed", "page navigation failure must not fail task recovery");
+  assert.match(navigationFailed.recovery.getStatus().message, /页面未能自动打开/);
+  assert.equal(navigationFailed.stats().sends, 1);
+  assert.deepEqual(navigationFailed.stats().opened, ["task"], "navigation errors do not cause repeated focus attempts");
+  const optionalNavigation = fixture(); delete optionalNavigation.bridge.openThread;
+  for (let i = 0; i < 5; i++) await optionalNavigation.recovery.tick();
+  assert.equal(optionalNavigation.recovery.getStatus().state, "resumed");
+
+  const workspaceRecovery = fixture(); workspaceRecovery.results.set("task", workspaceEmpty);
+  await workspaceRecovery.recovery.tick(); await workspaceRecovery.recovery.tick();
+  assert.equal(workspaceRecovery.stats().switches, 1); assert.equal(workspaceRecovery.stats().sends, 1);
+
+  const plusRecovery = fixture(); plusRecovery.results.set("task", plusEmpty);
+  plusRecovery.accounts[0].quotaSnapshot.session.usedPercent = 99;
+  plusRecovery.accounts[0].quotaSnapshot.weekly.usedPercent = 36;
+  await plusRecovery.recovery.tick(); await plusRecovery.recovery.tick();
+  assert.equal(plusRecovery.stats().warnings, 1, "Plus exhaustion starts the cancellable countdown even when the widget still has 1% remaining");
+  assert.equal(plusRecovery.stats().switches, 1); assert.equal(plusRecovery.stats().sends, 1);
+  const noFailureAt99 = fixture(); noFailureAt99.accounts[0].quotaSnapshot.session.usedPercent = 99;
+  noFailureAt99.results.get("task").turns[0].status = "completed";
+  await noFailureAt99.recovery.tick();
+  assert.equal(noFailureAt99.stats().switches, 0, "99% usage alone never triggers account rotation");
+
+  const scanReconnect = fixture(); scanReconnect.results.get("task").turns[0].status = "completed";
+  const connectedList = scanReconnect.bridge.listThreads;
+  scanReconnect.bridge.listThreads = async () => { throw new Error("Codex 本地接口连接失败。"); };
+  await scanReconnect.recovery.tick(); assert.equal(scanReconnect.recovery.getStatus().state, "attention");
+  scanReconnect.bridge.listThreads = connectedList;
+  await scanReconnect.recovery.tick();
+  assert.equal(scanReconnect.recovery.getStatus().state, "watching", "successful scan clears a stale connection failure");
+  assert.equal(scanReconnect.stats().switches, 0); assert.equal(scanReconnect.stats().sends, 0);
 
   const goal = { threadId: "task", goalId: "goal-1", objectiveHash: "original-goal", status: "usageLimited",
     tokenBudget: 10000, tokensUsed: 1200, timeUsedSeconds: 36, createdAt: NOW - 60000, updatedAt: NOW };
@@ -126,7 +237,7 @@ async function run() {
   goalBatch.results.set("second", { ...failed("second"), turns: [], goal: { ...goal, threadId: "second", goalId: "goal-2" } });
   goalBatch.bridge.listGoals = async () => [...goalBatch.results.values()].map((value) => value.goal);
   goalBatch.bridge.resumeGoal = async (id, expected, allowed) => {
-    assert.equal(allowed(), true); assert.equal(expected.status, "usageLimited");
+    assert.equal(await allowed(), true); assert.equal(expected.status, "usageLimited");
     goalResumes++; goalBatch.results.get(id).goal.status = "active";
   };
   for (let i = 0; i < 6; i++) await goalBatch.recovery.tick();
@@ -259,6 +370,36 @@ async function run() {
   assert.equal(retry.stats().activeId, "c"); assert.equal(retry.stats().sends, 0, "an unavailable candidate never receives a continuation");
   await retry.recovery.tick(); assert.equal(retry.stats().sends, 1);
   assert.equal(retry.stats().warnings, 2, "each fallback account switch requires a new countdown");
+  const unknownFallback = fixture();
+  unknownFallback.accounts.push(businessWithoutQuota("d"));
+  unknownFallback.bridge.readUsage = async () => ({ accountId: `workspace-${unknownFallback.stats().activeId}`,
+    ordinaryUsageAllowed: unknownFallback.stats().activeId === "d" });
+  for (const expected of ["b", "c", "d"]) {
+    await unknownFallback.recovery.tick();
+    assert.equal(unknownFallback.stats().activeId, expected);
+    assert.equal(unknownFallback.stats().sends, 0, "no continuation before live quota approval");
+  }
+  assert.equal(unknownFallback.stats().warnings, 3, "unknown Business also requires its own countdown");
+  const resumedFallback = createAutoRecovery(unknownFallback.deps); resumedFallback.configure(true, NOW - 1000);
+  for (let i = 0; i < 3; i++) await resumedFallback.tick();
+  assert.equal(unknownFallback.stats().sends, 1);
+  assert.equal(resumedFallback.getStatus().state, "resumed", "a restarted recovery can finish the unknown Business attempt");
+  const skipLow = fixture(); skipLow.accounts[1] = account("b", 98); skipLow.accounts[2] = businessWithoutQuota("c");
+  await skipLow.recovery.tick(); assert.equal(skipLow.stats().activeId, "c", "skip near-empty accounts before an unknown Business");
+  const noUnknownQuota = fixture({ usage: { ordinaryUsageAllowed: null } });
+  noUnknownQuota.accounts.splice(1, 2, businessWithoutQuota("c"));
+  await noUnknownQuota.recovery.tick(); await noUnknownQuota.recovery.tick();
+  assert.equal(noUnknownQuota.stats().sends, 0, "unknown live availability must never send a continuation");
+  const cancelledUnknown = fixture({ beforeSwitch: async () => "cancelled" });
+  cancelledUnknown.accounts.splice(1, 2, businessWithoutQuota("c"));
+  await cancelledUnknown.recovery.tick(); await cancelledUnknown.recovery.tick();
+  assert.equal(cancelledUnknown.stats().switches, 0); assert.equal(cancelledUnknown.stats().warnings, 1);
+  const allUnknownEmpty = fixture({ usage: { ordinaryUsageAllowed: false } });
+  allUnknownEmpty.accounts.splice(1, 2, businessWithoutQuota("c"), businessWithoutQuota("d"));
+  for (let i = 0; i < 5; i++) await allUnknownEmpty.recovery.tick();
+  assert.equal(allUnknownEmpty.stats().switches, 2); assert.equal(allUnknownEmpty.stats().sends, 0);
+  assert.equal(allUnknownEmpty.recovery.getStatus().state, "waiting");
+  assert.ok(allUnknownEmpty.stats().stored.excluded.c > NOW && allUnknownEmpty.stats().stored.excluded.d > NOW);
   const cancelFallback = fixture({ beforeSwitch: async () => cancelFallback.stats().warnings === 1 ? "elapsed" : "cancelled" });
   cancelFallback.bridge.readUsage = async () => ({ accountId: `workspace-${cancelFallback.stats().activeId}`, ordinaryUsageAllowed: false });
   for (let i = 0; i < 5; i++) await cancelFallback.recovery.tick();
@@ -272,6 +413,7 @@ async function run() {
 
   const uncertain = fixture({ sendError: true }); await uncertain.recovery.tick(); await uncertain.recovery.tick(); await uncertain.recovery.tick(); await uncertain.recovery.tick();
   assert.equal(uncertain.stats().sends, 1); assert.equal(uncertain.stats().switches, 1); assert.equal(uncertain.recovery.getStatus().state, "attention");
+  assert.deepEqual(uncertain.stats().opened, [], "never navigate on an unconfirmed continuation");
   const crash = fixture(); await crash.recovery.tick();
   const resumed = createAutoRecovery(crash.deps); resumed.configure(true, NOW - 1000); await resumed.tick(); assert.equal(crash.stats().sends, 1);
   const journal = clone(crash.stats().stored); journal.pending.jobs[0].phase = "sending";
@@ -281,6 +423,12 @@ async function run() {
   const multiple = fixture(); multiple.results.set("second", failed("second", "second-failed"));
   for (let i = 0; i < 7; i++) await multiple.recovery.tick();
   assert.equal(multiple.stats().switches, 1); assert.equal(multiple.stats().sends, 2);
+  assert.deepEqual(multiple.stats().opened, ["task"], "batch recovery opens only the first confirmed task");
+  const navigationRestart = fixture();
+  for (let i = 0; i < 3; i++) await navigationRestart.recovery.tick();
+  const restartedNavigation = createAutoRecovery(navigationRestart.deps);
+  restartedNavigation.configure(true, NOW - 1000); await restartedNavigation.tick();
+  assert.deepEqual(navigationRestart.stats().opened, ["task"], "application restart must not navigate again");
   // A second quota failure moves to another account, without cycling to exhausted accounts.
   const again = fixture(); await again.recovery.tick(); await again.recovery.tick(); await again.recovery.tick(); await again.recovery.tick();
   again.results.set("task", failed("task", "new-failure")); again.advance(1000);
@@ -301,6 +449,52 @@ async function run() {
   try { assert.deepEqual(parseToolResult(await pipeRequest(endpoint, "tools/list", {})), { ok: true }); }
   finally { for (const socket of sockets) socket.destroy(); await new Promise((resolve) => server.close(resolve)); }
   assert.throws(() => parseToolResult({ success: false, contentItems: [] }));
-  console.log("Auto recovery validation passed: ranking, exhaustion detection, countdown deadlines/cancellation/failures, post-countdown races, fallback countdowns, durable cancellation, idle guard, identity check, batch resume, cooldown, deduplication and desktop transport.");
+  await assert.rejects(pipeRequest(endpoint, "tools/list", {}, 1000), (error) => error.code === "CODEX_PIPE_CONNECTION");
+  const requiredTools = ["read_thread", "list_threads", "send_message_to_thread", "get_usage_limits"]
+    .map((name) => ({ name, namespace: "codex_app" }));
+  const pipeNames = ["codex-browser-use-00000000-0000-0000-0000-000000000001", "codex-browser-use-00000000-0000-0000-0000-000000000002"];
+  function connectionFixture({ failures = 1, protocolFailure = false } = {}) {
+    let calls = 0, enumerations = 0;
+    const used = [];
+    const bridge = createDesktopBridge({ platform: "win32", env: {},
+      listPipes: async () => [pipeNames[Math.min(enumerations++, 1)]],
+      request: async (pipe, method) => {
+        if (method === "tools/list") return { tools: requiredTools };
+        calls++; used.push(pipe);
+        if (protocolFailure) return { success: false };
+        if (calls <= failures) throw Object.assign(new Error("disconnected"), { code: "CODEX_PIPE_CLOSED" });
+        return { success: true, contentItems: [{ type: "inputText", text: '{"threads":[]}' }] };
+      },
+    });
+    return { bridge, stats: () => ({ calls, enumerations, used }) };
+  }
+  const transportReconnect = connectionFixture();
+  assert.deepEqual(await transportReconnect.bridge.listThreads("task"), { threads: [] });
+  assert.equal(transportReconnect.stats().calls, 2);
+  assert.equal(transportReconnect.stats().enumerations, 2);
+  assert.notEqual(...transportReconnect.stats().used, "read reconnect discovers the replacement pipe");
+  const repeatedFailure = connectionFixture({ failures: 3 });
+  await assert.rejects(repeatedFailure.bridge.readUsage("task"));
+  assert.equal(repeatedFailure.stats().calls, 2, "reconnect attempts are bounded");
+  const uncertainSend = connectionFixture();
+  await assert.rejects(uncertainSend.bridge.continueThread("task", "continue"));
+  assert.equal(uncertainSend.stats().calls, 1, "never replay a continuation after a lost response");
+  const uncertainNavigation = connectionFixture();
+  await assert.rejects(uncertainNavigation.bridge.openThread("task"));
+  assert.equal(uncertainNavigation.stats().calls, 1, "navigation is not retried after a lost response");
+  const navigationRequests = [];
+  const navigationBridge = createDesktopBridge({ platform: "win32", env: {}, listPipes: async () => [pipeNames[0]],
+    request: async (_pipe, method, params) => {
+      if (method === "tools/list") return { tools: requiredTools };
+      navigationRequests.push(params);
+      return { success: true, contentItems: [{ type: "inputText", text: '{"ok":true}' }] };
+    } });
+  await navigationBridge.openThread("original-task");
+  assert.equal(navigationRequests[0].tool, "navigate_to_codex_page");
+  assert.deepEqual(navigationRequests[0].arguments, { threadId: "original-task" });
+  const incompatible = connectionFixture({ protocolFailure: true });
+  await assert.rejects(incompatible.bridge.listThreads("task"));
+  assert.equal(incompatible.stats().calls, 1, "protocol errors are not connection retries");
+  console.log("Auto recovery validation passed: workspace-credit exhaustion without error codes, recovered scan status, bounded read-only reconnect, no send replay, ranking, countdown cancellation, idle guard, batch resume, cooldown and desktop transport.");
 }
 run().catch((error) => { console.error(error); process.exitCode = 1; });

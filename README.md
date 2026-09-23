@@ -1,5 +1,414 @@
 # CodexAuth Switch
 
+![CodexAuth Switch 横版海报](docs/assets/readme-poster.png)
+
+[English README](README.en.md) | 中文说明
+
+CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
+
+它适合同时使用多个 OpenAI / Codex App 账号的人：从面板发起官方登录或保存当前登录状态，之后通过这个工具切换当前生效的 Codex 登录。凭证保存在本机，额度和用量来自本地 Codex 日志解析，不请求远程额度接口，也不会上传 Codex 会话历史。
+
+一句话定位：**CodexAuth Switch 是一个本地优先的 Codex App 多账号切换工具，支持 `auth.json` 快照管理、Windows DPAPI / macOS Keychain 加密、额度查看和 token 用量统计。**
+
+> 这是非官方项目，与 OpenAI 无官方关联。
+
+**最新版本：[v0.1.36](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.36)** · [更新说明](docs/releases/v0.1.36.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
+
+本版新增无需退出当前账号的官方登录入口，完善额度中断恢复和 Business 候选筛选，加快本地用量读取，并增加凭证并发保护、邮箱隐藏及侧栏更新入口。
+
+## 适合谁
+
+- 想在 Windows 或 macOS 上管理多个 Codex App 登录账号。
+- 想快速切换 OpenAI Codex / Codex App 当前账号。
+- 想安全保存和恢复本地 `~/.codex/auth.json` 登录快照。
+- 想查看 Codex 本地会话额度、周额度、剩余重置次数、token 用量及项目、模型统计。
+- 想坚持本地日志估算，不把 token、账号信息或会话历史发到远程额度接口。
+
+## 常见搜索词
+
+Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows macOS 桌面工具、Codex DPAPI Keychain 加密、Codex 本地预估、Codex 本地额度估算、Codex 本地历史只读。
+
+## 功能
+
+- **登录与多账号管理**：面板发起官方浏览器登录、自动加密导入，保留当前登录；也可保存已有登录、重命名和切换账号。
+- **凭证保护与迁移**：Windows DPAPI / macOS Keychain 加密快照，操作前备份，密码加密的 `.codexauth` 导入导出；较旧凭证覆盖有提示。
+- **自动切换并继续（Windows，可选）**：识别真实额度失败，等待其他任务结束，经 15 秒可取消倒计时、换号和实际额度核验后继续原任务；支持批量任务与目标模式。
+- **候选筛选**：优先 Plus、有五小时限制的 Business、仅周额度 Business；跳过未重置且剩余不超过 2% 的账号，无记录 Business 最后尝试。
+- **本地额度与用量**：展示本地会话/周额度、重置次数、项目和模型用量；日志增量读取、并发去重，明确标注数据时间和统计范围。不是官方账号历史累计。
+- **浮窗与隐私显示**：主窗口、托盘、浮窗快速切换；总览眼睛按钮可隐藏该区域邮箱；凭证原理和兼容性自检可展开查看。
+- **版本与联系入口**：GitHub 图标、当前版本、手动检查更新，以及开发者微信二维码。
+
+Windows 提供自动任务恢复；macOS 提供账号管理、额度、用量及迁移功能。macOS 原生登录/Keychain/GUI 仍待实机端到端验证。
+
+## 界面截图
+
+| 主窗口 | 悬浮快捷窗 |
+| --- | --- |
+| ![CodexAuth Switch 主窗口截图](docs/assets/screenshot-dashboard.png) | ![CodexAuth Switch 悬浮快捷窗截图](docs/assets/screenshot-widget.png) |
+
+## 安全边界
+
+CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和本应用自己的存储目录内。
+
+### 会写入的文件
+
+- `~/.codex/auth.json`
+  - Codex App 当前使用的本地登录文件。
+  - 切换账号时，应用会用已保存的账号快照替换这个文件。
+- `~/.codex/config.toml`
+  - 自动确保顶层配置包含 `cli_auth_credentials_store = "file"`，让新版 Codex 继续使用可切换的 `auth.json` 文件凭据。
+  - 修改前会在同目录生成带时间戳的 `config.toml.codexauth-backup-*` 备份。
+- 本应用的账号元数据：Windows 为 `%APPDATA%\codex-auth-switcher\accounts.json`；macOS 为 `~/Library/Application Support/codex-auth-switcher/accounts.json`。
+- 加密账号凭据快照：Windows 为 `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`；macOS 为 `~/Library/Application Support/codex-auth-switcher/accounts/*.keychain`。
+- 操作当前账号前的加密备份：Windows 为 `%APPDATA%\codex-auth-switcher\backups\*.dpapi`；macOS 为 `~/Library/Application Support/codex-auth-switcher/backups/*.keychain`。
+
+### 只读取的文件
+
+- `~/.codex/auth.json`
+  - 用于导入当前登录、识别账号身份。
+- `~/.codex/sessions/**/rollout-*.jsonl`
+  - 用于本地统计用量和额度快照。
+- `~/.codex/session_index.jsonl`
+  - 存在时用于补充本地会话元数据。
+- `~/.codex/logs_2.sqlite`
+  - 以只读方式打开，用于读取 Codex 本地写入的额度事件。
+
+### 不会做的事
+
+- 不直接改写已有会话日志；启用自动恢复后，由 Codex 接收继续消息并正常追加任务记录。
+- 不删除 `~/.codex/sessions`。
+- 不写入 `logs_2.sqlite`。
+- 不向项目作者或第三方上传凭证、账号、会话日志或用量记录；用户发起的官方登录及续任务由 Codex 与 OpenAI 服务通信。
+- 不使用当前 access token 请求远程额度接口。
+- 不自行刷新 OpenAI token。
+- 不调用远程额度接口。
+
+会影响 Codex App 当前运行状态的功能包括：切换账号、重新登录、删除当前账号、重启 Codex App，以及主动开启的自动切换与续任务。这些操作可能会更新 `config.toml`、替换或移除当前 `auth.json`，并重启 Codex App，让新的本地登录状态生效。自动续任务还会通过 Codex 本地接口校验当前账号额度，并向原任务发送继续指令；相关服务请求由 Codex 自身执行。
+
+## 实现方法
+
+### 账号识别
+
+导入当前登录时，应用会读取 `~/.codex/auth.json`，并验证它是否是 Codex App 的 ChatGPT 登录格式。
+
+应用会在本地解析 JWT payload，提取邮箱、用户 ID、workspace/account ID 等字段。账号匹配不会只依赖单个字段，而是尽量组合个人身份和工作区身份，因为同一个人可能加入多个工作区，同一个工作区也可能包含多个成员。
+
+### 凭据保存
+
+保存账号快照时，应用使用加密存储：Windows 使用 DPAPI，macOS 使用 Electron `safeStorage` 与系统 Keychain。面板新增登录期间，官方程序会在应用数据目录下的 `login-sessions/login-*` 临时保存明文 `auth.json`；加密导入后清理，取消及失败同样清理，下次启动重试清理残留目录。
+
+Windows 使用 `DataProtectionScope.CurrentUser`；macOS 使用当前用户的 Keychain。
+
+这表示加密后的账号快照绑定到当前操作系统用户，其他用户、其他机器或不同操作系统不能直接解密。
+
+账号快照存储在：
+
+- Windows：`%APPDATA%\codex-auth-switcher\accounts`
+- macOS：`~/Library/Application Support/codex-auth-switcher/accounts`
+
+操作当前登录前的备份存储在：
+
+- Windows：`%APPDATA%\codex-auth-switcher\backups`
+- macOS：`~/Library/Application Support/codex-auth-switcher/backups`
+
+应用不自行调用 OpenAI 刷新接口。Codex 在账号实际使用时自动刷新 access / refresh token；CodexAuth Switch 监听当前 `auth.json` 的写回，并把新内容重新加密同步到对应账号快照。access token 到期本身不代表登录失效，只有 Codex 明确无法刷新时才需要重新登录。
+
+加密备份保留最新 60 份；超过一小时的原子写临时残留会在启动时清理，避免长期切换和统计产生无上限缓存。
+
+### 账号切换流程
+
+切换账号时，应用会执行以下步骤：
+
+1. 解密并校验目标快照与账号身份。
+2. 启用重启时先停止 Codex 桌面和所属 app-server；否则要求用户先关闭客户端。独立 CLI 仍运行时停止切换。
+3. 读取旧账号最后写回的 `auth.json`，保存并加密备份；备份失败不覆盖。
+4. 再次检查客户端退出和目标身份，写入临时文件后原子替换 `auth.json`。
+5. 回读核验目标身份，更新本地账号记录，并按设置启动 Codex。
+
+使用临时文件加原子替换，是为了避免 Codex App 读到写入一半的 `auth.json`。
+
+Windows 会结束属于 Codex 安装目录的桌面进程组并重新启动应用；macOS 会识别当前 `ChatGPT` / 旧版 `Codex` 应用进程，等待退出后通过 Launch Services 重新启动。
+
+### 重新登录流程
+
+如果某个已保存账号的 refresh token 失效，应用可以发起重新登录流程：
+
+1. 停止 Codex 桌面及所属 app-server，确认没有其他 Codex 客户端写入。
+2. 加密备份最终的 `auth.json` 后删除当前登录；备份失败则停止。
+3. 启动 Codex App。
+4. 用户在 Codex App 里走官方登录流程。
+5. Codex App 写入新的 `auth.json` 后，CodexAuth Switch 自动监听并保存到对应账号。
+
+这个过程不绕过官方登录，也不代替官方登录。真正的登录仍然发生在 Codex App 内。
+
+### 自动切换与恢复
+
+账号页开启“额度耗尽后自动切换并继续”（默认关闭）后，每 15 秒检查一次本机任务。只处理开启后的明确额度失败或目标 `usageLimited`，不会因浮窗接近 0% 就直接切换。
+
+候选按套餐、预计余额和重置时间排序，排除需重登、冷却中、快照过旧及未重置的低余额账号；无记录 Business 作为最后候选。每次换号均有可取消倒计时，其他任务仍运行时等待。新账号身份与实际可用额度核验通过后，向原任务发送可见的继续消息；目标恢复保留原目标、预算和计数。
+
+这是继续已有上下文，不是恢复进程现场。手动换号等操作会取消待恢复批次，接口结果不确定时不重复发送。确认恢复后尝试打开首个任务；跳转失败不影响继续。依赖兼容的 Windows Codex 桌面接口，不自动使用重置次数。
+
+### 额度读取模式
+
+额度面板采用本地预估模式，只读取 Codex App 已经写到本机的日志，不请求 `chatgpt.com` 或其他远程额度接口。
+
+### 本地额度和用量统计
+
+本地预估模式读取以下数据：
+
+- session JSONL 文件里的 `codex.rate_limits`。
+- 自动发现最新 `logs_N.sqlite` 里的 `codex.rate_limits` 和 usage-limit 记录。
+- session 文件里的 `token_count` 事件。
+- 按文件大小和修改时间缓存解析结果，对完整日志事件去重；账号元数据只保存额度快照和各模型、服务档位独立的校准样本。旧版 `local-token-ledger.json` 不再参与统计。
+
+应用会监听本地日志文件变化，并用短延迟防抖刷新显示；同时用低频轮询检查 SQLite 文件更新时间，避免文件监听漏事件。
+
+额度快照只保存到本应用自己的账号元数据中，不会写回 Codex 的日志文件。
+
+多账号统计以账号最近一次切换时间为边界。跨切换时间继续运行的同一会话按相邻 Token 快照的增量归属，额度校准也只融合当前账号切入后的事件和该账号自己的历史校准，避免同套餐账号互相串数。
+
+### 额度 pace 提示
+
+应用会根据当前已用百分比、额度窗口长度和重置时间估算当前消耗速度，显示“消耗速度宽松 / 消耗速度正常 / 按当前速度会提前用完”。这只是趋势提示，不代表下一次对话会准确消耗多少额度。
+
+### 网络隔离
+
+Electron 窗口启用了以下安全配置：
+
+```js
+contextIsolation: true
+nodeIntegration: false
+sandbox: true
+webSecurity: true
+```
+
+页面 CSP 禁止网络连接：
+
+```html
+connect-src 'none'
+```
+
+主进程还通过 Electron `webRequest.onBeforeRequest` 拦截并取消以下出站请求：
+
+```text
+http://
+https://
+ws://
+wss://
+```
+
+这些限制用于确保渲染页面保持本地工具属性，避免账号信息或本地历史被上传。额度读取同样保持本地-only。
+
+例外是用户主动点击的 GitHub 更新检查：主进程使用独立 HTTPS 请求访问固定的公开仓库地址。只接受本仓库当前版本对应的安装包链接，并通过系统浏览器打开；不读取 GitHub 登录信息或 Codex 凭证。
+
+用户主动点击“登录并添加账号”时，系统浏览器和隔离运行的官方 Codex 登录程序会连接 OpenAI 身份验证服务，并使用官方本地回调完成登录；面板渲染页面仍禁止联网。
+
+## 使用方法
+
+### 安装依赖
+
+```powershell
+npm install
+```
+
+### 启动应用
+
+```powershell
+npm start
+```
+
+Windows 本地隐藏调试启动：
+
+```powershell
+npm run dev:hidden
+```
+
+### 导入账号
+
+1. 安装 Codex 桌面版，打开 CodexAuth Switch。
+2. 点击“登录并添加账号”。
+3. 在打开的官方页面选择要添加的账号，完成登录及验证。
+4. 返回面板，账号会自动加密添加到列表；当前 Codex 登录保持不变。
+5. 要添加更多账号，重复以上步骤。已有当前登录可直接点击“导入当前登录”。
+
+浏览器若自动选择了已有账号，请在官方页面切换到要添加的账号。等待期间可以取消或重新打开登录页；未完成的登录五分钟后超时。
+
+### 切换账号
+
+1. 在 CodexAuth Switch 中选择一个已保存账号。
+2. 点击切换。
+3. 启用“切换后重启”时自动停启 Codex；关闭该选项时，请先关闭 Codex App 和 CLI，切换后手动启动。
+
+应用会把新版 Codex 固定为文件凭据模式，并在启用“切换后重启”时完整重启桌面应用；新账号会在重新启动后生效。
+
+### 重新登录已保存账号
+
+当 Codex 提示 refresh token 无法刷新，或某个保存账号已经失效时，使用重新登录功能。
+
+应用会清理当前本地登录并重启 Codex App。你只需要在 Codex App 里正常完成官方登录，新的 `auth.json` 写入后会被 CodexAuth Switch 捕获并保存。
+
+## 开发
+
+### 语法检查
+
+```powershell
+npm run lint
+```
+
+### 校验额度逻辑
+
+```powershell
+npm run local-data:validate
+```
+
+这个命令使用隔离测试日志，检查 Token 增量、重复和分叉、账号边界、额度池、周窗口、重置次数来源、估算校准及账号恢复。`quota:validate` 保留用于旧价格权重算法的历史回放，不作为当前算法的验收。
+
+### 验证账号登录与恢复
+
+```powershell
+npm run account-login:validate
+npm run account-safety:validate
+npm run auto-recovery:validate
+```
+
+这些验证使用虚构凭证与隔离目录，不执行真实账号切换。发布流水线在 Windows 和 macOS 上运行全部发布检查。
+
+### 打包 Windows 安装器
+
+```powershell
+npm run pack:win
+```
+
+### 打包 macOS DMG
+
+请在 macOS 上运行：
+
+```bash
+npm run pack:mac
+```
+
+命令会同时生成 Intel (`x64`) 与 Apple Silicon (`arm64`) DMG。
+
+安装包输出到：
+
+```text
+release/
+```
+
+`release` 目录是本地构建产物，默认不提交到 Git。
+
+## 项目结构
+
+```text
+src/main.js                         Electron 主进程，本地文件访问、账号切换、额度逻辑
+src/preload.js                      安全 IPC bridge
+src/ui/index.html                   主窗口页面
+src/ui/app.js                       主窗口渲染逻辑
+src/ui/widget.html                  悬浮快捷窗页面
+src/ui/widget.js                    悬浮快捷窗渲染逻辑
+scripts/generate-icon.js            本地图标生成
+scripts/start-dev-hidden.ps1        隐藏调试启动脚本
+scripts/validate-quota-estimate.js  额度逻辑回放校验脚本
+QUOTA-LOGIC.md                      额度估算逻辑说明
+```
+
+## 限制
+
+- 支持 Windows 与 macOS，暂不支持 Linux。
+- Windows 与 macOS 的加密快照绑定各自系统用户，不能跨机器或跨平台直接复制使用。
+- 目标是 Codex App 本地登录切换，不是 Codex CLI-only 工作流。
+- 本地预估模式来自本地日志解析，属于本地近似展示。
+- Codex 没有写入新的本地 rate-limit 记录时，额度快照可能暂时不更新。
+- 不要跨机器或跨系统用户共享已保存的凭据快照。
+
+## Release
+
+Windows 安装包以及 Intel / Apple Silicon macOS DMG 会随 GitHub Release 上传。当前安装包没有商业代码签名或 Apple 公证，操作系统可能显示安全提醒。
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+## 使用提醒
+
+请只保存和切换你自己拥有或被授权使用的账号。不要把 `auth.json`、加密快照、备份文件分享给其他人。
+
+## 版本历史
+
+<details>
+<summary>展开历史开发版本说明（以当前功能说明为准）</summary>
+
+## 0.1.36：开发者微信入口
+
+侧栏开发者入口改为“开发者微信”，点击通过系统浏览器打开 `https://ryanlin.me/assets/contact/wechat-qr.png` 微信二维码。
+
+## 0.1.35：侧栏项目与更新入口
+
+本地兼容性自检下方新增 GitHub 图标与项目主页、当前程序版本、检查更新和开发者 Ryan Lin 链接。项目与开发者入口分别通过系统浏览器打开本仓库和 `https://ryanlin.me`；版本号来自当前应用，不写死。顶部及侧栏共用更新检查，显示新版、当前最新版、本机较新或检查失败状态，仅点击时联网。
+
+## 0.1.34：跳过低余额账号，补充 Business 候选
+
+自动恢复时，任一额度窗口剩余不超过 2% 且未到重置时间，就跳过该账号；重置时间未知也不尝试。已到重置时间的窗口可重新参与估算，但其他窗口仍需满足条件，切换后仍核验实际额度。2% 是候选筛选阈值，不代表官方已经确认耗尽。
+
+原有套餐优先级保持不变。有记录的候选都不可用后，才尝试没有额度记录或额度值未知的 Business（兼容 `team`）；不把未知额度当成 100%。已知低余额不会因另一个窗口缺失而变成兜底候选；需要重新登录、仍在耗尽冷却期或记录超过七天的账号仍被排除。
+
+每次尝试保留 15 秒可取消倒计时、空闲保护、账号身份和实际额度核验；确认可用后才向原任务发送继续。全部不可用就等待，不循环重启。已通过低余额边界、重置与周额度约束、有记录账号失败后转向无记录 Business、取消、冷却及重启后继续的模拟回归；未切换真实账号进行耗尽测试。
+
+## 0.1.33：直接登录并添加账号
+
+账号页新增“登录并添加账号”，通过已安装 Codex 的[官方浏览器登录接口](https://learn.chatgpt.com/docs/app-server)打开系统浏览器。选择账号并完成官方验证后自动加密导入，无需退出当前 Codex，也不会切换当前账号。支持取消、重新打开登录页及五分钟超时；重复账号更新已有记录，当前账号保留正在使用的凭证。
+
+登录程序使用独立临时 `CODEX_HOME`，不加载真实配置、会话或账号凭证，不启动模型任务。官方程序会在该目录暂存明文 `auth.json`，导入后使用既有 DPAPI / Keychain 存储加密；成功、取消、失败及下次启动时清理临时目录。等待登录时暂停自动切换。密码和验证码只在官方页面输入。
+
+已通过隔离导入、重复身份、加密回滚、取消、超时与界面测试；本机官方接口发起和取消实测成功，原凭证及配置未变。尚未代替用户完成真实账号授权；macOS 登录路径未实机验证。验证命令：`npm run account-login:validate`。
+
+## 0.1.32：修复凭证切换与恢复并发问题
+
+切换账号前先停止 Codex 桌面及其 app-server，确认退出后保存旧账号最后一次刷新凭证，再备份、写入并核验目标身份。发现其他 Codex CLI 仍运行时停止切换，不自动结束独立 CLI；关闭“切换后重启”时也必须先退出客户端。重新登录、删除当前登录沿用同样的停启顺序，备份失败不覆盖凭证。
+
+恢复任务的额度核验、目标恢复和发送继续，与手动登录操作共用队列。手动换号、重登、删除或重启会立即取消待恢复批次并保存取消状态；目标修改、接口发现和实际发送前再检查账号。目标辅助进程退出前不释放队列。
+
+导入较旧、缺少刷新日期或日期相同但凭证不同的快照，会明确警告并要求重新登录；已有重新登录标记不会因导入、重启读取元数据或原样同步文件而消失。新凭证仍先加密保存，当前登录不受导入影响。
+
+通过虚构凭证、模拟桌面/进程及本地管道测试验证旧进程刷新、恢复期间换号、同工作区不同身份、导入回退和正常恢复。未用真实账号执行换号或耗尽测试；无法给其他程序强制施加全局文件锁，也不承诺平台风控结果。
+
+## 0.1.31：账号额度总览隐藏邮箱
+
+“全部账号额度总览”标题旁新增眼睛按钮，点击后用“账号 1、账号 2……”隐藏该区域的账号名称，再次点击恢复。显示偏好保存在本机，刷新和重启后保持；仅影响总览区域。
+
+## 0.1.30：紧凑切换提醒与恢复后打开任务
+
+自动切换提醒缩为 320 × 112 小卡片，与浮窗配色一致，保留 15 秒倒计时、取消按钮和 Esc 取消。账号与任务数量移至悬停说明，移除大段正文。
+
+确认原任务出现新的继续轮次后，通过 Codex 的 `navigate_to_codex_page` 打开该任务。批量恢复只打开首个确认恢复的任务一次；跳转失败或接口不支持不影响继续，不重复发送指令，并提示可手动打开。已验证紧凑窗口渲染、倒计时和取消、批量跳转去重及失败隔离，并实测本机任务跳转接口成功。
+
+## 0.1.29：修复 Plus 用量上限漏检
+
+兼容官方失败轮次中只有 `You’ve hit your usage limit. Upgrade to Pro (...)` 完整原生提示、没有错误码的情况。自动切换由失败轮次触发，不等待浮窗预估到 0%；已用 99% 的本地快照不会挡住额度耗尽识别。仍保留其他任务运行时等待、15 秒可取消倒计时、换号后额度校验和防重复继续。
+
+使用本机真实错误形态的模拟回归，已验证剩余 1% 时触发倒计时、切换和继续；99% 快照本身、已完成或手动中断的轮次、历史错误、工具文本和非额度错误均不会触发。未通过再次耗尽真实账号验证完整生产链路。
+
+## 0.1.28：区分本地用量与官方累计
+
+用量页将“当前账号”统计范围改为“本次本地”，在数字上方显示最近切换时间；“全部本地”明确包含不同账号。未登录、未导入或缺少切换起点时，本次本地用量显示未知，不再把本机全部历史归给当前账号。
+
+官方个人面板的累计 Token 来自服务器 `stats.lifetime_tokens`，带有 `stats_as_of` 统计截止日期；本地事件合计不等于该累计值。现有官方个人统计缓存没有账号标识，不能仅凭当前登录状态或缓存时间自动归属账号。本版仍保持本地读取，不增加官方联网查询。
+
+## 0.1.27：用量读取提速与统计修正
+
+当前账号统计跳过切换前已停止更新的会话文件；增长中的 JSONL 日志保留解析进度，只解析追加内容。未写完的行会在补齐后重新读取，文件截断、替换或检测到改写时重新解析，压缩归档保留完整读取。并发刷新共用同一次读取，缓存失效后旧请求不会回填新缓存。
+
+独立会话中碰巧相同的时间戳和 Token 计数不再被误去重；同一会话副本及派生任务的复制历史仍去重。项目用量按事件发生时的目录归属，快速切换“当前账号 / 全部”不会被较慢的旧响应覆盖。
+
+本机约 2.8 GB、240 个日志文件的读取测试中，当前账号首次用量读取从约 12.7 秒降到 0.11 秒，相关文件为 5 个；约 12 MB 测试日志追加读取从 30 毫秒降到 1 毫秒。固定事件样本的新旧 Token 各项合计一致，并通过增量、并发、压缩、去重和统计范围回归验证。耗时随本地数据变化；“全部”首次读取仍需扫描历史日志，统计仍受本地日志覆盖范围限制。
+
+## 0.1.26：修复工作区额度耗尽漏检与连接提示
+
+兼容 Codex 在工作区额度耗尽时只返回 `Your workspace is out of credits. Add credits to continue.`、不附带错误码的失败任务。仍只处理开启之后的最新失败轮次，普通网络错误、工具报错、手动停止和已经继续过的历史失败不会触发换号。
+
+本地接口断线后，只读查询会重新发现接口并重试一次；发送继续指令不自动重试。成功完成下一次检查后清除过时的连接失败提示。已验证真实错误形态、模拟切换和恢复、断线重连及防重复发送，并只读连通本机 Codex；未以真实账号再次耗尽额度来验证完整换号链路。
+
 ## 0.1.25：目标模式恢复
 
 现有“额度耗尽后自动切换并继续”开关也支持目标模式。读取 Codex 本地目标状态，识别开启后新增的 `usageLimited` 中断；即使中断发生在两个目标轮次之间，也可加入同一批恢复。手动暂停、阻塞、已完成、目标自身预算用完，以及开启前的历史中断均不自动恢复。其他正在推进的目标也会阻止重启，包含两个轮次之间的短暂空闲。
@@ -26,7 +435,7 @@
 
 在账号页的“切换策略”中开启“额度耗尽后自动切换并继续任务”，默认关闭。开启后每 15 秒检查本机 Codex 任务，只处理开启后明确返回 `usageLimitExceeded` 的失败任务；普通限流、网络错误、工具报错、手动停止和正常结束不会触发。
 
-先按上述套餐优先级分组，同组按会话/周额度中较低的预计剩余百分比从高到低选账号，相同则优先下次重置更早的账号。排除当前账号、需要重新登录的账号、7 天以前的快照、未知窗口及尚未重置且余额为零的账号。已过重置时间的窗口可按预计恢复额度参与候选，但不视为实际余额；切换后由 Codex 核验当前账号和可用额度，实际仍耗尽则尝试下一个账号。已确认耗尽的账号 30 分钟内不再尝试。百分比不代表不同套餐的绝对 token 数。
+先按上述套餐优先级分组，同组按会话/周额度中较低的预计剩余百分比从高到低选账号，相同则优先下次重置更早的账号。排除当前账号、需要重新登录的账号、7 天以前的额度记录及尚未重置且余额不超过 2% 的账号。Business 缺失或未知额度可作为最后候选，其他套餐不凭未知额度尝试。已过重置时间的窗口可按预计恢复额度参与候选，但不视为实际余额；切换后由 Codex 核验当前账号和可用额度，实际仍耗尽则尝试下一个账号。已确认耗尽的账号 30 分钟内不再尝试。百分比不代表不同套餐的绝对 token 数。
 
 自动恢复会备份并切换本地凭证、重启 Codex、核对新账号和可用额度，再向原任务发送一条可见的继续指令，沿用任务模型与权限。自动恢复需要重启，不受手动“切换后重启”选项控制；其他本地任务仍在运行时暂缓执行。恢复记录保存在本机 `auto-recovery.json`，重复错误不会重复发送；发送结果不确定时要求人工检查。关闭开关会取消后续恢复步骤，已经开始的任务会继续运行。
 
@@ -112,315 +521,4 @@ Windows 安装包为 `.codexauth` 加密凭证安装独立的 ICO 文件，并�
 - 当前账号统计从最近一次切换起，不能据此推断其他设备用量。首次完整统计可能较慢，后续复用未变化文件的解析结果。
 - 新增验证：`npm run local-data:validate`。
 
-
-![CodexAuth Switch 横版海报](docs/assets/readme-poster.png)
-
-[English README](README.en.md) | 中文说明
-
-CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多个 Codex App 登录账号之间快速切换。
-
-它适合同时使用多个 OpenAI / Codex App 账号的人：先把每个账号的本地登录状态保存下来，之后通过这个工具切换当前生效的 Codex 登录。应用只操作本机文件，额度和用量来自本地 Codex 日志解析，不请求远程额度接口，也不会上传 Codex 会话历史。
-
-一句话定位：**CodexAuth Switch 是一个本地优先的 Codex App 多账号切换工具，支持 `auth.json` 快照管理、Windows DPAPI / macOS Keychain 加密、额度查看和 token 用量统计。**
-
-> 这是非官方项目，与 OpenAI 无官方关联。
-
-## 适合谁
-
-- 想在 Windows 或 macOS 上管理多个 Codex App 登录账号。
-- 想快速切换 OpenAI Codex / Codex App 当前账号。
-- 想安全保存和恢复本地 `~/.codex/auth.json` 登录快照。
-- 想查看 Codex 本地会话额度、周额度、剩余重置次数、token 用量和最近会话。
-- 想坚持本地日志估算，不把 token、账号信息或会话历史发到远程额度接口。
-
-## 常见搜索词
-
-Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账号切换工具、Codex auth.json 切换、Codex 本地登录管理、Codex 额度查看、Codex token 用量统计、Codex Windows macOS 桌面工具、Codex DPAPI Keychain 加密、Codex 本地预估、Codex 本地额度估算、Codex 本地历史只读。
-
-## 功能
-
-- 导入当前 Codex App 登录状态。
-- 保存多个本地账号快照。
-- 通过替换 `~/.codex/auth.json` 切换当前 Codex 登录。
-- Windows 使用 DPAPI、macOS 使用 Keychain 支持的系统安全存储加密账号凭据，仅当前系统用户可解密。
-- 切换、重新登录、删除当前账号前自动备份原始 `auth.json`。
-- 提供主窗口、系统托盘菜单和悬浮快捷窗。
-- 从本地 Codex 日志读取额度和 token 使用情况。
-- 使用本地 token 事件索引辅助额度预估，减少重复扫描并提升刷新稳定性。
-- 显示会话额度、周额度和各账号保存的剩余重置次数；缺失或过期的数据会明确标注。
-- 渲染页面禁用网络请求；额度读取路径也保持本地-only。
-
-## 界面截图
-
-| 主窗口 | 悬浮快捷窗 |
-| --- | --- |
-| ![CodexAuth Switch 主窗口截图](docs/assets/screenshot-dashboard.png) | ![CodexAuth Switch 悬浮快捷窗截图](docs/assets/screenshot-widget.png) |
-
-## 安全边界
-
-CodexAuth Switch 的设计目标是把影响范围限制在本机登录文件和本应用自己的存储目录内。
-
-### 会写入的文件
-
-- `~/.codex/auth.json`
-  - Codex App 当前使用的本地登录文件。
-  - 切换账号时，应用会用已保存的账号快照替换这个文件。
-- `~/.codex/config.toml`
-  - 自动确保顶层配置包含 `cli_auth_credentials_store = "file"`，让新版 Codex 继续使用可切换的 `auth.json` 文件凭据。
-  - 修改前会在同目录生成带时间戳的 `config.toml.codexauth-backup-*` 备份。
-- 本应用的账号元数据：Windows 为 `%APPDATA%\codex-auth-switcher\accounts.json`；macOS 为 `~/Library/Application Support/codex-auth-switcher/accounts.json`。
-- 加密账号凭据快照：Windows 为 `%APPDATA%\codex-auth-switcher\accounts\*.dpapi`；macOS 为 `~/Library/Application Support/codex-auth-switcher/accounts/*.keychain`。
-- 操作当前账号前的加密备份：Windows 为 `%APPDATA%\codex-auth-switcher\backups\*.dpapi`；macOS 为 `~/Library/Application Support/codex-auth-switcher/backups/*.keychain`。
-
-### 只读取的文件
-
-- `~/.codex/auth.json`
-  - 用于导入当前登录、识别账号身份。
-- `~/.codex/sessions/**/rollout-*.jsonl`
-  - 用于本地统计用量和额度快照。
-- `~/.codex/session_index.jsonl`
-  - 存在时用于补充本地会话元数据。
-- `~/.codex/logs_2.sqlite`
-  - 以只读方式打开，用于读取 Codex 本地写入的额度事件。
-
-### 不会做的事
-
-- 不修改 Codex 会话历史。
-- 不删除 `~/.codex/sessions`。
-- 不写入 `logs_2.sqlite`。
-- 不上传 token、账号信息、会话日志或用量记录。
-- 不使用当前 access token 请求远程额度接口。
-- 不自行刷新 OpenAI token。
-- 不调用远程额度接口。
-
-会影响 Codex App 当前运行状态的功能包括：切换账号、重新登录、删除当前账号、重启 Codex App，以及主动开启的自动切换与续任务。这些操作可能会更新 `config.toml`、替换或移除当前 `auth.json`，并重启 Codex App，让新的本地登录状态生效。自动续任务还会通过 Codex 本地接口校验当前账号额度，并向原任务发送继续指令；相关服务请求由 Codex 自身执行。
-
-## 实现方法
-
-### 账号识别
-
-导入当前登录时，应用会读取 `~/.codex/auth.json`，并验证它是否是 Codex App 的 ChatGPT 登录格式。
-
-应用会在本地解析 JWT payload，提取邮箱、用户 ID、workspace/account ID 等字段。账号匹配不会只依赖单个字段，而是尽量组合个人身份和工作区身份，因为同一个人可能加入多个工作区，同一个工作区也可能包含多个成员。
-
-### 凭据保存
-
-保存账号时，应用不会明文存储 `auth.json`：Windows 使用 DPAPI，macOS 使用 Electron `safeStorage` 与系统 Keychain。
-
-Windows 使用 `DataProtectionScope.CurrentUser`；macOS 使用当前用户的 Keychain。
-
-这表示加密后的账号快照绑定到当前操作系统用户，其他用户、其他机器或不同操作系统不能直接解密。
-
-账号快照存储在：
-
-- Windows：`%APPDATA%\codex-auth-switcher\accounts`
-- macOS：`~/Library/Application Support/codex-auth-switcher/accounts`
-
-操作当前登录前的备份存储在：
-
-- Windows：`%APPDATA%\codex-auth-switcher\backups`
-- macOS：`~/Library/Application Support/codex-auth-switcher/backups`
-
-应用不自行调用 OpenAI 刷新接口。Codex 在账号实际使用时自动刷新 access / refresh token；CodexAuth Switch 监听当前 `auth.json` 的写回，并把新内容重新加密同步到对应账号快照。access token 到期本身不代表登录失效，只有 Codex 明确无法刷新时才需要重新登录。
-
-加密备份保留最新 60 份；超过一小时的原子写临时残留会在启动时清理，避免长期切换和统计产生无上限缓存。
-
-### 账号切换流程
-
-切换账号时，应用会执行以下步骤：
-
-1. 读取当前 `~/.codex/auth.json`。
-2. 如果当前登录存在，先生成当前平台安全存储加密的备份。
-3. 解密目标账号的本地快照。
-4. 校验目标快照是否是有效的 Codex 登录文件。
-5. 先写入临时文件。
-6. 再通过原子重命名替换 `~/.codex/auth.json`。
-7. 根据用户选择重启 Codex App。
-
-使用临时文件加原子替换，是为了避免 Codex App 读到写入一半的 `auth.json`。
-
-Windows 会结束属于 Codex 安装目录的桌面进程组并重新启动应用；macOS 会识别当前 `ChatGPT` / 旧版 `Codex` 应用进程，等待退出后通过 Launch Services 重新启动。
-
-### 重新登录流程
-
-如果某个已保存账号的 refresh token 失效，应用可以发起重新登录流程：
-
-1. 备份当前 `auth.json`。
-2. 删除当前本地 `auth.json`。
-3. 重启 Codex App。
-4. 用户在 Codex App 里走官方登录流程。
-5. Codex App 写入新的 `auth.json` 后，CodexAuth Switch 自动监听并保存到对应账号。
-
-这个过程不绕过官方登录，也不代替官方登录。真正的登录仍然发生在 Codex App 内。
-
-### 额度读取模式
-
-额度面板采用本地预估模式，只读取 Codex App 已经写到本机的日志，不请求 `chatgpt.com` 或其他远程额度接口。
-
-### 本地额度和用量统计
-
-本地预估模式读取以下数据：
-
-- session JSONL 文件里的 `codex.rate_limits`。
-- 自动发现最新 `logs_N.sqlite` 里的 `codex.rate_limits` 和 usage-limit 记录。
-- session 文件里的 `token_count` 事件。
-- 按文件大小和修改时间缓存解析结果，对完整日志事件去重；账号元数据只保存额度快照和各模型、服务档位独立的校准样本。旧版 `local-token-ledger.json` 不再参与统计。
-
-应用会监听本地日志文件变化，并用短延迟防抖刷新显示；同时用低频轮询检查 SQLite 文件更新时间，避免文件监听漏事件。
-
-额度快照只保存到本应用自己的账号元数据中，不会写回 Codex 的日志文件。
-
-多账号统计以账号最近一次切换时间为边界。跨切换时间继续运行的同一会话按相邻 Token 快照的增量归属，额度校准也只融合当前账号切入后的事件和该账号自己的历史校准，避免同套餐账号互相串数。
-
-### 额度 pace 提示
-
-应用会根据当前已用百分比、额度窗口长度和重置时间估算当前消耗速度，显示“消耗速度宽松 / 消耗速度正常 / 按当前速度会提前用完”。这只是趋势提示，不代表下一次对话会准确消耗多少额度。
-
-### 网络隔离
-
-Electron 窗口启用了以下安全配置：
-
-```js
-contextIsolation: true
-nodeIntegration: false
-sandbox: true
-webSecurity: true
-```
-
-页面 CSP 禁止网络连接：
-
-```html
-connect-src 'none'
-```
-
-主进程还通过 Electron `webRequest.onBeforeRequest` 拦截并取消以下出站请求：
-
-```text
-http://
-https://
-ws://
-wss://
-```
-
-这些限制用于确保渲染页面保持本地工具属性，避免账号信息或本地历史被上传。额度读取同样保持本地-only。
-
-例外是用户主动点击的 GitHub 更新检查：主进程使用独立 HTTPS 请求访问固定的公开仓库地址。只接受本仓库当前版本对应的安装包链接，并通过系统浏览器打开；不读取 GitHub 登录信息或 Codex 凭证。
-
-## 使用方法
-
-### 安装依赖
-
-```powershell
-npm install
-```
-
-### 启动应用
-
-```powershell
-npm start
-```
-
-Windows 本地隐藏调试启动：
-
-```powershell
-npm run dev:hidden
-```
-
-### 导入账号
-
-1. 打开 Codex App，并登录第一个账号。
-2. 打开 CodexAuth Switch。
-3. 点击导入当前 Codex 登录。
-4. 回到 Codex App，退出并登录另一个账号。
-5. 再回到 CodexAuth Switch，继续导入当前登录。
-6. 重复以上步骤，保存所有需要切换的账号。
-
-### 切换账号
-
-1. 在 CodexAuth Switch 中选择一个已保存账号。
-2. 点击切换。
-3. 如果 Codex App 仍显示旧账号，重启 Codex App。
-
-应用会把新版 Codex 固定为文件凭据模式，并在启用“切换后重启”时完整重启桌面应用；新账号会在重新启动后生效。
-
-### 重新登录已保存账号
-
-当 Codex 提示 refresh token 无法刷新，或某个保存账号已经失效时，使用重新登录功能。
-
-应用会清理当前本地登录并重启 Codex App。你只需要在 Codex App 里正常完成官方登录，新的 `auth.json` 写入后会被 CodexAuth Switch 捕获并保存。
-
-## 开发
-
-### 语法检查
-
-```powershell
-npm run lint
-```
-
-### 校验额度逻辑
-
-```powershell
-npm run local-data:validate
-```
-
-这个命令使用隔离测试日志，检查 Token 增量、重复和分叉、账号边界、额度池、周窗口、重置次数来源、估算校准及账号恢复。`quota:validate` 保留用于旧价格权重算法的历史回放，不作为当前算法的验收。
-
-### 打包 Windows 安装器
-
-```powershell
-npm run pack:win
-```
-
-### 打包 macOS DMG
-
-请在 macOS 上运行：
-
-```bash
-npm run pack:mac
-```
-
-命令会同时生成 Intel (`x64`) 与 Apple Silicon (`arm64`) DMG。
-
-安装包输出到：
-
-```text
-release/
-```
-
-`release` 目录是本地构建产物，默认不提交到 Git。
-
-## 项目结构
-
-```text
-src/main.js                         Electron 主进程，本地文件访问、账号切换、额度逻辑
-src/preload.js                      安全 IPC bridge
-src/ui/index.html                   主窗口页面
-src/ui/app.js                       主窗口渲染逻辑
-src/ui/widget.html                  悬浮快捷窗页面
-src/ui/widget.js                    悬浮快捷窗渲染逻辑
-scripts/generate-icon.js            本地图标生成
-scripts/start-dev-hidden.ps1        隐藏调试启动脚本
-scripts/validate-quota-estimate.js  额度逻辑回放校验脚本
-QUOTA-LOGIC.md                      额度估算逻辑说明
-```
-
-## 限制
-
-- 支持 Windows 与 macOS，暂不支持 Linux。
-- Windows 与 macOS 的加密快照绑定各自系统用户，不能跨机器或跨平台直接复制使用。
-- 目标是 Codex App 本地登录切换，不是 Codex CLI-only 工作流。
-- 本地预估模式来自本地日志解析，属于本地近似展示。
-- Codex 没有写入新的本地 rate-limit 记录时，额度快照可能暂时不更新。
-- 不要跨机器或跨系统用户共享已保存的凭据快照。
-
-## Release
-
-Windows 安装包以及 Intel / Apple Silicon macOS DMG 会随 GitHub Release 上传。当前安装包没有商业代码签名或 Apple 公证，操作系统可能显示安全提醒。
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
-
-## 使用提醒
-
-请只保存和切换你自己拥有或被授权使用的账号。不要把 `auth.json`、加密快照、备份文件分享给其他人。
+</details>

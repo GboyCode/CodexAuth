@@ -3,8 +3,12 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("codexAuth", {
   getVersion: () => ipcRenderer.invoke("app:version"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
+  openAppLink: (link) => ipcRenderer.invoke("app:open-link", link),
   getState: () => ipcRenderer.invoke("state:get"),
   importCurrent: (displayName) => ipcRenderer.invoke("account:import-current", displayName),
+  loginAccount: (displayName) => ipcRenderer.invoke("account:login-start", displayName),
+  cancelAccountLogin: () => ipcRenderer.invoke("account:login-cancel"),
+  openAccountLogin: () => ipcRenderer.invoke("account:login-open"),
   exportPortable: (password, scope = "current") => ipcRenderer.invoke("account:export-portable", password, scope),
   selectPortable: () => ipcRenderer.invoke("account:select-portable"),
   cancelPortable: (selectionId) => ipcRenderer.invoke("account:cancel-portable", selectionId),
