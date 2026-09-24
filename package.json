@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -38,7 +38,8 @@
     "platform:validate": "node scripts/validate-platform-support.js",
     "quota:validate": "node scripts/validate-quota-estimate.js",
     "usage:validate": "node scripts/validate-usage-scope.js",
-    "icon:app": "electron scripts/generate-icon.js",
+    "icon:app": "electron scripts/generate-icon.js && node scripts/validate-icon-assets.js",
+    "icon:validate": "electron scripts/validate-icon-rendering.js --force-device-scale-factor=1 && electron scripts/validate-icon-rendering.js --force-device-scale-factor=2",
     "icon:win": "npm run icon:app",
     "sidebar:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\generate-installer-sidebar.ps1",
     "pack:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:app && npm run sidebar:win && node scripts/prepare-builder.js && electron-builder --win nsis --x64 --publish never",

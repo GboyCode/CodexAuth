@@ -12,9 +12,9 @@ CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多�
 
 > 这是非官方项目，与 OpenAI 无官方关联。
 
-**最新版本：[v0.1.36](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.36)** · [更新说明](docs/releases/v0.1.36.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
+**最新版本：[v0.1.37](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.37)** · [更新说明](docs/releases/v0.1.37.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
 
-本版新增无需退出当前账号的官方登录入口，完善额度中断恢复和 Business 候选筛选，加快本地用量读取，并增加凭证并发保护、邮箱隐藏及侧栏更新入口。
+v0.1.37 修复 GitHub 安装包中图标拉长、底部裁切的问题，新增不同屏幕缩放下的图标生成与产物校验。保留无需退出当前账号的官方登录、额度中断恢复、Business 候选筛选、本地用量统计和邮箱隐藏等功能。
 
 ## 适合谁
 

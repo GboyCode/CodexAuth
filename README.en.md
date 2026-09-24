@@ -12,9 +12,9 @@ One-line positioning: **CodexAuth Switch is a local-first Codex App multi-accoun
 
 > This is an unofficial project and is not affiliated with OpenAI.
 
-**Latest: [v0.1.36](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.36)** · [Release notes](docs/releases/v0.1.36.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
+**Latest: [v0.1.37](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.37)** · [Release notes](docs/releases/v0.1.37.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
 
-This release adds sign-in without logging out of the active account, improves quota recovery and Business fallback selection, speeds up local usage reads, and adds credential race protection, email hiding, and sidebar update links.
+v0.1.37 fixes stretched and clipped icons in GitHub installers and adds rendering and artifact checks across display scales. It retains official sign-in without logging out, quota recovery, Business fallback selection, local usage statistics, email hiding, and sidebar update links.
 
 ## Who It Is For
 

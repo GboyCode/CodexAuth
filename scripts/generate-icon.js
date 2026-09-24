@@ -11,6 +11,9 @@ function iconEntrySize(size) {
 }
 
 function buildDib(size, bitmap) {
+  if (bitmap.length !== size * size * 4) {
+    throw new Error(`Icon bitmap must be exactly ${size} x ${size} pixels.`);
+  }
   const header = Buffer.alloc(40);
   const pixels = Buffer.alloc(size * size * 4);
   const maskStride = Math.ceil(size / 32) * 4;
@@ -71,73 +74,20 @@ function buildIco(images) {
 }
 
 async function renderSvg(source, size, padding = 0) {
-  const svg = await fs.readFile(source, "utf8");
-  const imageSize = size - padding * 2;
-  const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <style>
-    html, body { width: ${size}px; height: ${size}px; margin: 0; overflow: hidden; background: transparent; }
-    img { display: block; width: ${imageSize}px; height: ${imageSize}px; margin: ${padding}px; }
-  </style>
-</head>
-<body>
-  <img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}" alt="" />
-</body>
-</html>`;
-  const win = new BrowserWindow({
-    width: size,
-    height: size,
-    show: false,
-    frame: false,
-    transparent: true,
-    webPreferences: {
-      offscreen: true,
-      sandbox: true,
-    },
-  });
-  try {
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    return await win.webContents.capturePage();
-  } finally {
-    win.destroy();
-  }
+  return renderIcon(source, size, { padding });
 }
 
 async function renderTaskbarIcon(foregroundSource, size) {
+  return renderIcon(foregroundSource, size, { taskbar: true });
+}
+
+async function renderIcon(foregroundSource, size, { padding = 0, taskbar = false } = {}) {
   const svg = await fs.readFile(foregroundSource, "utf8");
-  const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <style>
-    html, body { width: ${size}px; height: ${size}px; margin: 0; overflow: hidden; background: transparent; }
-    .bg {
-      position: absolute;
-      inset: 0;
-      border-radius: 23%;
-      background: white;
-    }
-    img {
-      position: absolute;
-      inset: 0;
-      display: block;
-      width: ${size}px;
-      height: ${size}px;
-      transform: scale(1.16);
-      transform-origin: center;
-    }
-  </style>
-</head>
-<body>
-  <div class="bg"></div>
-  <img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}" alt="" />
-</body>
-</html>`;
+  // Canvas dimensions are independent of the window, display size and DPI.
+  // capturePage() can silently crop a large window to a CI runner's work area.
   const win = new BrowserWindow({
-    width: size,
-    height: size,
+    width: 128,
+    height: 128,
     show: false,
     frame: false,
     transparent: true,
@@ -147,8 +97,31 @@ async function renderTaskbarIcon(foregroundSource, size) {
     },
   });
   try {
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    return await win.webContents.capturePage();
+    await win.loadURL("data:text/html;charset=utf-8,<!doctype html><meta charset=utf-8>");
+    const dataUrl = await win.webContents.executeJavaScript(`(async () => {
+      const size = ${JSON.stringify(size)};
+      const image = new Image();
+      image.src = ${JSON.stringify(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`)};
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = size;
+      const context = canvas.getContext("2d");
+      if (${JSON.stringify(taskbar)}) {
+        context.fillStyle = "white";
+        context.beginPath();
+        context.roundRect(0, 0, size, size, size * 0.23);
+        context.fill();
+      }
+      const inset = ${JSON.stringify(taskbar ? -size * 0.08 : padding)};
+      context.drawImage(image, inset, inset, size - inset * 2, size - inset * 2);
+      return canvas.toDataURL("image/png");
+    })()`);
+    const image = nativeImage.createFromDataURL(dataUrl);
+    const dimensions = image.getSize();
+    if (image.isEmpty() || dimensions.width !== size || dimensions.height !== size) {
+      throw new Error(`Icon rendering failed: expected ${size} x ${size} pixels.`);
+    }
+    return image;
   } finally {
     win.destroy();
   }
@@ -214,7 +187,10 @@ async function main() {
   );
 }
 
-app.whenReady()
+module.exports = { renderSvg, renderTaskbarIcon, buildDib, buildIco };
+
+// Electron loads its entry script through its bootstrap rather than require.main.
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) app.whenReady()
   .then(main)
   .catch((error) => {
     console.error(error);
