@@ -1,0 +1,120 @@
+/* Liquid Glass-inspired in-app material. Backdrop blur samples web content,
+   not other applications or the desktop behind a transparent Electron window. */
+:root {
+  --glass-fill: rgba(255, 255, 255, 0.76);
+  --glass-line: rgba(255, 255, 255, 0.92);
+  --glass-blur: blur(20px) saturate(1.15);
+  --glass-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 #18181b05, 0 0 0 1px #18181b05, 0 8px 24px -18px #18181b38;
+}
+
+/* A quiet neutral backdrop gives translucent layers some depth. */
+body:has(.shell) {
+  background-color: var(--paper);
+  background-image:
+    radial-gradient(ellipse 65% 360px at 92% 330px, #dcdce36b, transparent),
+    radial-gradient(ellipse 70% 420px at 8% 560px, #ffffffd9, transparent);
+}
+
+.topbar, .confirm-dialog, .info-tip-content, .settings-panel, .account-quota-popover {
+  border-color: var(--glass-line);
+  background: linear-gradient(145deg, #ffffff8c, #ffffff26), var(--glass-fill);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.confirm-dialog { box-shadow: var(--glass-shadow), 0 24px 80px #18181b26; }
+.confirm-dialog::backdrop { background: #18181b24; backdrop-filter: blur(5px); }
+.info-tip-content, .settings-panel, .account-quota-popover { --glass-fill: rgba(255, 255, 255, 0.88); }
+
+.page-tabs, .scope-tabs, .mode-switch {
+  border-color: #ffffffcc;
+  background: linear-gradient(180deg, #e8e8ed80, #f4f4f580);
+  box-shadow: inset 0 1px 3px #18181b08, 0 1px 0 #fff;
+  backdrop-filter: blur(12px);
+}
+.page-tab.active, .scope-tab.active, .mode-switch-btn.active {
+  background: linear-gradient(160deg, #fffffffa, #ffffffb3);
+  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px #ffffffb3, 0 2px 6px #18181b14;
+}
+
+.ghost-btn, .icon-btn, .account-expand-cue, .account-action:not(.primary):not(.danger), .about-update-btn {
+  background: linear-gradient(165deg, #ffffffed, #eeeef2b3);
+  box-shadow: inset 0 1px 0 #fff, inset 0 0 0 1px #18181b08, 0 1px 2px #18181b05;
+}
+.primary-btn, .account-action.primary, .quick-actions .primary-action, .account-row button.primary, .cancel {
+  background: linear-gradient(165deg, #5b5b60eb, #29292ff5 45%, #18181bf5);
+  box-shadow: inset 0 1px 0 #ffffff52, inset 0 0 0 1px #ffffff12, 0 1px 2px #0000001f, 0 3px 8px #00000012;
+}
+.status-panel:first-child {
+  background: radial-gradient(ellipse at 15% 0, #ffffff1c, transparent 58%), var(--accent-gradient);
+  box-shadow: inset 0 1px 0 #ffffff38, 0 4px 14px -8px #18181b40;
+}
+
+.widget {
+  border-color: rgba(255, 255, 255, calc(0.78 * var(--widget-alpha)));
+  background:
+    radial-gradient(ellipse at 3% 0, rgba(255, 255, 255, calc(0.6 * var(--widget-alpha))), transparent 58%),
+    linear-gradient(145deg, rgba(255, 255, 255, var(--widget-alpha)), rgba(235, 235, 240, var(--widget-alpha)));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, var(--widget-alpha)), inset 0 0 0 1px rgba(24, 24, 27, calc(0.05 * var(--widget-alpha))), 0 24px 70px -42px rgba(24, 24, 27, calc(0.22 * var(--widget-alpha)));
+}
+.widget .quota-card, .widget .accounts {
+  border-color: rgba(255, 255, 255, calc(0.85 * var(--panel-alpha)));
+  background: linear-gradient(145deg, rgba(255, 255, 255, calc(0.72 * var(--panel-alpha))), rgba(255, 255, 255, calc(0.4 * var(--panel-alpha))));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, var(--panel-alpha)), 0 0 0 1px rgba(24, 24, 27, calc(0.025 * var(--panel-alpha)));
+}
+.head-actions button, .section-title button, .account-row button:not(.primary), #restartBtn:not(.confirming) {
+  border-color: #ffffffa6;
+  background: linear-gradient(155deg, #ffffffed, #eaeaefb3);
+  box-shadow: inset 0 1px 0 #fff, inset 0 0 0 1px #18181b06;
+}
+.head-actions button.active { background: var(--accent-gradient); }
+.head-actions button.active:hover { background: var(--accent-hover); }
+.widget .account-row button:disabled { color: var(--muted); background: #ffffff73; box-shadow: none; }
+
+body:has(.countdown-row) > main {
+  border-color: #ffffffd9;
+  background: linear-gradient(135deg, #fffffff5, #f2f2f6f2);
+  box-shadow: inset 0 1px 0 #fff, inset 0 0 0 1px #18181b0d;
+}
+
+/* A pointer-following highlight is confined to the rim, clear of text. */
+.glass-tracked { position: relative; }
+.glass-tracked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(160px circle at var(--glass-x, 50%) var(--glass-y, 0%), #fff, #ffffff1a 55%, transparent 75%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: var(--glass-active, 0);
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .topbar, .confirm-dialog, .info-tip-content, .settings-panel, .account-quota-popover { background: #fff; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .glass-tracked::after { display: none; }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .topbar, .confirm-dialog, .info-tip-content, .settings-panel, .account-quota-popover,
+  .page-tabs, .scope-tabs, .mode-switch, .widget, .widget .quota-card, .widget .accounts,
+  body:has(.countdown-row) > main {
+    background: #fff;
+    border-color: var(--line);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .glass-tracked::after { display: none; }
+}
+@media (forced-colors: active) {
+  .topbar, .confirm-dialog, .info-tip-content, .settings-panel, .account-quota-popover,
+  .page-tabs, .scope-tabs, .mode-switch, .widget, .widget .quota-card, .widget .accounts,
+  body:has(.countdown-row) > main { background: Canvas; border-color: CanvasText; backdrop-filter: none; }
+  .glass-tracked::after { display: none; }
+}

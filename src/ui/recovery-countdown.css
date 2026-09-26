@@ -1,17 +1,16 @@
-:root { color-scheme: light; }
 * { box-sizing: border-box; }
-body { margin: 0; overflow: hidden; background: transparent; color: #202533; font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif; -webkit-font-smoothing: antialiased; }
-main { height: 100vh; padding: 16px; border: 1px solid #e7ebf1; border-radius: 14px; background: #fff; -webkit-app-region: drag; user-select: none; }
+body { margin: 0; overflow: hidden; background: transparent; color: var(--ink); font: 13px/1.5 var(--font-ui); -webkit-font-smoothing: antialiased; }
+main { height: 100vh; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(145deg, #fff, #f7f7f8); box-shadow: inset 0 1px 0 #fff; -webkit-app-region: drag; user-select: none; }
 header { display: flex; align-items: center; gap: 8px; -webkit-app-region: drag; }
-header img { width: 22px; height: 22px; }
+header img { width: 22px; height: 22px;  }
 h1 { margin: 0; font-size: 13px; font-weight: 600; }
-header > span { margin-left: auto; color: #8590a3; font-size: 11px; }
-.countdown-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+header > span { margin-left: auto; color: var(--muted); font-size: 11px; }
+.countdown-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; animation: surface-in 240ms var(--ease-out); }
 .timer { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
-.timer strong { min-width: 39px; color: #5865f5; font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; letter-spacing: -1px; }
-.timer > span { color: #778197; font-size: 12px; white-space: nowrap; }
-.cancel { flex-shrink: 0; height: 34px; padding: 0 12px; border: 1px solid #e4e8f0; border-radius: 9px; background: #f6f8fc; color: #46516a; font: inherit; font-size: 12px; cursor: pointer; -webkit-app-region: no-drag; transition: background 120ms, border-color 120ms; }
-.cancel:hover { border-color: #ccd4f7; background: #edf0ff; color: #4f5ee1; }
-.cancel:active { background: #e3e8ff; }
+.timer strong { min-width: 39px; color: var(--ink); font-size: 34px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; letter-spacing: -1px; }
+.timer > span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.cancel { flex-shrink: 0; height: 34px; padding: 0 12px; border: 1px solid #27272a; border-radius: 9px; background: var(--accent-gradient); color: #fff; box-shadow: var(--shadow-button); font: inherit; font-size: 12px; cursor: pointer; -webkit-app-region: no-drag; transition: background 160ms ease, transform 180ms var(--ease-press); }
+.cancel:hover { background: var(--accent-hover); }
+.cancel:not(:disabled):active { transform: scale(0.96); }
 .cancel:disabled { opacity: .6; cursor: default; }
-.cancel:focus-visible { outline: 2px solid #6072ff; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .cancel:not(:disabled):active { transform: none; } }

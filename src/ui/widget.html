@@ -9,7 +9,9 @@
     />
     <title>Codex Quick View</title>
     <link rel="icon" href="./assets/codex-color.ico" sizes="any" />
+    <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./widget.css" />
+    <link rel="stylesheet" href="./glass.css" />
   </head>
   <body>
     <main class="widget">
@@ -19,7 +21,7 @@
       </button>
       <header class="widget-head">
         <div class="brand">
-          <img class="mark" src="./assets/codex-color.png" alt="" />
+          <img class="mark" src="./assets/codex-monochrome.svg" alt="" />
           <div>
             <p class="brand-version">CodexAuth <button id="checkUpdatesBtn" class="version-btn" type="button" title="从 GitHub 检查更新"><span id="appVersion">版本…</span></button></p>
             <strong id="currentIdentity">读取中</strong>
@@ -54,10 +56,10 @@
 
       <div id="settingsPanel" class="settings-panel" hidden>
         <label class="setting-row" for="opacityRange">
-          <span>透明度</span>
-          <strong id="opacityValue">96%</strong>
+          <span>背景不透明度</span>
+          <strong id="opacityValue">98%</strong>
         </label>
-        <input id="opacityRange" type="range" min="82" max="100" value="98" />
+        <input id="opacityRange" type="range" min="0" max="100" value="98" />
       </div>
 
       <section class="quota-card">
@@ -103,5 +105,6 @@
     <script src="./shared-quota.js"></script>
     <script src="./widget.js"></script>
     <script src="./updates.js"></script>
+    <script src="./glass.js"></script>
   </body>
 </html>

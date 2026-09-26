@@ -1,19 +1,6 @@
 :root {
-  color-scheme: light;
-  --font-ui:
-    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
-    sans-serif;
-  --ink: #0f1115;
-  --muted: #667085;
-  --line: #e7ebf1;
-  --soft: #f5f7fa;
-  --blue: #4f6cff;
-  --cyan: #78d3ff;
-  --violet: #a79bff;
-  --gradient: linear-gradient(135deg, #a79bff 0%, #6f8cff 46%, #3f57ff 100%);
-  --danger: #b42318;
   --widget-alpha: 0.98;
-  --panel-alpha: 0.92;
+  --panel-alpha: var(--widget-alpha);
   --control-alpha: 0.94;
 }
 
@@ -52,11 +39,11 @@ button {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(231, 235, 241, 0.92);
-  border-radius: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
   padding: 13px;
-  background: rgba(255, 255, 255, var(--widget-alpha));
-  box-shadow: 0 24px 70px -42px rgba(16, 24, 40, 0.62);
+  background: linear-gradient(160deg, rgba(255, 255, 255, var(--widget-alpha)), rgba(250, 250, 250, var(--widget-alpha)));
+  box-shadow: 0 24px 70px -42px #18181b38;
 }
 
 .dock-collapse-btn {
@@ -70,19 +57,19 @@ button {
   width: 32px;
   min-height: 76px;
   gap: 4px;
-  border: 1px solid rgba(79, 108, 255, 0.18);
+  border: 1px solid var(--line);
   border-left: 0;
   border-radius: 0 10px 10px 0;
   padding: 7px 4px;
   color: #fff;
-  background: linear-gradient(180deg, rgba(111, 140, 255, 0.96), rgba(63, 87, 255, 0.96));
-  box-shadow: 0 14px 34px -22px rgba(20, 32, 84, 0.9);
+  background: var(--accent-gradient);
+  box-shadow: 0 8px 24px #18181b24;
   transform: translateY(-50%);
   -webkit-app-region: no-drag;
 }
 
 .dock-collapse-btn:hover {
-  background: linear-gradient(180deg, rgba(126, 151, 255, 0.98), rgba(68, 92, 255, 0.98));
+  background: var(--accent-hover);
 }
 
 .dock-collapse-text {
@@ -121,6 +108,7 @@ button {
   height: 30px;
   border-radius: 8px;
   object-fit: cover;
+
 }
 
 .brand p {
@@ -140,7 +128,7 @@ button {
   display: block;
   overflow: hidden;
   max-width: 178px;
-  color: #475467;
+  color: #52525b;
   font-size: 12px;
   font-weight: 500;
   text-overflow: ellipsis;
@@ -159,10 +147,10 @@ button {
   justify-content: center;
   width: 31px;
   height: 31px;
-  border: 1px solid rgba(231, 235, 241, 0.8);
+  border: 1px solid var(--line-soft);
   border-radius: 10px;
-  color: #506078;
-  background: rgba(245, 247, 250, var(--control-alpha));
+  color: #52525b;
+  background: rgba(244, 244, 245, var(--control-alpha));
   transition:
     color 140ms ease,
     background 140ms ease,
@@ -171,9 +159,9 @@ button {
 }
 
 .head-actions button:hover {
-  color: var(--blue);
-  border-color: rgba(79, 108, 255, 0.18);
-  background: rgba(240, 244, 255, 0.96);
+  color: var(--accent);
+  border-color: var(--line);
+  background: var(--soft);
   transform: translateY(-1px);
 }
 
@@ -183,15 +171,15 @@ button {
 
 .head-actions button.active {
   color: #fff;
-  border-color: rgba(79, 108, 255, 0.12);
-  background: var(--gradient);
-  box-shadow: 0 12px 24px -18px rgba(79, 108, 255, 0.86);
+  border-color: #3f3f46;
+  background: var(--accent-gradient);
+  box-shadow: var(--shadow-button);
 }
 
 .head-actions button.active:hover {
   color: #fff;
-  border-color: rgba(79, 108, 255, 0.16);
-  background: linear-gradient(135deg, #9185ff 0%, #617eff 46%, #3950f0 100%);
+  border-color: #3f3f46;
+  background: var(--accent-hover);
 }
 
 .head-actions svg {
@@ -215,11 +203,11 @@ button {
   top: 52px;
   right: 13px;
   width: 184px;
-  border: 1px solid rgba(231, 235, 241, 0.96);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px;
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 18px 42px -28px rgba(16, 24, 40, 0.62);
+  box-shadow: 0 18px 42px -28px #18181b38;
   -webkit-app-region: no-drag;
 }
 
@@ -241,7 +229,7 @@ button {
 
 #opacityRange {
   width: 100%;
-  accent-color: var(--blue);
+  accent-color: var(--accent);
 }
 
 .quota-card,
@@ -250,7 +238,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px;
-  background: rgba(248, 250, 252, var(--panel-alpha));
+  background: rgba(250, 250, 250, var(--panel-alpha));
 }
 
 .accounts {
@@ -279,7 +267,7 @@ button {
 }
 
 .quota-line strong {
-  color: var(--blue);
+  color: var(--accent);
   font-weight: 560;
   font-variant-numeric: tabular-nums;
 }
@@ -293,7 +281,7 @@ button {
   margin-top: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: #edf1f6;
+  background: var(--accent-soft);
 }
 
 .meter span {
@@ -301,18 +289,18 @@ button {
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--blue), var(--cyan));
-  transition: width 180ms ease;
+  background: var(--meter-gradient);
+  transition: width 400ms var(--ease-out);
 }
 
 .quota-card.estimated .quota-line strong,
 .quota-card.estimated .quota-line.weekly strong {
-  color: #8b5cf6;
+  color: var(--muted);
 }
 
 .meter.estimated span,
 .account-quota-meter.estimated span {
-  background: linear-gradient(90deg, #7c3aed, #c4b5fd);
+  background: var(--meter-estimated);
 }
 
 .quota-card p {
@@ -356,7 +344,7 @@ button {
   border-radius: 8px;
   padding: 0 10px;
   color: var(--ink);
-  background: #eef1f5;
+  background: var(--soft);
   white-space: nowrap;
   transition:
     background 140ms ease,
@@ -368,7 +356,7 @@ button {
 .section-title button:hover,
 .quick-actions button:hover,
 .account-row button:hover {
-  background: #e9edf3;
+  background: #e8e8eb;
   transform: translateY(-1px);
 }
 
@@ -383,13 +371,13 @@ button {
 
 .quick-actions .primary-action {
   color: #fff;
-  background: var(--gradient);
-  box-shadow: 0 12px 24px -20px rgba(79, 108, 255, 0.9);
+  background: var(--accent-gradient);
+  box-shadow: var(--shadow-button);
 }
 
 #restartBtn {
-  color: var(--danger);
-  background: #fff1f0;
+  color: var(--ink);
+  background: var(--soft);
 }
 
 #restartBtn.confirming {
@@ -411,7 +399,7 @@ button {
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 0;
-  scrollbar-color: rgba(79, 108, 255, 0.42) transparent;
+  scrollbar-color: #a1a1aa transparent;
   scrollbar-gutter: auto;
   scrollbar-width: none;
 }
@@ -435,13 +423,13 @@ button {
 }
 
 .account-list::-webkit-scrollbar-thumb {
-  border: 2px solid rgba(248, 250, 252, 0.7);
+  border: 2px solid #fafafa;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(167, 155, 255, 0.72), rgba(79, 108, 255, 0.58));
+  background: #b4b4bc;
 }
 
 .account-list::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(167, 155, 255, 0.9), rgba(79, 108, 255, 0.75));
+  background: #8e8e98;
 }
 
 .account-row {
@@ -450,7 +438,7 @@ button {
   align-items: center;
   gap: 8px;
   min-height: var(--account-row-height);
-  border: 1px solid rgba(231, 235, 241, 0);
+  border: 1px solid transparent;
   border-radius: 10px;
   padding: 5px 7px;
   cursor: grab;
@@ -475,17 +463,17 @@ button {
 }
 
 .account-row.dragging {
-  border-color: rgba(79, 108, 255, 0.32);
-  background: rgba(233, 238, 255, 0.9);
+  border-color: #a1a1aa;
+  background: var(--soft);
   opacity: 0.42;
 }
 
 .account-row:hover,
 .account-row:focus-visible,
 .account-row.expanded {
-  border-color: rgba(79, 108, 255, 0.2);
+  border-color: var(--line);
   background: rgba(255, 255, 255, 0.68);
-  box-shadow: 0 10px 24px -22px rgba(79, 108, 255, 0.5);
+  box-shadow: var(--shadow);
 }
 
 .account-row.expanded {
@@ -520,19 +508,19 @@ button {
 
 .account-row button.primary {
   color: #fff;
-  background: var(--gradient);
-  box-shadow: 0 12px 24px -20px rgba(79, 108, 255, 0.9);
+  background: var(--accent-gradient);
+  box-shadow: var(--shadow-button);
 }
 
 .account-row button.primary:hover,
 .quick-actions .primary-action:hover {
   color: #fff;
-  background: linear-gradient(135deg, #9185ff 0%, #617eff 46%, #3950f0 100%);
+  background: var(--accent-hover);
 }
 
 .account-row button:disabled {
   color: var(--muted);
-  background: #f2f4f7;
+  background: var(--soft);
   cursor: default;
   transform: none;
   box-shadow: none;
@@ -542,16 +530,16 @@ button {
   position: fixed;
   z-index: 45;
   overflow: auto;
-  border: 1px solid rgba(214, 221, 232, 0.98);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 11px;
   color: var(--ink);
   background: rgba(255, 255, 255, 0.98);
   box-shadow:
-    0 22px 55px -32px rgba(16, 24, 40, 0.72),
+    0 22px 55px -32px #18181b52,
     0 0 0 1px rgba(255, 255, 255, 0.7) inset;
   -webkit-app-region: no-drag;
-  animation: account-popover-in 130ms ease both;
+  animation: account-popover-in 220ms var(--ease-out) both;
 }
 
 @keyframes account-popover-in {
@@ -576,9 +564,9 @@ button {
   grid-column: 1 / -1;
   display: grid;
   gap: 8px;
-  border-top: 1px solid rgba(231, 235, 241, 0.88);
+  border-top: 1px solid var(--line);
   padding-top: 8px;
-  animation: account-detail-in 130ms ease both;
+  animation: account-detail-in 200ms var(--ease-out) both;
 }
 
 @keyframes account-detail-in {
@@ -609,16 +597,16 @@ button {
 .account-quota-summary strong,
 .account-quota-line strong {
   flex: 0 0 auto;
-  color: var(--blue);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 560;
 }
 
 .account-quota-metric {
-  border: 1px solid rgba(231, 235, 241, 0.78);
+  border: 1px solid var(--line-soft);
   border-radius: 9px;
   padding: 8px;
-  background: rgba(248, 250, 252, 0.92);
+  background: #fafafa;
 }
 
 .account-quota-line span {
@@ -631,14 +619,14 @@ button {
   margin-top: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: #edf1f6;
+  background: var(--accent-soft);
 }
 
 .account-quota-meter span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--blue), var(--cyan));
+  background: var(--meter-gradient);
 }
 
 .account-quota-metric p,
@@ -656,8 +644,8 @@ button {
   margin: 0;
   padding: 7px 8px;
   border-radius: 8px;
-  color: var(--blue);
-  background: rgba(82, 110, 255, 0.06);
+  color: var(--accent);
+  background: var(--soft);
   font-size: 11px;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -675,7 +663,7 @@ button {
   border-radius: 9px;
   padding: 9px 11px;
   color: #fff;
-  background: rgba(15, 17, 21, 0.92);
+  background: #18181bf0;
   opacity: 0;
   transform: translateY(8px);
   pointer-events: none;
@@ -766,4 +754,15 @@ button {
   margin-top: 4px;
   padding-top: 0;
   border-top: 0;
+}
+
+.settings-panel:not([hidden]) { animation: surface-in 200ms var(--ease-out); transform-origin: top right; }
+:is(.quick-actions button, .account-row button, .head-actions button):not(:disabled):active { transform: scale(0.96); }
+:is(.quick-actions button, .account-row button, .head-actions button) { transition-timing-function: var(--ease-press); }
+.quota-card, .accounts { border-radius: 13px; box-shadow: inset 0 1px 0 #ffffffb3; }
+.quota-line strong { font-weight: 650; }
+.head-actions { flex-shrink: 0; }
+.account-row button:disabled { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.quick-actions button, .account-row button, .head-actions button):not(:disabled):is(:hover, :active) { transform: none; }
 }

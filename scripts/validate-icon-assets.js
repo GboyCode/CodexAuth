@@ -21,6 +21,13 @@ function validateIco(filename) {
     assert.equal(dib.readInt32LE(8), size * 2);
     assert.equal(dib.readUInt16LE(14), 32);
     assert.equal(length, 40 + size * size * 4 + Math.ceil(size / 32) * 4 * size);
+    // Packaging must use the same neutral graphite palette as the desktop UI.
+    for (let pixel = 40; pixel < 40 + size * size * 4; pixel += 4) {
+      if (dib[pixel + 3] < 64) continue;
+      const channels = [dib[pixel], dib[pixel + 1], dib[pixel + 2]];
+      assert.ok(Math.max(...channels) - Math.min(...channels) <= 12,
+        `${path.basename(filename)} ${size}px: colored pixels in monochrome icon`);
+    }
     if (size < 64) continue;
     // The white horizontal face stroke belongs near the center, not at the
     // bottom. The cropped v0.1.36 CI icons put it around 82% of the image height.
@@ -51,5 +58,5 @@ function validateAssets(directory) {
 module.exports = { validateIco, validateAssets };
 if (require.main === module) {
   validateAssets(path.resolve(__dirname, "../src/ui/assets"));
-  console.log("Icon assets passed: 1024px PNG, all 7 ICO sizes, complete frames and undistorted face placement.");
+  console.log("Icon assets passed: 1024px PNG, all 7 ICO sizes, monochrome palette, complete frames and undistorted face placement.");
 }

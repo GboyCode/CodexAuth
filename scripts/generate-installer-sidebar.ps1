@@ -20,8 +20,8 @@ try {
   $rect = [System.Drawing.Rectangle]::new(0, 0, $width, $height)
   $bg = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
     $rect,
-    [System.Drawing.Color]::FromArgb(249, 251, 255),
-    [System.Drawing.Color]::FromArgb(229, 234, 255),
+    [System.Drawing.Color]::FromArgb(250, 250, 250),
+    [System.Drawing.Color]::FromArgb(235, 235, 235),
     90
   )
   $graphics.FillRectangle($bg, $rect)
@@ -30,8 +30,8 @@ try {
   $accentRect = [System.Drawing.Rectangle]::new(0, 234, $width, 80)
   $accent = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
     $accentRect,
-    [System.Drawing.Color]::FromArgb(154, 143, 255),
-    [System.Drawing.Color]::FromArgb(66, 92, 255),
+    [System.Drawing.Color]::FromArgb(82, 82, 87),
+    [System.Drawing.Color]::FromArgb(24, 24, 27),
     90
   )
   $graphics.FillRectangle($accent, $accentRect)
@@ -51,8 +51,8 @@ try {
   $center.Alignment = [System.Drawing.StringAlignment]::Center
   $center.LineAlignment = [System.Drawing.StringAlignment]::Center
 
-  $ink = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(20, 24, 36))
-  $muted = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(92, 105, 130))
+  $ink = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(24, 24, 27))
+  $muted = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(98, 98, 104))
   $white = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 255, 255))
   $switchText = -join ([char[]](0x8D26, 0x53F7, 0x5207, 0x6362))
   $localText = -join ([char[]](0x672C, 0x5730, 0x5B89, 0x5168, 0x5B58, 0x50A8))

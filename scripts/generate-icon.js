@@ -129,8 +129,8 @@ async function renderIcon(foregroundSource, size, { padding = 0, taskbar = false
 
 async function main() {
   const root = path.resolve(__dirname, "..");
-  const appSource = path.join(root, "src", "ui", "assets", "codex-color.svg");
-  const trayIconSource = path.join(root, "src", "ui", "assets", "codex-color-no-bg.svg");
+  const appSource = path.join(root, "src", "ui", "assets", "codex-monochrome.svg");
+  const trayIconSource = path.join(root, "src", "ui", "assets", "codex-monochrome-no-bg.svg");
   const pngTarget = path.join(root, "src", "ui", "assets", "codex-color.png");
   const iconTarget = path.join(root, "src", "ui", "assets", "codex-color.ico");
   const trayIconTarget = path.join(root, "src", "ui", "assets", "codex-color-tray.ico");

@@ -18,7 +18,7 @@ async function run() {
       [20, 1000, [255, 0, 0, 255]], [1000, 1000, [0, 255, 255, 255]], [500, 500, [0, 0, 255, 255]], [520, 520, [0, 255, 255, 255]]]) {
       assert.deepEqual([...bitmap.subarray((y * 1024 + x) * 4, (y * 1024 + x) * 4 + 4)], expected, "corners and center boundaries must survive the small render window without cropping/stretching");
     }
-    const foreground = path.resolve(__dirname, "../src/ui/assets/codex-color-no-bg.svg");
+    const foreground = path.resolve(__dirname, "../src/ui/assets/codex-monochrome-no-bg.svg");
     for (const [name, render] of [["app", renderTaskbarIcon], ["tray", renderSvg]]) {
       const rendered = await render(foreground, 1024);
       const frames = [16, 24, 32, 48, 64, 128, 256].map(size => ({ size,

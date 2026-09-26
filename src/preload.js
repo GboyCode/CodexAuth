@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("codexAuth", {
+  platform: process.platform,
   getVersion: () => ipcRenderer.invoke("app:version"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   openAppLink: (link) => ipcRenderer.invoke("app:open-link", link),

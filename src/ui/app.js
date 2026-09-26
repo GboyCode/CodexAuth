@@ -1,4 +1,5 @@
 const api = window.codexAuth;
+document.documentElement.classList.toggle("custom-titlebar", api.platform === "win32");
 const q = window.CodexQuotaUI;
 const DASHBOARD_AUTO_REFRESH_MS = 8000;
 const OVERVIEW_PRIVACY_KEY = "codexauth.overview.hideEmails";
@@ -373,6 +374,7 @@ function accountCard(account) {
   const name = document.createElement("h3");
   name.className = "account-name";
   name.textContent = account.displayName;
+  name.title = account.displayName;
   line.append(name);
 
   if (account.isActive) {
@@ -386,6 +388,7 @@ function accountCard(account) {
   meta.className = "account-meta";
   const identity = document.createElement("span");
   identity.textContent = account.planType ? `${identityLabel(account)} · ${q.formatPlanType(account.planType)}` : identityLabel(account);
+  identity.title = identity.textContent;
   const switched = document.createElement("span");
   switched.textContent = account.needsReauth
     ? account.reauthReason || "需要重新登录"

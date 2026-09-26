@@ -85,12 +85,11 @@ function clampNumber(value, min, max) {
 }
 
 function applyWidgetOpacity(value) {
-  const percent = Math.round(clampNumber(value, 82, 100));
+  const percent = Math.round(clampNumber(value, 0, 100));
   const alpha = percent / 100;
-  const panelAlpha = Math.max(0.88, Math.min(0.96, alpha - 0.04));
   const controlAlpha = Math.max(0.9, Math.min(0.98, alpha - 0.02));
   document.documentElement.style.setProperty("--widget-alpha", alpha.toFixed(2));
-  document.documentElement.style.setProperty("--panel-alpha", panelAlpha.toFixed(2));
+  document.documentElement.style.setProperty("--panel-alpha", alpha.toFixed(2));
   document.documentElement.style.setProperty("--control-alpha", controlAlpha.toFixed(2));
   els.opacityRange.value = String(percent);
   els.opacityValue.textContent = `${percent}%`;

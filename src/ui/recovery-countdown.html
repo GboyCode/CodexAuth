@@ -5,16 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <title>CodexAuth 自动切换确认</title>
+    <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./recovery-countdown.css" />
+    <link rel="stylesheet" href="./glass.css" />
   </head>
   <body>
     <main aria-labelledby="title">
-      <header title="拖动调整位置，下次自动记忆"><img src="./assets/codex-color.png" alt="" /><h1 id="title">自动切换账号</h1><span>重启 Codex</span></header>
+      <header title="拖动调整位置，下次自动记忆"><img src="./assets/codex-monochrome.svg" alt="" /><h1 id="title">自动切换账号</h1><span>重启 Codex</span></header>
       <div class="countdown-row">
         <div class="timer" role="timer" aria-label="距离自动切换"><strong id="seconds">15</strong><span>秒后继续任务</span></div>
         <button id="cancelBtn" class="cancel" title="仅取消本次，自动恢复保持开启">取消本次</button>
       </div>
     </main>
     <script src="./recovery-countdown.js"></script>
+    <script src="./glass.js"></script>
   </body>
 </html>

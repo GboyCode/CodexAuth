@@ -4246,7 +4246,11 @@ function createWindow() {
     minHeight: 620,
     title: APP_NAME,
     icon: appIconPath(),
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#f5f5f5",
+    ...(isWindows ? {
+      titleBarStyle: "hidden",
+      titleBarOverlay: { color: "#f5f5f5", symbolColor: "#18181b", height: 32 },
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
