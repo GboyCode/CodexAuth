@@ -1006,6 +1006,10 @@ code {
 }
 
 .all-account-card {
+  display: grid;
+  grid-row: span 5;
+  grid-template-rows: subgrid;
+  min-width: 0;
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   padding: 14px;
@@ -1023,7 +1027,7 @@ code {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  min-width: 0;
 }
 
 .all-account-head strong {
@@ -1044,13 +1048,17 @@ code {
   font-weight: 500;
 }
 
-.all-account-meters {
-  display: grid;
-  gap: 8px;
+.all-account-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .all-account-meter-row {
   display: grid;
+  grid-template-rows: auto 5px 1fr;
+  align-content: start;
   gap: 4px;
 }
 
@@ -1064,6 +1072,7 @@ code {
 }
 
 .all-account-meter-head strong {
+  flex-shrink: 0;
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
@@ -1088,6 +1097,17 @@ code {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.all-account-footer {
+  margin: 0;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .all-account-no-data {
@@ -1166,6 +1186,7 @@ code {
 
 
 .section-head-actions {
+  --scope-control-height: 38px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1175,11 +1196,21 @@ code {
   display: flex;
   align-items: center;
   gap: 3px;
-  height: 38px;
+  height: var(--scope-control-height);
   border: 1px solid var(--line-soft);
   border-radius: 10px;
   padding: 3px;
   background: var(--soft);
+}
+
+#statsRefreshBtn {
+  flex: 0 0 auto;
+  height: var(--scope-control-height);
+  min-height: var(--scope-control-height);
+  min-width: 70px;
+  padding: 0 12px;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .scope-tab {

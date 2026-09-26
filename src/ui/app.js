@@ -666,30 +666,19 @@ async function renderAllAccountsQuota() {
 
       card.append(head);
 
-      if (account.quotaSnapshot?.isCachedSnapshot) {
-        const note = document.createElement("p");
-        note.className = "all-account-no-data";
-        note.textContent = "上次切换时的本地快照";
-        card.append(note);
-      }
-
-      if (account.quotaSnapshot) {
-        const meters = document.createElement("div");
-        meters.className = "all-account-meters";
-        meters.append(
-          createAllAccountQuotaMeter("session", account.quotaSnapshot.session),
-          createAllAccountQuotaMeter("weekly", account.quotaSnapshot.weekly)
-        );
-        card.append(meters);
-      } else {
-        const noData = document.createElement("p");
-        noData.className = "all-account-no-data";
-        noData.textContent = "暂无额度数据";
-        card.append(noData);
-      }
+      const note = document.createElement("p");
+      note.className = "all-account-status";
+      note.textContent = !account.quotaSnapshot
+        ? (account.isActive ? "当前账号 · 暂无额度记录" : "暂无额度记录")
+        : account.isActive ? "当前账号 · 本地快照"
+        : account.quotaSnapshot.isCachedSnapshot ? "上次切换时的本地快照" : "本地额度快照";
+      card.append(note,
+        createAllAccountQuotaMeter("session", account.quotaSnapshot?.session),
+        createAllAccountQuotaMeter("weekly", account.quotaSnapshot?.weekly)
+      );
 
       const resets=document.createElement("p");
-      resets.className="all-account-no-data";
+      resets.className="all-account-footer";
       resets.textContent=q.resetCreditsLabel(account.quotaSnapshot?.resetCredits,{compact:true});
       card.append(resets);
       els.allAccountsGrid.append(card);
