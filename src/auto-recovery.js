@@ -35,31 +35,74 @@ function accountPriority(account) {
     // Only a recorded weekly-only snapshot establishes the absence of a 5h limit.
     // Missing/unknown window metadata must not be mistaken for this plan variant.
     if (quota?.session === null && Number(quota?.weekly?.windowMinutes) >= 10080) return 2;
+    return 3;
   }
-  return 3;
+  return 4;
+}
+
+function quotaExclusion(account, usage, confirmedAt) {
+  const matched = account?.identity?.userId && usage?.accountId === account.identity.userId
+    && usage.ordinaryUsageAllowed === false;
+  const buckets = matched ? Object.values(usage.rateLimitsByLimitId ?? {}) : [];
+  if (!buckets.length && matched && usage.rateLimits) buckets.push(usage.rateLimits);
+  const live = buckets.flatMap((bucket) => [bucket?.primary, bucket?.secondary]).filter(Boolean);
+  const windows = live.length ? live : [account?.quotaSnapshot?.session, account?.quotaSnapshot?.weekly].filter(Boolean);
+  const depleted = windows.filter((window) => typeof window.usedPercent === "number"
+    && window.usedPercent >= 100 - MIN_REMAINING_PERCENT);
+  // If the counters lag behind the failure, the exhausted window is ambiguous.
+  // Wait for all recorded windows rather than guess that only the 5h limit hit.
+  const relevant = depleted.length ? depleted : windows;
+  const resets = relevant.map((window) => Number(window.resetsAt) * 1000);
+  const retryAt = resets.length && resets.every((reset) => Number.isFinite(reset) && reset > confirmedAt)
+    ? Math.max(...resets) : null;
+  return { confirmedAt, retryAt };
+}
+
+function isAccountExcluded(account, excluded, now) {
+  if (!excluded) return false;
+  // Migrate the old 30-minute timestamps using their original observation time.
+  const record = typeof excluded === "number" ? quotaExclusion(account, null, excluded - 30 * 60 * 1000) : excluded;
+  const quota = account.quotaSnapshot;
+  const checkedAt = Date.parse(quota?.checkedAt);
+  const windows = [quota?.session, quota?.weekly].filter(Boolean);
+  const fresh = quota?.schemaVersion === 2 && quota.source === "local"
+    && Number.isFinite(checkedAt) && checkedAt > record.confirmedAt && checkedAt <= now;
+  const recovered = fresh && windows.length > 0 && windows.every((window) => {
+      const score = windowScore(window, now);
+      const observedAt = Date.parse(window.checkedAt ?? quota.checkedAt);
+      return score && !score.inferred && score.remaining > MIN_REMAINING_PERCENT && observedAt > record.confirmedAt;
+    });
+  if (recovered) return false;
+  const retryAt = record.retryAt ?? (fresh ? quotaExclusion(account, null, record.confirmedAt).retryAt : null);
+  // Unknown reset times stay excluded until a new actual quota record arrives.
+  return !Number.isFinite(retryAt) || retryAt > now;
 }
 
 function rankAccounts(accounts, activeId, excluded = {}, now = Date.now()) {
   return accounts.flatMap((account) => {
-    if (account.id === activeId || account.needsReauth || Number(excluded[account.id]) > now) return [];
+    if (account.id === activeId || account.needsReauth || isAccountExcluded(account, excluded[account.id], now)) return [];
     const quota = account.quotaSnapshot;
     const checkedAt = Date.parse(quota?.checkedAt);
-    if (Number.isFinite(checkedAt) && (checkedAt > now + 60000 || now - checkedAt > MAX_SNAPSHOT_AGE_MS)) return [];
+    if (Number.isFinite(checkedAt) && checkedAt > now + 60000) return [];
     const raw = [quota?.session, quota?.weekly].filter(Boolean);
     const windows = raw.map((window) => windowScore(window, now));
     // A missing/invalid second window must not turn a known nearly exhausted
     // account into an unknown-quota fallback. Only a valid past reset lifts it.
     if (raw.some((window, index) => typeof window.usedPercent === "number" && Number.isFinite(window.usedPercent)
       && 100 - window.usedPercent <= MIN_REMAINING_PERCENT && !windows[index]?.inferred)) return [];
-    const unknownBusiness = () => accountPlan(account) === "business"
-      ? [{ account, priority: 4, inferred: true, remaining: null, reset: Infinity }] : [];
-    if (!quota || quota.source === "unavailable" || !raw.length) return unknownBusiness();
-    if (quota.schemaVersion !== 2 || !Number.isFinite(checkedAt)) return [];
-    if (windows.some((window) => !window)) return unknownBusiness();
+    // Missing records are common on newly added accounts or another computer.
+    // Keep their plan priority; unknown reset times sort last within that group.
+    // Missing records never imply available quota.
+    const unknownQuota = () => account.identity?.userId ? [{ account,
+      priority: accountPriority(account),
+      inferred: true, remaining: null, reset: Infinity }] : [];
+    if (!quota || quota.source === "unavailable" || !raw.length) return unknownQuota();
+    if (quota.schemaVersion !== 2) return [];
+    if (!Number.isFinite(checkedAt) || now - checkedAt > MAX_SNAPSHOT_AGE_MS || windows.some((window) => !window)) return unknownQuota();
     return [{ account, priority: accountPriority(account), inferred: windows.some((window) => window.inferred) || now - checkedAt > 86400000,
       remaining: Math.min(...windows.map((window) => window.remaining)),
       reset: Math.min(...windows.map((window) => window.reset)) }];
-  }).sort((a, b) => a.priority - b.priority || b.remaining - a.remaining || a.reset - b.reset || a.account.id.localeCompare(b.account.id));
+  }).sort((a, b) => a.priority - b.priority || a.reset - b.reset || b.remaining - a.remaining || a.account.id.localeCompare(b.account.id));
 }
 
 function isQuotaFailure(result, since = 0) {
@@ -246,8 +289,8 @@ function createAutoRecovery(deps) {
     const allowed = () => enabled && revision === generation;
     try {
       if (!journal) {
-        journal = await deps.loadJournal() ?? { version: 1, handled: [], excluded: {}, pending: null };
-        if (journal.version !== 1 || !Array.isArray(journal.handled) || !journal.excluded || typeof journal.excluded !== "object") {
+        journal = await deps.loadJournal() ?? { version: 2, handled: [], excluded: {}, pending: null };
+        if (![1, 2].includes(journal.version) || !Array.isArray(journal.handled) || !journal.excluded || typeof journal.excluded !== "object") {
           throw new Error("自动恢复记录格式异常，请检查本地 auto-recovery.json。" );
         }
       }
@@ -258,6 +301,14 @@ function createAutoRecovery(deps) {
       const accounts = await deps.getAccounts();
       if (!allowed()) return;
       if (!accounts.activeAccountId) { failure("请先导入当前 Codex 登录账号。" ); return; }
+      let migrated = journal.version === 1;
+      journal.version = 2;
+      for (const account of accounts.accounts) {
+        if (typeof journal.excluded[account.id] !== "number") continue;
+        journal.excluded[account.id] = quotaExclusion(account, null, journal.excluded[account.id] - 30 * 60 * 1000);
+        migrated = true;
+      }
+      if (migrated) { await save(); if (!allowed()) return; }
       if (journal.pending) {
         const pending = journal.pending;
         if (pending.enabledAt !== since) { journal.pending = null; await save(); return; }
@@ -325,6 +376,7 @@ function createAutoRecovery(deps) {
           const checked = await deps.bridge.readUsage(job.threadId);
           await assertAccount();
           if (!target?.identity?.userId || checked?.accountId !== target.identity.userId || checked.ordinaryUsageAllowed !== true) return checked;
+          delete journal.excluded[target.id];
           job.phase = "sending"; job.sentAt = now(); await save();
           try {
             await assertAccount();
@@ -340,7 +392,7 @@ function createAutoRecovery(deps) {
         });
         if (!allowed()) return;
         if (target?.identity?.userId && usage?.accountId === target.identity.userId && usage.ordinaryUsageAllowed === false) {
-          journal.excluded[target.id] = now() + 30 * 60 * 1000;
+          journal.excluded[target.id] = quotaExclusion(target, usage, now());
           const next = rankAccounts(accounts.accounts, target.id, journal.excluded, now())[0]?.account;
           if (!next) {
             pending.nextAttemptAt = now() + 60000;
@@ -422,11 +474,20 @@ function createAutoRecovery(deps) {
       if (!freshFailures.length) return;
       const approvedJobs = await approveSwitch(target, accounts.activeAccountId, freshFailures, anchor, allowed, cutoff);
       if (!approvedJobs || !allowed()) return;
+      const sourceUsage = await deps.runAccountOperation(async () => {
+        const fresh = await deps.getAccounts();
+        if (!allowed() || fresh.activeAccountId !== accounts.activeAccountId) return null;
+        try { return await deps.bridge.readUsage(anchor); }
+        catch { return null; } // A native quota failure remains evidence if this read is unavailable.
+      });
+      if (!allowed()) return;
       journal.pending = { stage: "switching", enabledAt: since, sourceId: accounts.activeAccountId,
         targetId: target.id, createdAt: now(), jobs: approvedJobs };
       journal.handled = [...journal.handled, ...approvedJobs.map(jobKey)].slice(-1000);
-      journal.excluded = Object.fromEntries(Object.entries(journal.excluded).filter(([, until]) => until > now()));
-      journal.excluded[accounts.activeAccountId] = now() + 30 * 60 * 1000;
+      const source = accounts.accounts.find((account) => account.id === accounts.activeAccountId);
+      journal.excluded = Object.fromEntries(accounts.accounts.filter((account) =>
+        isAccountExcluded(account, journal.excluded[account.id], now())).map((account) => [account.id, journal.excluded[account.id]]));
+      journal.excluded[accounts.activeAccountId] = quotaExclusion(source, sourceUsage, now());
       await save();
       if (!allowed()) return;
       setStatus("switching", "正在切换候选账号并重启 Codex，随后核验实际额度。" );
@@ -450,4 +511,4 @@ function createAutoRecovery(deps) {
   return { configure, invalidate, tick, getStatus: () => ({ ...status }) };
 }
 
-module.exports = { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart, POLL_MS, CONTINUE_PROMPT };
+module.exports = { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart, quotaExclusion, isAccountExcluded, POLL_MS, CONTINUE_PROMPT };

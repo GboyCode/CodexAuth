@@ -60,7 +60,7 @@ const { createGoalBridge } = require("./codex-goals");
 const { createAccountLogin, cleanupLoginHomes } = require("./account-login");
 let accountLogin = null;
 let loginQuitPending = false;
-const { createRecoveryCountdown } = require("./recovery-countdown");
+const { createRecoveryCountdown, normalizeCountdownPosition, countdownBounds } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
 let autoRecovery = null;
 let autoRecoveryTimer = null;
@@ -433,6 +433,7 @@ function defaultSettings() {
     autoSwitchOnLimit: false,
     autoSwitchEnabledAt: null,
     widgetBounds: null,
+    recoveryCountdownPosition: null,
   };
 }
 
@@ -449,6 +450,7 @@ function normalizeSettings(settings) {
     autoSwitchOnLimit: normalized.autoSwitchOnLimit === true,
     autoSwitchEnabledAt: Number.isFinite(normalized.autoSwitchEnabledAt) ? normalized.autoSwitchEnabledAt : null,
     widgetBounds: normalizeWidgetBounds(normalized.widgetBounds),
+    recoveryCountdownPosition: normalizeCountdownPosition(normalized.recoveryCountdownPosition),
   };
 }
 
@@ -4321,20 +4323,38 @@ function scheduleWidgetBoundsSave(delayMs = 350) {
 }
 
 function createRecoveryCountdownWindow() {
-  const anchor = widgetWindow && !widgetWindow.isDestroyed() ? widgetWindow.getBounds()
-    : clampWidgetBoundsToDisplay(normalizeWidgetBounds(runtimeSettings?.widgetBounds));
-  const area = screen.getDisplayMatching(anchor).workArea;
-  const width = 320, height = 112;
-  const beside = anchor.x - width - 12 >= area.x ? anchor.x - width - 12 : anchor.x + anchor.width + 12;
+  const anchor = currentWidgetBoundsForPersistence()
+    ?? clampWidgetBoundsToDisplay(normalizeWidgetBounds(runtimeSettings?.widgetBounds));
+  const saved = normalizeCountdownPosition(runtimeSettings?.recoveryCountdownPosition);
+  const area = screen.getDisplayMatching(saved ? { ...saved, width: 320, height: 112 } : anchor).workArea;
   const win = new BrowserWindow({
-    width, height,
-    x: Math.max(area.x, Math.min(beside, area.x + area.width - width)),
-    y: Math.max(area.y, Math.min(anchor.y, area.y + area.height - height)),
+    ...countdownBounds(anchor, area, saved),
     title: "CodexAuth 自动切换确认", icon: appIconPath(), show: false,
-    frame: false, resizable: false, maximizable: false, minimizable: false,
+    frame: false, movable: true, resizable: false, maximizable: false, minimizable: false,
     alwaysOnTop: true, skipTaskbar: true, transparent: true, backgroundColor: "#00000000",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
       nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
+  });
+  let position = null, saveTimer = null;
+  const savePosition = () => {
+    saveTimer = null;
+    const latest = position;
+    if (!latest) return;
+    mutateIndex(async (index) => {
+      index.settings = normalizeSettings({ ...index.settings, recoveryCountdownPosition: latest });
+      return {};
+    }).catch(() => {});
+  };
+  win.on("move", () => {
+    position = normalizeCountdownPosition(win.getBounds());
+    runtimeSettings = normalizeSettings({ ...(runtimeSettings ?? defaultSettings()), recoveryCountdownPosition: position });
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(savePosition, 350);
+  });
+  // Capture coordinates while the window is alive, then flush even when the
+  // countdown destroys it immediately after a drag or cancellation.
+  win.on("closed", () => {
+    if (saveTimer) { clearTimeout(saveTimer); savePosition(); }
   });
   hardenWindowNavigation(win);
   win.loadFile(path.join(__dirname, "ui", "recovery-countdown.html")).catch(() => {
@@ -4860,17 +4880,14 @@ async function checkForUpdates(event) {
     const result = await updateChecker.check();
     const newer = result.comparison > 0;
     const canDownload = newer && result.installer;
-    const buttons = canDownload ? ["下载安装包", "查看更新说明", "关闭"] : ["查看更新说明", "关闭"];
-    const detail = [`当前版本：v${result.currentVersion}`, `GitHub 最新正式版：v${result.latestVersion}`];
-    if (canDownload) detail.push(`安装包：${result.installer.name}（${(result.installer.size / 1024 / 1024).toFixed(1)} MB）`, "点击下载会打开浏览器；下载完成后运行安装包更新。");
-    else if (newer) detail.push("该版本暂未提供适用于本机的安装包，请在发布页查看。");
-    else if (result.comparison < 0) detail.push("本机版本比 GitHub 已发布版本更新，无需降级。");
-    detail.push("仅查询公开 GitHub 发布信息，不发送账号、凭证或用量数据。");
+    const buttons = canDownload ? ["下载更新", "更新说明", "稍后"] : newer ? ["查看发布页", "关闭"] : ["知道了"];
+    const detail = [`当前 v${result.currentVersion}${result.comparison < 0 ? ` · 正式版 v${result.latestVersion}` : ""}`];
+    if (newer && !canDownload) detail.push("暂无适用于本机的安装包。");
     const choice = await show({ type: "info", title: "CodexAuth 更新",
-      message: newer ? `发现新版本 v${result.latestVersion}` : result.comparison === 0 ? "当前已是最新正式版" : "本机版本更新",
-      detail: detail.join("\n\n"), buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
+      message: newer ? `发现新版本 v${result.latestVersion}` : result.comparison === 0 ? "已是最新版本" : "暂无更新",
+      detail: detail.join("\n"), buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
     if (canDownload && choice.response === 0) await shell.openExternal(result.installer.url);
-    else if (choice.response === (canDownload ? 1 : 0)) await shell.openExternal(result.releaseUrl);
+    else if (newer && choice.response === (canDownload ? 1 : 0)) await shell.openExternal(result.releaseUrl);
     return { ok: true, latestVersion: result.latestVersion, comparison: result.comparison };
   } catch (error) {
     await show({ type: "warning", title: "CodexAuth 更新", message: "暂时无法检查更新",

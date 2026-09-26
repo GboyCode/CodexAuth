@@ -101,7 +101,7 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
       try {
         await beforeSend?.();
         return parseToolResult(await request(currentEndpoint, "tools/call", {
-          namespace: "codex_app", tool, arguments: args, threadId,
+          namespace: "codex_app", tool, arguments: args, threadId, callerSource: "codex",
           callId: `codexauth-${crypto.randomUUID()}`, turnId: "codexauth-auto-recovery",
         }, 15000, beforeSend));
       } catch (error) {

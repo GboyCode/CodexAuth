@@ -1,7 +1,7 @@
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; background: transparent; color: #202533; font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif; -webkit-font-smoothing: antialiased; }
-main { height: 100vh; padding: 16px; border: 1px solid #e7ebf1; border-radius: 14px; background: #fff; }
+main { height: 100vh; padding: 16px; border: 1px solid #e7ebf1; border-radius: 14px; background: #fff; -webkit-app-region: drag; user-select: none; }
 header { display: flex; align-items: center; gap: 8px; -webkit-app-region: drag; }
 header img { width: 22px; height: 22px; }
 h1 { margin: 0; font-size: 13px; font-weight: 600; }

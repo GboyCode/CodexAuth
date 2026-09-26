@@ -1,5 +1,21 @@
 const COUNTDOWN_MS = 15000;
 
+function normalizeCountdownPosition(position) {
+  if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null;
+  return { x: Math.round(position.x), y: Math.round(position.y) };
+}
+
+function countdownBounds(anchor, area, position) {
+  const width = Math.min(320, area.width), height = Math.min(112, area.height);
+  const saved = normalizeCountdownPosition(position);
+  const beside = anchor.x - width - 12 >= area.x ? anchor.x - width - 12 : anchor.x + anchor.width + 12;
+  return {
+    width, height,
+    x: Math.max(area.x, Math.min(saved?.x ?? beside, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(saved?.y ?? (anchor.y + anchor.height - height), area.y + area.height - height)),
+  };
+}
+
 // The main process owns the deadline. A missing, closed, or crashed reminder
 // never permits an account switch. Renderer readiness starts the full 15 seconds.
 function createRecoveryCountdown({ createWindow, now = Date.now, schedule = setInterval, unschedule = clearInterval }) {
@@ -76,4 +92,4 @@ function createRecoveryCountdown({ createWindow, now = Date.now, schedule = setI
   return { request, ready, cancel };
 }
 
-module.exports = { createRecoveryCountdown, COUNTDOWN_MS };
+module.exports = { createRecoveryCountdown, COUNTDOWN_MS, normalizeCountdownPosition, countdownBounds };

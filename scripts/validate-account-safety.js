@@ -173,6 +173,9 @@ async function recovery(stage) {
     readThread: async () => clone(result), listGoals: async () => result.goal ? [result.goal] : [],
     readUsage: async () => {
       assert.equal(locked, true);
+      // Source-account inspection precedes switching; inject races only during
+      // the target-account check immediately before continuation.
+      if (active === "a") return { accountId: "shared-workspace", ordinaryUsageAllowed: false };
       if (stage === "usage") active = "c"; // Same workspace, different person.
       if (stage === "manual") controller.invalidate();
       return { accountId: "shared-workspace", ordinaryUsageAllowed: true };

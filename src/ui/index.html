@@ -81,19 +81,19 @@
             <p class="label">切换策略</p>
             <label class="toggle-row">
               <input id="restartAfterSwitch" type="checkbox" checked />
-              <span>切换后重启 Codex App</span>
+              <span>切换账号自动重启Codex</span>
             </label>
             <div class="recovery-option">
               <label class="toggle-row">
                 <input id="autoSwitchOnLimit" type="checkbox" />
-                <span>额度耗尽后自动切换并继续</span>
+                <span>额度耗尽自动切换并继续</span>
               </label>
               <span class="info-tip">
                 <button id="autoRecoveryInfo" class="info-tip-button" type="button" aria-label="自动切换说明" aria-describedby="autoRecoveryHelp">!</button>
                 <span id="autoRecoveryHelp" class="info-tip-content" role="tooltip">
                   <strong>账号优先顺序</strong>
-                  Plus → 有五小时限制的 Business → 仅有周额度的 Business。同类账号优先剩余额度高、下次重置早的账号；其他套餐及限制不明确的账号排在最后。
-                  任一额度窗口剩余不超过 2% 且未到重置时间时跳过。无额度记录的 Business 在有记录的候选都不可用后尝试，切换后核验实际额度。
+                  Plus → 有五小时限制的 Business → 仅有周额度的 Business → 限制不明确的 Business → 其他套餐。同类账号优先下次重置更近的，重置时间相同再选剩余额度更多的。
+                  无记录账号保留套餐优先级，在同组有明确重置时间的账号之后尝试；Plus 始终先于 Business。任一窗口剩余不超过 2% 且未重置，或已确认耗尽尚未恢复的账号跳过。切换后核验实际额度。
                   <strong>如何继续任务</strong>
                   切换前弹出 15 秒倒计时，可取消本次。随后重启 Codex、核验账号与额度，并在原任务发送继续指令。其他本地任务运行时暂缓切换。
                   <strong>生效范围</strong>
@@ -121,8 +121,8 @@
                 <span class="about-link-label"><img src="./assets/github.svg" width="17" height="17" alt="" />GitHub</span>
                 <span class="about-link-value">项目主页 <span aria-hidden="true">↗</span></span>
               </a>
-              <a class="about-link" href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer" title="在浏览器打开开发者微信二维码">
-                <span class="about-link-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>开发者微信</span>
+              <a class="about-link" href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer" title="查看开发者联系方式">
+                <span class="about-link-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>开发者</span>
                 <span class="about-link-value">Ryan Lin <span aria-hidden="true">↗</span></span>
               </a>
               <button class="about-update-btn" type="button" data-check-updates><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.2 6a8 8 0 0 1 13.6 6M4.2 12a8 8 0 0 0 13.6 6" /></svg>检查更新</button>

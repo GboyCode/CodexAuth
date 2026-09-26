@@ -83,8 +83,16 @@ async function main() {
   response=1; await context.checkForUpdates({sender:{}}); assert.equal(opened[1],context.result.releaseUrl);
   response=2; await context.checkForUpdates({sender:{}}); assert.equal(opened.length,2);
   context.result=selectRelease(fixture(),"0.1.16","win32","x64"); response=0;
+  await context.checkForUpdates({sender:{}}); assert.equal(opened.length,2,"dismissal must not open the older release");
+  assert.deepEqual([...dialogs.at(-1).buttons],["知道了"]);
+  assert.equal(dialogs.at(-1).message,"暂无更新");
+  assert.equal(dialogs.at(-1).detail,"当前 v0.1.16 · 正式版 v0.1.15");
+  context.result=selectRelease(fixture(),"0.1.15","win32","x64");
+  await context.checkForUpdates({sender:{}}); assert.equal(opened.length,2);
+  assert.equal(dialogs.at(-1).message,"已是最新版本");
+  context.result=selectRelease(fixture(),"0.1.14","linux","x64");
   await context.checkForUpdates({sender:{}}); assert.equal(opened[2],context.result.releaseUrl);
-  assert.ok(!dialogs.at(-1).buttons.includes("下载安装包"),"never suggest downgrading a newer local build");
+  assert.deepEqual([...dialogs.at(-1).buttons],["查看发布页","关闭"]);
   vm.runInContext("updateChecker = {check: async () => { throw Error('fixture offline'); }}",context);
   assert.equal((await context.checkForUpdates({sender:{}})).ok,false);
   assert.equal(dialogs.at(-1).type,"warning");

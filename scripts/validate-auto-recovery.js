@@ -3,7 +3,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart } = require("../src/auto-recovery");
+const { createAutoRecovery, rankAccounts, isQuotaFailure, recoveryJob, canRestart, quotaExclusion, isAccountExcluded } = require("../src/auto-recovery");
 const { createRecoveryCountdown, COUNTDOWN_MS } = require("../src/recovery-countdown");
 const { createDesktopBridge, pipeRequest, parseToolResult } = require("../src/codex-desktop-bridge");
 
@@ -74,7 +74,44 @@ function countdownFixture() {
 }
 
 async function run() {
-  assert.deepEqual(rankAccounts([account("a"), account("b", 10, 1000), account("c", 10, 500), account("d", 5)], "a", {}, NOW).map((x) => x.account.id), ["d", "c", "b"]);
+  const remembered = account("remembered", 97);
+  const denied = { accountId: "workspace-remembered", ordinaryUsageAllowed: false,
+    rateLimitsByLimitId: { codex: { primary: { usedPercent: 80, resetsAt: NOW / 1000 + 7200 },
+      secondary: { usedPercent: 100, resetsAt: NOW / 1000 + 86400 } } } };
+  const block = quotaExclusion(remembered, denied, NOW);
+  assert.equal(block.retryAt, NOW + 86400000, "live exhausted weekly limit overrides a lagging 3% snapshot");
+  assert.equal(isAccountExcluded(remembered, block, NOW + 31 * 60000), true);
+  assert.equal(isAccountExcluded(remembered, block, NOW + 7200000), true, "5h reset cannot release an exhausted week");
+  assert.equal(isAccountExcluded(remembered, block, NOW + 86400000), false);
+  assert.equal(rankAccounts([remembered], "a", { remembered: block }, NOW + 31 * 60000).length, 0);
+  const sessionOnly = clone(denied); sessionOnly.rateLimitsByLimitId.codex.primary.usedPercent = 100;
+  sessionOnly.rateLimitsByLimitId.codex.secondary.usedPercent = 20;
+  assert.equal(quotaExclusion(remembered, sessionOnly, NOW).retryAt, NOW + 7200000);
+  sessionOnly.rateLimitsByLimitId.codex.secondary.usedPercent = 100;
+  assert.equal(quotaExclusion(remembered, sessionOnly, NOW).retryAt, NOW + 86400000, "wait for both exhausted windows");
+  assert.equal(quotaExclusion(remembered, { ...sessionOnly, accountId: "other" }, NOW).retryAt,
+    NOW + 86400000, "mismatched live account falls back to conservative local reset times");
+  const legacyExpiry = NOW + 30 * 60000;
+  assert.equal(isAccountExcluded(remembered, legacyExpiry, NOW + 31 * 60000), true, "old journal entries must not silently expire after upgrading");
+  const unknownBlock = quotaExclusion(businessWithoutQuota("unknown"), null, NOW);
+  assert.equal(unknownBlock.retryAt, null);
+  assert.equal(isAccountExcluded(businessWithoutQuota("unknown"), unknownBlock, NOW + 86400000), true);
+  const learnedReset = account("unknown", 100);
+  learnedReset.quotaSnapshot.checkedAt = new Date(NOW + 60000).toISOString();
+  learnedReset.quotaSnapshot.weekly.usedPercent = 20;
+  assert.equal(isAccountExcluded(learnedReset, unknownBlock, NOW + 60000), true);
+  assert.equal(isAccountExcluded(learnedReset, unknownBlock, NOW + 7200000), false, "new reset evidence can release a previously unknown reset");
+  const restoredQuota = clone(remembered);
+  restoredQuota.quotaSnapshot.checkedAt = new Date(NOW + 60000).toISOString();
+  restoredQuota.quotaSnapshot.session.usedPercent = 10;
+  restoredQuota.quotaSnapshot.weekly.usedPercent = 10;
+  assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), false, "new observed available quota lifts the block early");
+  restoredQuota.quotaSnapshot.source = "local-estimate";
+  assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), true, "predictions cannot clear confirmed exhaustion");
+  restoredQuota.quotaSnapshot.source = "local";
+  restoredQuota.quotaSnapshot.session.resetsAt = NOW / 1000;
+  assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), true, "an inferred reset is not a fresh available balance");
+  assert.deepEqual(rankAccounts([account("a"), account("b", 10, 1000), account("c", 10, 500), account("d", 5)], "a", {}, NOW).map((x) => x.account.id), ["c", "b", "d"]);
   const bottleneck = account("low-week", 1); bottleneck.quotaSnapshot.weekly.usedPercent = 95;
   assert.equal(rankAccounts([bottleneck, account("balanced", 40)], "a", {}, NOW)[0].account.id, "balanced");
   const plus = account("plus", 95); plus.identity.planType = "Plus";
@@ -86,9 +123,9 @@ async function run() {
   delete businessUnknown.quotaSnapshot.session; businessUnknown.quotaSnapshot.weekly.windowMinutes = 10080;
   const pro = account("pro", 0); pro.identity.planType = "pro";
   const preferred = rankAccounts([pro, businessUnknown, businessWeek, business5h, plus, plusEarlier], "a", {}, NOW);
-  assert.deepEqual(preferred.map((item) => item.account.id), ["plus-earlier", "plus", "business-5h", "business-week", "pro", "business-unknown"]);
-  assert.deepEqual(preferred.map((item) => item.priority), [0, 0, 1, 2, 3, 3]);
-  assert.deepEqual(rankAccounts([plus, business5h, businessWeek], "a", { plus: NOW + 1000 }, NOW).map((item) => item.account.id), ["business-5h", "business-week"]);
+  assert.deepEqual(preferred.map((item) => item.account.id), ["plus-earlier", "plus", "business-5h", "business-week", "business-unknown", "pro"]);
+  assert.deepEqual(preferred.map((item) => item.priority), [0, 0, 1, 2, 3, 4]);
+  assert.deepEqual(rankAccounts([plus, business5h, businessWeek], "a", { plus: NOW + 30 * 60000 }, NOW).map((item) => item.account.id), ["business-5h", "business-week"]);
   const priorityRecovery = fixture(); priorityRecovery.accounts[1].identity.planType = "team";
   priorityRecovery.accounts[1].quotaSnapshot.session.windowMinutes = 300;
   priorityRecovery.accounts[2].identity.planType = "plus";
@@ -100,10 +137,11 @@ async function run() {
   const resetRank = rankAccounts([resetCandidate], "a", {}, NOW)[0];
   assert.equal(resetRank.remaining, 85); assert.equal(resetRank.inferred, true); assert.ok(resetRank.reset > NOW);
   const bad = [{ ...account("reauth"), needsReauth: true }, account("empty", 100)];
-  const unknown = account("unknown"); unknown.quotaSnapshot.session.usedPercent = null; bad.push(unknown);
-  const stale = account("stale"); stale.quotaSnapshot.checkedAt = new Date(NOW - 7 * 86400000 - 1).toISOString(); bad.push(stale);
+  const unknown = account("unknown"); unknown.quotaSnapshot.session.usedPercent = null;
+  const stale = account("stale"); stale.quotaSnapshot.checkedAt = new Date(NOW - 7 * 86400000 - 1).toISOString();
   assert.equal(rankAccounts(bad, "a", {}, NOW).length, 0);
-  assert.equal(rankAccounts([account("blocked")], "a", { blocked: NOW + 1000 }, NOW).length, 0);
+  assert.equal(rankAccounts([unknown, stale], "a", {}, NOW).length, 2, "unknown or stale data is eligible only for live-checked fallback");
+  assert.equal(rankAccounts([account("blocked")], "a", { blocked: NOW + 30 * 60000 }, NOW).length, 0);
   for (const used of [98, 99, 100]) {
     const low = account(`low-${used}`, used); low.identity.planType = "business";
     assert.equal(rankAccounts([low], "a", {}, NOW).length, 0, "skip every unreset window with at most 2% remaining");
@@ -117,19 +155,46 @@ async function run() {
   assert.equal(rankAccounts([account("above-threshold", 97.99)], "a", {}, NOW).length, 1);
   const missingBusiness = businessWithoutQuota("missing-business");
   const fallbackRank = rankAccounts([missingBusiness, pro, businessWeek, business5h, plus], "a", {}, NOW);
-  assert.deepEqual(fallbackRank.map((item) => item.account.id), ["plus", "business-5h", "business-week", "pro", "missing-business"]);
-  assert.equal(fallbackRank.at(-1).remaining, null, "unknown quota must not be represented as available quota");
-  for (const planType of ["plus", "pro", ""]) {
+  assert.deepEqual(fallbackRank.map((item) => item.account.id), ["plus", "business-5h", "business-week", "missing-business", "pro"]);
+  assert.equal(fallbackRank.find(item => item.account.id === missingBusiness.id).remaining, null, "unknown quota must not be represented as available quota");
+  const missingPlus = { ...businessWithoutQuota("missing-plus"), identity: { userId: "workspace-missing-plus", planType: "plus" } };
+  const missingOther = { ...businessWithoutQuota("missing-other"), identity: { userId: "workspace-missing-other", planType: "pro" } };
+  assert.deepEqual(rankAccounts([missingBusiness, missingOther, missingPlus, businessWeek, business5h, plus], "a", {}, NOW)
+    .map(item => item.account.id), ["plus", "missing-plus", "business-5h", "business-week", "missing-business", "missing-other"]);
+  const soonPlus = clone(plusEarlier), laterPlus = clone(plus);
+  soonPlus.quotaSnapshot.session.usedPercent = 95; soonPlus.quotaSnapshot.weekly.usedPercent = 95;
+  laterPlus.quotaSnapshot.session.usedPercent = 5; laterPlus.quotaSnapshot.weekly.usedPercent = 5;
+  assert.deepEqual(rankAccounts([laterPlus, soonPlus, missingPlus, business5h], "a", {}, NOW).map(item => item.account.id),
+    ["plus-earlier", "plus", "missing-plus", "business-5h"], "plan precedes reset time, and sooner reset precedes a larger balance");
+  laterPlus.quotaSnapshot.session.resetsAt = soonPlus.quotaSnapshot.session.resetsAt;
+  assert.equal(rankAccounts([soonPlus, laterPlus], "a", {}, NOW)[0].account.id, laterPlus.id, "equal resets prefer more remaining quota");
+  const unknownPlusRecovery = fixture(); unknownPlusRecovery.accounts[1] = clone(business5h);
+  unknownPlusRecovery.accounts[2] = clone(missingPlus);
+  await unknownPlusRecovery.recovery.tick();
+  assert.equal(unknownPlusRecovery.stats().activeId, "missing-plus", "an unverified Plus is attempted before a recorded Business");
+  const soonRecovery = fixture(); soonRecovery.accounts[1] = clone(soonPlus); soonRecovery.accounts[2] = clone(plus);
+  soonRecovery.accounts[2].quotaSnapshot.session.usedPercent = 5;
+  soonRecovery.accounts[2].quotaSnapshot.weekly.usedPercent = 5;
+  await soonRecovery.recovery.tick();
+  assert.equal(soonRecovery.stats().activeId, "plus-earlier", "recovery dispatch follows reset-first ranking");
+  for (const planType of ["plus", "team", "pro", ""]) {
     const other = businessWithoutQuota("other"); other.identity.planType = planType;
-    assert.equal(rankAccounts([other], "a", {}, NOW).length, 0, "unknown fallback is limited to Business");
+    assert.equal(rankAccounts([other], "a", {}, NOW).length, 1, "missing quota does not mean exhausted quota");
+    assert.equal(rankAccounts([other], "a", { other: quotaExclusion(other, null, NOW) }, NOW).length, 0, "confirmed unknown-reset exhaustion still excludes all plans");
   }
+  assert.equal(rankAccounts([{ ...missingPlus, identity: { planType: "plus" } }], "a", {}, NOW).length, 0, "live account identity must be verifiable");
+  const noReset = { ...account("no-reset"), identity: { userId: "workspace-no-reset", planType: "plus" } };
+  noReset.quotaSnapshot.session.resetsAt = null;
+  assert.equal(rankAccounts([noReset], "a", {}, NOW)[0].priority, 0);
+  noReset.quotaSnapshot.weekly.usedPercent = 99;
+  assert.equal(rankAccounts([noReset], "a", {}, NOW).length, 0, "unknown reset cannot conceal another depleted window");
   for (const snapshot of [
     { schemaVersion: 2, source: "unavailable", session: null, weekly: null },
     { schemaVersion: 2, source: "local", session: null, weekly: null },
     { ...account("partial").quotaSnapshot, session: { usedPercent: null } },
   ]) {
     const partial = { ...missingBusiness, quotaSnapshot: snapshot };
-    assert.equal(rankAccounts([partial], "a", {}, NOW)[0].priority, 4);
+    assert.equal(rankAccounts([partial], "a", {}, NOW)[0].priority, 3);
     partial.quotaSnapshot.weekly = { usedPercent: 98, resetsAt: NOW / 1000 + 86400 };
     assert.equal(rankAccounts([partial], "a", {}, NOW).length, 0, "partial/unavailable quota cannot conceal a low known window");
   }
@@ -137,9 +202,11 @@ async function run() {
   assert.equal(rankAccounts([{ ...missingBusiness, needsReauth: true }], "a", {}, NOW).length, 0);
   assert.equal(rankAccounts([missingBusiness], "a", { [missingBusiness.id]: NOW + 1000 }, NOW).length, 0);
   const staleBusiness = { ...stale, identity: { ...stale.identity, planType: "team" } };
-  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW).length, 0, "expired recorded snapshots remain excluded");
+  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW)[0].priority, 3, "stale snapshots preserve the account's plan group");
   staleBusiness.quotaSnapshot.source = "unavailable";
-  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW).length, 0, "unavailable data must not bypass the snapshot age limit");
+  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW)[0].remaining, null);
+  staleBusiness.quotaSnapshot.weekly.usedPercent = 100;
+  assert.equal(rankAccounts([staleBusiness], "a", {}, NOW).length, 0, "stale data cannot override a known unreset exhausted window");
   assert.equal(isQuotaFailure(failed(), NOW - 1), true);
   for (const code of ["rateLimitExceeded", "unauthorized", "sessionBudgetExceeded", "internalServerError"]) {
     const sample = failed(); sample.turns[0].error.codexErrorInfo = code;
@@ -350,6 +417,7 @@ async function run() {
   const busy = fixture({ list: { pinnedThreads: [{ id: "other", kind: "codex", hostId: "local", status: "active" }] } });
   await busy.recovery.tick(); assert.equal(busy.stats().switches, 0); assert.equal(busy.recovery.getStatus().state, "waiting");
   const unavailable = fixture(); unavailable.accounts[1].needsReauth = true; unavailable.accounts[2].quotaSnapshot = null;
+  unavailable.accounts[2].identity.userId = null;
   await unavailable.recovery.tick(); assert.equal(unavailable.stats().switches, 0);
   const hiddenRunning = fixture();
   hiddenRunning.deps.getLocalThreads = async () => [{ id: "task", updatedAt: NOW / 1000 }, { id: "older-running", updatedAt: NOW / 1000 - 600 }];
@@ -371,6 +439,8 @@ async function run() {
   await retry.recovery.tick(); assert.equal(retry.stats().sends, 1);
   assert.equal(retry.stats().warnings, 2, "each fallback account switch requires a new countdown");
   const unknownFallback = fixture();
+  unknownFallback.accounts[1].identity.planType = "plus";
+  unknownFallback.accounts[2].identity.planType = "plus";
   unknownFallback.accounts.push(businessWithoutQuota("d"));
   unknownFallback.bridge.readUsage = async () => ({ accountId: `workspace-${unknownFallback.stats().activeId}`,
     ordinaryUsageAllowed: unknownFallback.stats().activeId === "d" });
@@ -384,6 +454,23 @@ async function run() {
   for (let i = 0; i < 3; i++) await resumedFallback.tick();
   assert.equal(unknownFallback.stats().sends, 1);
   assert.equal(resumedFallback.getStatus().state, "resumed", "a restarted recovery can finish the unknown Business attempt");
+  const missingQuotaRecovery = fixture();
+  missingQuotaRecovery.accounts.splice(1, 2, clone(missingPlus), clone(missingBusiness));
+  missingQuotaRecovery.bridge.readUsage = async () => ({ accountId: `workspace-${missingQuotaRecovery.stats().activeId}`,
+    ordinaryUsageAllowed: missingQuotaRecovery.stats().activeId === "missing-business" });
+  await missingQuotaRecovery.recovery.tick();
+  assert.equal(missingQuotaRecovery.stats().activeId, "missing-plus");
+  assert.equal(missingQuotaRecovery.stats().sends, 0);
+  await missingQuotaRecovery.recovery.tick();
+  assert.equal(missingQuotaRecovery.stats().activeId, "missing-business");
+  assert.equal(missingQuotaRecovery.stats().stored.excluded["missing-plus"].retryAt, null);
+  for (let i = 0; i < 3; i++) await missingQuotaRecovery.recovery.tick();
+  assert.equal(missingQuotaRecovery.stats().sends, 1, "only live-verified availability resumes the task");
+  missingQuotaRecovery.advance(31 * 60000);
+  missingQuotaRecovery.results.set("task", failed("task", "unknown-next-round"));
+  const restartedMissing = createAutoRecovery(missingQuotaRecovery.deps); restartedMissing.configure(true, NOW - 1000);
+  await restartedMissing.tick();
+  assert.equal(missingQuotaRecovery.stats().switches, 2, "an already-rejected unknown account is not tried again in the next round");
   const skipLow = fixture(); skipLow.accounts[1] = account("b", 98); skipLow.accounts[2] = businessWithoutQuota("c");
   await skipLow.recovery.tick(); assert.equal(skipLow.stats().activeId, "c", "skip near-empty accounts before an unknown Business");
   const noUnknownQuota = fixture({ usage: { ordinaryUsageAllowed: null } });
@@ -399,7 +486,8 @@ async function run() {
   for (let i = 0; i < 5; i++) await allUnknownEmpty.recovery.tick();
   assert.equal(allUnknownEmpty.stats().switches, 2); assert.equal(allUnknownEmpty.stats().sends, 0);
   assert.equal(allUnknownEmpty.recovery.getStatus().state, "waiting");
-  assert.ok(allUnknownEmpty.stats().stored.excluded.c > NOW && allUnknownEmpty.stats().stored.excluded.d > NOW);
+  assert.equal(allUnknownEmpty.stats().stored.excluded.c.retryAt, null);
+  assert.equal(allUnknownEmpty.stats().stored.excluded.d.retryAt, null);
   const cancelFallback = fixture({ beforeSwitch: async () => cancelFallback.stats().warnings === 1 ? "elapsed" : "cancelled" });
   cancelFallback.bridge.readUsage = async () => ({ accountId: `workspace-${cancelFallback.stats().activeId}`, ordinaryUsageAllowed: false });
   for (let i = 0; i < 5; i++) await cancelFallback.recovery.tick();
@@ -435,6 +523,25 @@ async function run() {
   await again.recovery.tick(); assert.equal(again.stats().activeId, "c");
   assert.equal(again.stats().switches, 2);
 
+  const repeat = fixture(); repeat.accounts.push(account("d", 40));
+  repeat.bridge.readUsage = async () => ({ accountId: `workspace-${repeat.stats().activeId}`,
+    ordinaryUsageAllowed: repeat.stats().activeId !== "b",
+    rateLimits: { primary: { usedPercent: 100, resetsAt: NOW / 1000 + 7200 } } });
+  for (let i = 0; i < 5; i++) await repeat.recovery.tick();
+  assert.equal(repeat.stats().activeId, "c");
+  assert.equal(repeat.stats().stored.excluded.b.retryAt, NOW + 7200000);
+  repeat.advance(31 * 60000);
+  repeat.results.set("task", failed("task", "second-round"));
+  const repeatRestart = createAutoRecovery(repeat.deps); repeatRestart.configure(true, NOW - 1000);
+  await repeatRestart.tick();
+  assert.equal(repeat.stats().activeId, "d", "after app restart and 31 minutes, skip the already rejected candidate");
+  const legacy = fixture({ journal: { version: 1, handled: [], excluded: { b: NOW + 30 * 60000 }, pending: null } });
+  await legacy.recovery.tick();
+  assert.equal(legacy.stats().activeId, "c");
+  assert.equal(legacy.stats().stored.version, 2);
+  assert.equal(legacy.stats().stored.excluded.b.confirmedAt, NOW);
+  assert.equal(legacy.stats().stored.excluded.b.retryAt, NOW + 86400000, "migrate and persist old cooldown entries on startup");
+
   const endpoint = process.platform === "win32" ? `\\\\.\\pipe\\codexauth-test-${process.pid}` : path.join(os.tmpdir(), `codexauth-test-${process.pid}.sock`);
   const sockets = new Set();
   const server = net.createServer((socket) => {
@@ -458,8 +565,9 @@ async function run() {
     const used = [];
     const bridge = createDesktopBridge({ platform: "win32", env: {},
       listPipes: async () => [pipeNames[Math.min(enumerations++, 1)]],
-      request: async (pipe, method) => {
+      request: async (pipe, method, params) => {
         if (method === "tools/list") return { tools: requiredTools };
+        assert.equal(params.callerSource, "codex", "desktop 26.924 requires the caller source on every tool call");
         calls++; used.push(pipe);
         if (protocolFailure) return { success: false };
         if (calls <= failures) throw Object.assign(new Error("disconnected"), { code: "CODEX_PIPE_CLOSED" });
@@ -495,6 +603,6 @@ async function run() {
   const incompatible = connectionFixture({ protocolFailure: true });
   await assert.rejects(incompatible.bridge.listThreads("task"));
   assert.equal(incompatible.stats().calls, 1, "protocol errors are not connection retries");
-  console.log("Auto recovery validation passed: workspace-credit exhaustion without error codes, recovered scan status, bounded read-only reconnect, no send replay, ranking, countdown cancellation, idle guard, batch resume, cooldown and desktop transport.");
+  console.log("Auto recovery validation passed: persisted exhaustion, reset boundaries, legacy migration, fresh-quota release, restart, ranking, countdown cancellation, idle guard, batch resume and desktop transport.");
 }
 run().catch((error) => { console.error(error); process.exitCode = 1; });
