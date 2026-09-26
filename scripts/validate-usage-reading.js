@@ -117,7 +117,7 @@ async function validateScopeRace() {
   const source=await fs.readFile(path.join(__dirname,"../src/ui/app.js"),"utf8");
   const dashboard=deferred(), all=deferred(), rendered=[];let currentCalls=0,allCalls=0;
   const sandbox=vm.createContext({ window:{ codexAuth:{getDashboard:()=>{currentCalls++;return dashboard.promise;},
-    getAllUsage:()=>{allCalls++;return all.promise;}},CodexQuotaUI:{} }, document:{querySelector:()=>null,querySelectorAll:()=>[]}, console });
+    getAllUsage:()=>{allCalls++;return all.promise;}},CodexQuotaUI:{} }, document:{documentElement:{classList:{toggle(){}}},querySelector:()=>null,querySelectorAll:()=>[]}, console });
   // Only suppress startup wiring; exercise the actual UI request coordinator.
   vm.runInContext(source.replace(/wireEvents\(\);\s*refresh\(true\)\.catch\([^\n]+\);\s*$/,""),sandbox);
   sandbox.renderDashboard=(value)=>rendered.push(value);
@@ -137,7 +137,7 @@ async function validateScopeRace() {
 async function validateScopeLabels() {
   const source=await fs.readFile(path.join(__dirname,"../src/ui/app.js"),"utf8");
   const elements=new Map();
-  const sandbox=vm.createContext({window:{codexAuth:{},CodexQuotaUI:{}},document:{querySelector:(key)=>{
+  const sandbox=vm.createContext({window:{codexAuth:{},CodexQuotaUI:{}},document:{documentElement:{classList:{toggle(){}}},querySelector:(key)=>{
     if(!elements.has(key))elements.set(key,{});return elements.get(key);
   }},console});
   vm.runInContext(source.replace(/wireEvents\(\);\s*refresh\(true\)\.catch\([^\n]+\);\s*$/,""),sandbox);
