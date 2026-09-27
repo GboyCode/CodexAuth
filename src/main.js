@@ -62,6 +62,7 @@ let accountLogin = null;
 let loginQuitPending = false;
 const { createRecoveryCountdown, normalizeCountdownPosition, countdownBounds } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
+const { createDesktopQuotaReader, quotaFromDesktopUsage } = require("./quota/desktop-quota");
 let autoRecovery = null;
 let autoRecoveryTimer = null;
 let recoveryCountdown = null;
@@ -109,6 +110,18 @@ const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
 const ATOMIC_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
 const AUTH_BACKUP_RETENTION_COUNT = 60;
 const localDataCache = createLocalDataCache();
+const quotaDesktopBridge = createDesktopBridge();
+const desktopQuotaReader = createDesktopQuotaReader({
+  getAnchor: () => isWindows ? readLocalThreadAnchor(codexDir()) : null,
+  readUsage: (anchor) => quotaDesktopBridge.readUsage(anchor),
+  getScope: dashboardScope,
+  onUpdate: async (scope, quota) => {
+    if (await saveAccountQuotaSnapshot(scope.accountId, quota, scope.since)) {
+      localDataCache.invalidate();
+      broadcastStateChanged({ scope: "quota" });
+    }
+  },
+});
 
 let mainWindow;
 let widgetWindow;
@@ -1066,9 +1079,10 @@ function configureAutoRecovery() {
 async function startAutoRecovery() {
   const journalPath = path.join(storeRoot(), "auto-recovery.json");
   recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow });
+  const recoveryBridge = createDesktopBridge({ goals: createGoalBridge({ codexHome: codexDir() }) });
   autoRecovery = createAutoRecovery({
     isPaused: () => accountLogin?.isBusy() === true,
-    bridge: createDesktopBridge({ goals: createGoalBridge({ codexHome: codexDir() }) }),
+    bridge: { ...recoveryBridge, readUsage: (anchor) => readRecoveryUsage(recoveryBridge, anchor) },
     getAnchor: () => readLocalThreadAnchor(codexDir()),
     getLocalThreads: () => readLocalThreadMetadata(codexDir()),
     loadJournal: async () => {
@@ -1104,6 +1118,22 @@ async function startAutoRecovery() {
     if (runtimeSettings?.autoSwitchOnLimit === true) autoRecovery.tick().catch(() => {});
   }, POLL_MS);
   autoRecoveryTimer.unref?.();
+}
+
+async function readRecoveryUsage(bridge, anchor) {
+  const scope = await dashboardScope();
+  const usage = await bridge.readUsage(anchor);
+  try {
+    const current = await dashboardScope();
+    if (current.accountId === scope.accountId && current.since === scope.since) {
+      const quota = quotaFromDesktopUsage(usage, current, new Date().toISOString());
+      if (quota && await saveAccountQuotaSnapshot(current.accountId, quota, current.since)) {
+        localDataCache.invalidate();
+        broadcastStateChanged({ scope: "quota" });
+      }
+    }
+  } catch { /* Saving the final snapshot must not stop an authorized recovery. */ }
+  return usage;
 }
 
 async function syncLaunchAtLoginFromSettings() {
@@ -1707,6 +1737,9 @@ async function startSessionsPolling() {
   if (sessionsPollingInterval) return;
   sessionsPollingInterval = setInterval(async () => {
     try {
+      // Continued pre-switch threads can keep writing the old plan's bucket.
+      // Refresh account-wide desktop data even if no rollout file has changed.
+      desktopQuotaReader.read(await dashboardScope());
       const dbPath = logsDbPath();
       const walPath = logsDbWalPath();
       let latestMtime = 0;
@@ -3928,13 +3961,15 @@ async function dashboardScope() {
   };
 }
 
-async function saveAccountQuotaSnapshot(accountId, quota) {
-  if (!accountId || !quota || !["local", "local-error"].includes(quota.source)) return false;
+async function saveAccountQuotaSnapshot(accountId, quota, expectedSince) {
+  if (!accountId || !quota || !["local", "local-error", "local-desktop"].includes(quota.source)) return false;
   return mutateIndex(async (index) => {
     if (index.activeAccountId !== accountId) return {value:false,write:false};
     const account = index.accounts.find((item) => item.id === accountId);
     if (!account) return { value: false, write: false };
+    if (expectedSince !== undefined && account.lastSwitchedAt !== expectedSince) return { value: false, write: false };
     if (!quotaMatchesAccount(account, quota)) return { value: false, write: false };
+    if (Date.parse(account.quotaSnapshot?.checkedAt) > Date.parse(quota.checkedAt)) return { value: false, write: false };
     const learned = quota.calibration && JSON.stringify(account.quotaCalibration) !== JSON.stringify(quota.calibration);
     if (learned) account.quotaCalibration = quota.calibration;
     const nextSnapshot = buildAccountQuotaSnapshot(quota, account.quotaSnapshot);
@@ -4126,22 +4161,28 @@ function resolveQuota(scope, latestQuota) {
 }
 
 async function readBestLocalQuota(scope, files) {
-  if (!scope.hasCurrentAuth || !scope.since) return null;
+  const desktop = desktopQuotaReader.read(scope);
+  if (!scope.hasCurrentAuth || !scope.since) return desktop;
   const local = await readLatestLocalQuota({since:scope.since, files});
   const sqlite = await readLatestSqliteRateLimitQuota({since:scope.since, accountIdentity:scope.account});
   // Structured bucket snapshots outrank legacy errors that do not name a bucket.
-  return combineBuckets([local, sqlite]) ?? await readLatestUsageLimitQuota({since:scope.since, accountIdentity:scope.account});
+  const logged = combineBuckets([local, sqlite]) ?? await readLatestUsageLimitQuota({since:scope.since, accountIdentity:scope.account});
+  // The desktop map describes the current account's pools; do not attach stale
+  // Business pools from an old thread. Newer compatible logs remain a fallback.
+  return desktop && (!logged || logged.limitId !== desktop.limitId || !planTypesMatch(logged.planType, scope.accountPlanType) ||
+    Date.parse(desktop.checkedAt) >= Date.parse(logged.checkedAt)) ? desktop : logged;
 }
 
 async function resolveQuotaWithMode(scope, files) {
   const latestQuota = await readBestLocalQuota(scope, files);
   const baseQuota = resolveQuota(scope, latestQuota);
   const records = await readLocalRecords(files, scope.since);
-  const estimated = latestQuota ? estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration}) : baseQuota;
+  const estimated = latestQuota && latestQuota.source !== "local-desktop"
+    ? estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration}) : baseQuota;
   const reset = await readLocalResetCredits(scope, records);
   const savedReset = scope.accountQuotaSnapshot?.resetCredits;
-  estimated.resetCredits = newestResetCredits(reset, savedReset);
-  if (latestQuota && scope.accountId) await saveAccountQuotaSnapshot(scope.accountId, estimated);
+  estimated.resetCredits = newestResetCredits(estimated.resetCredits, reset, savedReset);
+  if (latestQuota && scope.accountId) await saveAccountQuotaSnapshot(scope.accountId, estimated, scope.since);
   else if (reset && scope.accountId) await saveAccountResetCredits(scope.accountId, reset);
   const {calibration, ...publicQuota} = estimated;
   return publicQuota;

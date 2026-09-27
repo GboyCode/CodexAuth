@@ -6,7 +6,7 @@ English README | [中文说明](README.md)
 
 CodexAuth Switch is a local Windows and macOS desktop utility for quickly switching between multiple Codex App login accounts.
 
-It is designed for people who use more than one OpenAI / Codex App account. Start official sign-in from the panel or save the current login, then switch the active Codex account through this tool. Credentials are stored locally. Quota and usage views come from local Codex logs; it does not call remote quota endpoints or upload Codex conversation history.
+It is designed for people who use more than one OpenAI / Codex App account. Start official sign-in from the panel or save the current login, then switch the active Codex account through this tool. Credentials are stored locally. Usage comes from local Codex logs; Windows quota also updates through the local Codex desktop interface, with Codex handling associated service requests. Conversation history is not uploaded to the project author or third parties.
 
 One-line positioning: **CodexAuth Switch is a local-first Codex App multi-account switcher with `auth.json` snapshot management, Windows DPAPI / macOS Keychain encryption, quota display, and token usage statistics.**
 
@@ -81,7 +81,7 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 - It does not upload credentials, account data, logs or usage to the project author or third parties. User-triggered official sign-in and continuation communicate with OpenAI through Codex.
 - It does not use the current access token to request remote quota endpoints.
 - It does not refresh OpenAI tokens by itself.
-- It does not call remote quota endpoints.
+- It does not call remote quota endpoints directly; the local desktop interface delegates quota reads to Codex.
 
 Features that intentionally affect Codex App runtime state include account switching, reauth, deleting the active account, restarting Codex App, and opt-in automatic switching and continuation. These actions may update `config.toml`, replace or remove the current `auth.json`, and restart Codex App so the new local login state takes effect. Automatic continuation also asks the local Codex interface to verify the active account's quota and send a continuation prompt; Codex itself performs the associated service requests.
 
@@ -151,7 +151,7 @@ This continues existing context rather than restoring process state. Manual acco
 
 ### Quota Mode
 
-The quota panel uses local estimate mode only. It reads logs already written by Codex App and does not request `chatgpt.com` or any other remote quota endpoint.
+On Windows, the quota panel reads the current account through the local Codex desktop interface in the background every 30 seconds. Account and switch-boundary checks prevent an old conversation's quota pool from freezing the display after switching plans. If the interface is unavailable, local logs and timestamped snapshots remain available; other platforms continue using local logs. CodexAuth does not request remote quota endpoints directly; Codex handles service requests needed by its desktop interface.
 
 ### Local Quota And Usage
 
@@ -198,7 +198,7 @@ ws://
 wss://
 ```
 
-These restrictions keep renderer pages local-only and help prevent account data or local history from being uploaded. Quota reading also stays local-only.
+These restrictions keep renderer pages local-only and help prevent account data or local history from being uploaded. The main process delegates quota reads to Codex through its local interface without giving renderer pages tokens or network access.
 
 The explicit exception is a user-triggered update check: the main process makes a separate HTTPS request to this repository's fixed public GitHub endpoint. Only matching installer links within this repository are accepted and opened in the system browser. GitHub login data and Codex credentials are not read.
 

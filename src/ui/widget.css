@@ -332,6 +332,7 @@ button {
 
 .quick-actions {
   display: grid;
+  flex-shrink: 0;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.85fr);
   gap: 8px;
   margin-top: 10px;
@@ -358,6 +359,10 @@ button {
 .account-row button:hover {
   background: #e8e8eb;
   transform: translateY(-1px);
+}
+
+.quick-actions button {
+  min-height: 36px;
 }
 
 .section-title button {

@@ -144,6 +144,7 @@
   }
 
   function compactQuotaFreshnessStatus(quota, seconds) {
+    if (quota?.source === "local-desktop") return "桌面额度快照";
     if (quota?.estimate?.available) return seconds < 10 ? "已写入校准" : "已预估校准";
     if (quota?.estimate) return "等待新记录";
     return "等待写入";
@@ -170,6 +171,7 @@
   }
 
   function quotaSourceLabel(source) {
+    if (source === "local-desktop") return "来自 Codex 桌面当前账号额度";
     if (source === "official") return "来自本地保存的额度快照";
     if (source === "local") return "来自本地 Codex 日志";
     if (source === "local-error") return "来自本地 Codex 限额日志";

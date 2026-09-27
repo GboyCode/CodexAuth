@@ -1,5 +1,5 @@
 (() => {
-  const surfaces = ".topbar, .status-panel:first-child, .primary-btn, .account-action.primary, .page-tab, .scope-tab, .quick-actions .primary-action, .account-row button.primary, .head-actions button, .cancel";
+  const surfaces = ".topbar, .status-panel:first-child, .primary-btn, .account-action.primary, .page-tab, .scope-tab, .quick-actions .primary-action, .account-row button.primary, .cancel";
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce), (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active)");
   let current = null;
   let pending = null;
