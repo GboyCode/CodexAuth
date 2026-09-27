@@ -27,12 +27,12 @@ async function storage() {
     const prompts = []; let confirm = 1;
     const sandbox = vm.createContext({ require: (name) => name === "electron" ? {
       app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => root },
-      dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [selectedFile] }),
-        showMessageBox: async (_win, options) => { prompts.push(options); return { response: confirm }; } },
+      dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [selectedFile] }) },
     } : name === "node:child_process" ? { spawn() { throw new Error("No real process execution in this test"); } } : realRequire(name),
       __dirname: path.dirname(filename), process: { ...process, env: { ...process.env, CODEX_HOME: home } },
       Buffer, console, setTimeout, clearTimeout, setInterval, clearInterval });
     vm.runInContext(await fs.readFile(filename, "utf8"), sandbox);
+    sandbox.showAppMessageBox = async (_win, options) => { prompts.push(options); return { response: confirm }; };
     sandbox.protectText = async (text) => `VAULT:${Buffer.from(text).toString("base64")}`;
     sandbox.unprotectText = async (text) => Buffer.from(text.trim().slice(6), "base64").toString();
     sandbox.currentState = async () => ({ accounts: (await sandbox.readIndex()).accounts });
