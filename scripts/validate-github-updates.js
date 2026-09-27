@@ -69,7 +69,7 @@ async function main() {
   await assert.rejects(testTransport(200,"","network"),/无法连接/);
   await assert.rejects(testTransport(200,"","timeout"),/超时/);
 
-  // Execute the real IPC handler with isolated native-dialog and browser adapters.
+  // Execute the real IPC handler with isolated app-dialog and browser adapters.
   const filename=path.resolve(__dirname,"../src/main.js"), realRequire=createRequire(filename);
   const opened=[],dialogs=[]; let response=0;
   const electron={app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"0.1.14"},
@@ -77,6 +77,7 @@ async function main() {
     dialog:{showMessageBox:async(options)=>{dialogs.push(options);return {response};}}};
   const context=vm.createContext({require:(name)=>name==="electron"?electron:realRequire(name),__dirname:path.dirname(filename),process,Buffer,console,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(filename,"utf8"),context);
+  context.showAppMessageBox=async(_parent,options)=>{dialogs.push(options);return {response};};
   context.result=selectRelease(fixture(),"0.1.14","win32","x64");
   vm.runInContext("updateChecker = {check: async () => result}",context);
   await context.checkForUpdates({sender:{}}); assert.equal(opened[0],context.result.installer.url);
@@ -104,6 +105,6 @@ async function main() {
     await assert.rejects(context.openAppLink(link), /不支持/);
   }
   assert.equal(opened.length, beforeLinks + 2, "project links only accept fixed destinations");
-  console.log("GitHub updates validated: version ordering, platform assets, URL boundary, transport failures/limits, caching, retry and native download/cancel actions.");
+  console.log("GitHub updates validated: version ordering, platform assets, URL boundary, transport failures/limits, caching, retry and app-dialog download/cancel actions.");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

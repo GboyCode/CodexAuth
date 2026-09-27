@@ -1,0 +1,27 @@
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; color: var(--ink); background: transparent; font: 13px/1.5 var(--font-ui); -webkit-font-smoothing: antialiased; }
+.confirm-dialog { display: flex; flex-direction: column; width: 100%; max-height: 100vh; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper-strong); box-shadow: none; -webkit-app-region: no-drag; }
+header { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-bottom: 14px; color: var(--muted); font-size: 12px; user-select: none; }
+header img { width: 18px; height: 18px; }
+header span { flex: 1; }
+button { border: 1px solid var(--line); border-radius: 8px; font: inherit; cursor: pointer; -webkit-app-region: no-drag; transition: background 140ms ease, transform 180ms var(--ease-press); }
+/* Keep the default action focused without drawing a second border on open. */
+body:not(.keyboard-navigation) button:focus-visible { outline: none; }
+.close-btn { display: grid; place-items: center; flex: 0 0 auto; width: 28px; height: 28px; margin: -5px -5px -5px 0; padding: 0; border-color: transparent; background: transparent; color: var(--muted); }
+.close-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.close-btn:hover { background: var(--soft); color: var(--ink); }
+.message-copy { min-height: 0; overflow: auto; overflow-wrap: anywhere; -webkit-app-region: no-drag; }
+h1 { margin: 0 0 6px; font-size: 18px; line-height: 1.4; font-weight: 600; letter-spacing: -0.2px; user-select: none; }
+p { margin: 0; color: var(--muted); white-space: pre-wrap; line-height: 1.6; }
+p:empty { display: none; }
+.dialog-actions { display: flex; flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.dialog-actions button { min-height: 36px; padding: 7px 14px; white-space: nowrap; }
+.ghost-btn { background: var(--soft); color: var(--ink); }
+.ghost-btn:hover { background: #e8e8eb; }
+.primary-btn { border-color: var(--accent); background: var(--accent-gradient); color: #fff; box-shadow: var(--shadow-button); }
+.primary-btn:hover { background: var(--accent-hover); }
+.dialog-actions button:active { transform: scale(0.98); }
+.compact .confirm-dialog { padding: 14px; }
+.compact h1 { font-size: 16px; }
+.compact .dialog-actions { margin-top: 14px; }
+@media (prefers-reduced-motion: reduce) { .dialog-actions button:active { transform: none; } }

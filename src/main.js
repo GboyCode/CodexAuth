@@ -55,6 +55,7 @@ const { readBrowserResetCredits } = require("./quota/browser-reset-cache");
 const { recoverAccountIndex } = require("./account-recovery");
 const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
 const { createUpdateChecker } = require("./github-updates");
+const { createMessageDialogs } = require("./message-dialog");
 const { createAutoRecovery, POLL_MS } = require("./auto-recovery");
 const { createGoalBridge } = require("./codex-goals");
 const { createAccountLogin, cleanupLoginHomes } = require("./account-login");
@@ -68,6 +69,7 @@ let autoRecoveryTimer = null;
 let recoveryCountdown = null;
 let updateChecker = null;
 let updateDialogPending = false;
+let messageDialogs = null;
 const readRecordFile = createRecordCache();
 let detectedCodexVersion = null;
 let selectedLogsDb = null;
@@ -1372,10 +1374,10 @@ async function importPortableCredentials(password, selectionId) {
       if (risk) risks.set(account.id, risk);
     }
     if (updates.length) {
-      const confirmation = await dialog.showMessageBox(mainWindow, { type: risks.size ? "warning" : "question", title: "更新已保存的账号",
+      const confirmation = await showAppMessageBox(mainWindow, { type: risks.size ? "warning" : "question", title: "更新已保存的账号",
         message: `所选凭证中有 ${updates.length} 个已保存账号，是否更新？`,
         detail: `${risks.size ? `其中 ${risks.size} 个凭证较旧或无法确认新旧，覆盖可能导致登录失效；导入后会标记为需要重新登录，并排除自动切换。\n` : ""}原凭证会先在本机加密备份。当前已登录账号保留本机凭证，不自动切换账号。`,
-        buttons: ["取消", "更新凭证"], defaultId: 0, cancelId: 0 });
+        buttons: ["取消", "更新凭证"], defaultId: 0, cancelId: 0, primaryId: 1 });
       if (confirmation.response !== 1) return { canceled: true };
     }
     const rollback = [];
@@ -4914,12 +4916,17 @@ async function openAppLink(link) {
   return { ok: true };
 }
 
+function showAppMessageBox(parent, options) {
+  messageDialogs ??= createMessageDialogs({ BrowserWindow, ipcMain, screen,
+    hardenWindow: hardenWindowNavigation, icon: appIconPath() });
+  return messageDialogs.show(parent, { ...options, compact: parent === widgetWindow });
+}
+
 async function checkForUpdates(event) {
   if (updateDialogPending) return { ok: true, busy: true };
   updateDialogPending = true;
   const parent = BrowserWindow.fromWebContents(event.sender);
-  const show = (options) => parent && !parent.isDestroyed()
-    ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+  const show = (options) => showAppMessageBox(parent, options);
   try {
     updateChecker ??= createUpdateChecker({ currentVersion: app.getVersion() });
     const result = await updateChecker.check();

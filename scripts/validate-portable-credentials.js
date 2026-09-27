@@ -39,10 +39,14 @@ async function main() {
     const sandbox = vm.createContext({ require: (name) => name === "electron" ? {
       app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => root },
       dialog: { showSaveDialog: async () => ({ canceled, filePath: selectedFile }),
-        showOpenDialog: async (_window, options) => ({ canceled, filePaths: options.properties.includes("openDirectory") ? [exportParent] : selectedPaths ?? [selectedFile] }), showMessageBox: async () => { confirmations++; return { response: confirmed }; } },
+        showOpenDialog: async (_window, options) => ({ canceled, filePaths: options.properties.includes("openDirectory") ? [exportParent] : selectedPaths ?? [selectedFile] }) },
     } : realRequire(name), __dirname: path.dirname(filename), process: { ...process, env: { ...process.env, CODEX_HOME: home } },
       Buffer, console, setTimeout, clearTimeout, setInterval, clearInterval });
     vm.runInContext(await fs.readFile(filename, "utf8"), sandbox);
+    sandbox.showAppMessageBox = async (_parent, options) => {
+      assert.equal(options.defaultId, 0); assert.equal(options.cancelId, 0);
+      confirmations++; return { response: confirmed };
+    };
     // Replace only the OS vault adapter; inspect that portable plaintext is
     // handed to local protection before disk storage, without using real accounts.
     sandbox.protectText = async (text) => `local-vault:${Buffer.from(text).toString("base64")}`;
