@@ -112,6 +112,7 @@
       "learned-fallback": "学习 + 保守估算",
       "learned-low-sample": "学习 + 低样本",
       calibrated: "历史校准",
+      "official-calibrated": "官方快照校准",
       "low-sample": "低样本校准",
       fallback: "保守估算",
     };
@@ -144,6 +145,8 @@
   }
 
   function compactQuotaFreshnessStatus(quota, seconds) {
+    if (quota?.estimate?.available && quota.estimate.confidence === "official-calibrated") return "官方校准预估";
+    if (quota?.source === "online-account") return seconds < 60 ? "在线额度快照" : "在线旧快照";
     if (quota?.source === "local-desktop") return "桌面额度快照";
     if (quota?.estimate?.available) return seconds < 10 ? "已写入校准" : "已预估校准";
     if (quota?.estimate) return "等待新记录";
@@ -171,11 +174,11 @@
   }
 
   function quotaSourceLabel(source) {
-    if (source === "local-desktop") return "来自 Codex 桌面当前账号额度";
+    if (source === "online-account" || source === "local-desktop") return "官方快照";
     if (source === "official") return "来自本地保存的额度快照";
     if (source === "local") return "来自本地 Codex 日志";
     if (source === "local-error") return "来自本地 Codex 限额日志";
-    if (source === "account-cache") return "此账号上次本地快照";
+    if (source === "account-cache") return "此账号上次保存的额度快照";
     return "不可用";
   }
 
@@ -239,7 +242,7 @@
     const stale=!Number.isFinite(stamp)||Date.now()-stamp>5*60*1000;
     const expiry=(reset.credits??[]).filter((c)=>c.status==="available"&&Number.isFinite(c.expiresAt)).map((c)=>c.expiresAt);
     const hasExpired=expiry.some((n)=>n*1000<=Date.now());
-    const origin=reset.source==="local-browser-cache"?"Codex缓存":"本地快照";
+    const origin=["online-account","local-desktop"].includes(reset.source)?"官方快照":reset.source==="local-browser-cache"?"Codex缓存":"本地快照";
     const status=hasExpired?"含已到期记录，待更新":stale?(reset.source==="local-browser-cache"?"Codex旧缓存，待更新":"旧快照，待更新"):origin;
     return `重置次数：${reset.availableCount} · ${status}${options.compact?"":` · ${formatSnapshotTime(reset.checkedAt)}`}`;
   }

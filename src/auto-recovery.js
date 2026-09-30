@@ -66,13 +66,13 @@ function isAccountExcluded(account, excluded, now) {
   const quota = account.quotaSnapshot;
   const checkedAt = Date.parse(quota?.checkedAt);
   const windows = [quota?.session, quota?.weekly].filter(Boolean);
-  const fresh = quota?.schemaVersion === 2 && ["local", "local-desktop"].includes(quota.source)
+  const fresh = quota?.schemaVersion === 2 && ["local", "local-desktop", "online-account"].includes(quota.source)
     && Number.isFinite(checkedAt) && checkedAt > record.confirmedAt && checkedAt <= now
     && windows.length > 0 && windows.every((window) => {
       const observedAt = Date.parse(window.checkedAt ?? quota.checkedAt);
       return observedAt > record.confirmedAt && observedAt <= now;
     });
-  const recovered = fresh && windows.length > 0 && windows.every((window) => {
+  const recovered = fresh && quota.allowed !== false && quota.limitReached !== true && windows.length > 0 && windows.every((window) => {
       const score = windowScore(window, now);
       const observedAt = Date.parse(window.checkedAt ?? quota.checkedAt);
       return score && !score.inferred && score.remaining > MIN_REMAINING_PERCENT && observedAt > record.confirmedAt;
@@ -195,6 +195,17 @@ function createAutoRecovery(deps) {
     await save();
     setStatus(state, message);
   }
+  async function checkedCandidate(accounts, activeId, allowed) {
+    for (const { account } of rankAccounts(accounts, activeId, journal.excluded, now())) {
+      if (!allowed()) return null;
+      setStatus("checking", "正在查询备用账号的在线额度，确认后才会切换。" );
+      const result = await deps.checkCandidate?.(account.id, allowed);
+      if (!allowed()) return null;
+      if (result?.available === true) return account;
+    }
+    setStatus("waiting", "备用账号在线额度不足、未知或查询失败，稍后重试。" );
+    return null;
+  }
   async function approveSwitch(target, sourceId, jobs, anchor, allowed, cutoff = 0) {
     if (!allowed()) return null;
     const abort = new AbortController();
@@ -223,6 +234,13 @@ function createAutoRecovery(deps) {
     }
     if (!rankAccounts(freshAccounts.accounts, sourceId, journal.excluded, now()).some((item) => item.account.id === target.id)) {
       setStatus("waiting", "候选账号状态已改变，稍后重新选择账号并倒计时。");
+      return null;
+    }
+    // Query before the final idle/task checks: work may start while HTTP waits.
+    const quota = await deps.checkCandidate?.(target.id, allowed, true);
+    if (!allowed()) return null;
+    if (quota?.available !== true) {
+      setStatus("waiting", "候选账号在线额度不足或尚未确认，保留当前账号并稍后重试。" );
       return null;
     }
     if (!await desktopIsIdle(anchor, allowed)) return null;
@@ -404,7 +422,7 @@ function createAutoRecovery(deps) {
         if (!allowed()) return;
         if (target?.identity?.userId && usage?.accountId === target.identity.userId && usage.ordinaryUsageAllowed === false) {
           journal.excluded[target.id] = quotaExclusion(target, usage, now());
-          const next = rankAccounts(accounts.accounts, target.id, journal.excluded, now())[0]?.account;
+          const next = await checkedCandidate(accounts.accounts, target.id, allowed);
           if (!next) {
             pending.nextAttemptAt = now() + 60000;
             await save();
@@ -471,9 +489,8 @@ function createAutoRecovery(deps) {
         return;
       }
       if (!canRestart({ ...list, localCoverageComplete: metadata !== null })) { setStatus("waiting", "检测到额度中断；等待其他任务结束后再切换，避免重启打断它们。" ); return; }
-      const ranked = rankAccounts(accounts.accounts, accounts.activeAccountId, journal.excluded, now());
-      if (!ranked.length) { setStatus("waiting", "暂无可尝试的备用账号；请检查额度、重置时间或登录状态。" ); return; }
-      const target = ranked[0].account;
+      const target = await checkedCandidate(accounts.accounts, accounts.activeAccountId, allowed);
+      if (!target || !allowed()) return;
       // Recheck immediately before changing global authentication/restarting the app.
       if (!await desktopIsIdle(anchor, allowed)) return;
       const freshFailures = [];
@@ -510,6 +527,12 @@ function createAutoRecovery(deps) {
       if (allowed()) setStatus("resuming", "账号已切换，等待 Codex 就绪后继续原任务。" );
     } catch (error) {
       if (allowed()) {
+        if (error.code === "ONLINE_PREFLIGHT" && journal?.pending?.stage === "switching") {
+          const jobs = new Set(journal.pending.jobs.map(jobKey));
+          journal.handled = journal.handled.filter((item) => !jobs.has(item));
+          journal.pending = null;
+          await save();
+        }
         scanFailed = !journal?.pending;
         failure(error.message || "自动恢复失败，请检查 Codex 状态。" );
       }

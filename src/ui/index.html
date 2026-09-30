@@ -109,13 +109,13 @@
             </div>
             <p id="autoRecoveryStatus" class="small-copy" role="status">未开启自动切换与续任务。</p>
             <div class="divider"></div>
-            <details class="local-diagnostics" open>
+            <details class="local-diagnostics">
               <summary>凭证保存原理</summary>
               <p class="small-copy">凭证使用 <span id="credentialProtection">操作系统当前用户安全存储</span> 加密保存。切换前会备份并保存当前 <code>auth.json</code>，减少刷新令牌丢失。</p>
               <p class="small-copy">如果 Codex 提示 refresh token 已被使用，需要在 Codex App 重新登录该账号，然后回到这里重新导入当前登录。</p>
             </details>
             <div class="divider"></div>
-            <details class="local-diagnostics" open>
+            <details class="local-diagnostics">
               <summary>本地兼容性自检</summary>
               <p id="diagnosticsInfo" class="small-copy" role="status">读取中</p>
               <p id="recoveryInfo" class="small-copy" hidden></p>
@@ -157,7 +157,7 @@
           <div class="quota-mode-panel">
             <div>
               <strong>额度读取模式</strong>
-              <p id="quotaModeHint">本地预估：只读取本机 Codex 日志，不联网。</p>
+              <p id="quotaModeHint">当前账号读取 Codex 桌面额度与本地日志；备用账号在线查询并按需续期。</p>
             </div>
           </div>
 

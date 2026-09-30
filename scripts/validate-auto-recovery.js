@@ -39,6 +39,7 @@ function fixture(options = {}) {
   };
   let recovery;
   const deps = {
+    checkCandidate: async (id, allowed, force) => options.checkCandidate ? options.checkCandidate(id, allowed, force) : { available: true },
     runAccountOperation: (task) => task(),
     now: () => clock, bridge, getAnchor: async () => "task",
     getAccounts: async () => ({ activeAccountId: activeId, accounts }),
@@ -74,6 +75,30 @@ function countdownFixture() {
 }
 
 async function run() {
+  const rejectedOnline = fixture({ checkCandidate: async () => ({ available: null }) });
+  await rejectedOnline.recovery.tick();
+  assert.equal(rejectedOnline.stats().switches, 0);
+  assert.equal(rejectedOnline.stats().warnings, 0, "unknown online quota must not trigger a countdown or restart");
+  const nextOnline = fixture({ checkCandidate: async (id) => ({ available: id === "c" }) });
+  await nextOnline.recovery.tick();
+  assert.equal(nextOnline.stats().activeId, "c", "skip a candidate that fails the online check");
+  const changedOnline = fixture({ checkCandidate: async (_id, _allowed, force) => ({ available: !force }) });
+  await changedOnline.recovery.tick();
+  assert.equal(changedOnline.stats().switches, 0, "recheck after countdown before closing Codex");
+  assert.equal(changedOnline.stats().stored?.handled?.length ?? 0, 0, "a failed precheck leaves the task eligible for retry");
+  const unavailableReader = fixture(); delete unavailableReader.deps.checkCandidate;
+  await unavailableReader.recovery.tick(); assert.equal(unavailableReader.stats().switches, 0);
+  const workDuringQuery = fixture({ checkCandidate: async (_id, _allowed, force) => {
+    if (force) workDuringQuery.results.set("other", { ...failed("other"), thread: { ...failed("other").thread, status: { type: "active" } } });
+    return { available: true };
+  } });
+  await workDuringQuery.recovery.tick();
+  assert.equal(workDuringQuery.stats().switches, 0, "work started during HTTP must block a restart");
+  const latePrecheck = fixture();
+  latePrecheck.deps.switchAccount = async () => { throw Object.assign(new Error("quota changed"), { code: "ONLINE_PREFLIGHT" }); };
+  await latePrecheck.recovery.tick();
+  assert.equal(latePrecheck.stats().stored.pending, null);
+  assert.equal(latePrecheck.stats().stored.handled.length, 0, "last-moment precheck failure remains retryable");
   const remembered = account("remembered", 97);
   const denied = { accountId: "workspace-remembered", ordinaryUsageAllowed: false,
     rateLimitsByLimitId: { codex: { primary: { usedPercent: 80, resetsAt: NOW / 1000 + 7200 },

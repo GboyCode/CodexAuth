@@ -51,6 +51,7 @@ const {
 const { scopedTokenDelta } = require("./quota/usage-math");
 const { createRecordCache, aggregateUsage, quotaFromRecords, normalizeBucket, combineBuckets, windowFor, normalizeResetCredits, numberOrNull } = require("./quota/local-records");
 const { estimateLocalQuota } = require("./quota/local-estimate");
+const { observeOfficialQuota, estimateOfficialQuota, OFFICIAL_SOURCES } = require("./quota/official-estimate");
 const { readBrowserResetCredits } = require("./quota/browser-reset-cache");
 const { recoverAccountIndex } = require("./account-recovery");
 const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
@@ -64,6 +65,11 @@ let loginQuitPending = false;
 const { createRecoveryCountdown, normalizeCountdownPosition, countdownBounds } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
 const { createDesktopQuotaReader, quotaFromDesktopUsage } = require("./quota/desktop-quota");
+const { createOnlineAccounts, SOURCE: ONLINE_ACCOUNT_SOURCE, MAINTENANCE_MS } = require("./quota/online-accounts");
+let onlineAccounts = null;
+let onlineAccountsTimer = null;
+let onlineMaintenanceRunning = false;
+let onlineQuitReady = false;
 let autoRecovery = null;
 let autoRecoveryTimer = null;
 let recoveryCountdown = null;
@@ -566,6 +572,7 @@ async function runAccountOperation(task) {
   });
   await previous.catch(() => {});
   try {
+    await onlineAccounts?.flushPending();
     return await task();
   } finally {
     release();
@@ -814,9 +821,10 @@ async function recoverStoreIfNeeded() {
 async function readLocalRecords(files, since = null) {
   const cutoff=since ? Date.parse(since) : null;
   const records=[];
+  records.complete = true;
   for(const file of files) {
     if(Number.isFinite(cutoff) && file.mtimeMs < cutoff) continue;
-    try { records.push(await readRecordFile(file)); } catch { /* surfaced as failedFiles in statistics */ }
+    try { records.push(await readRecordFile(file)); } catch { records.complete = false; /* surfaced as failedFiles in statistics */ }
   }
   return records;
 }
@@ -846,7 +854,7 @@ async function localDiagnostics(index, current) {
     authRecognized:!!current?.exists&&!current?.error, authSynchronized:!!matching,
     accountCount:index.accounts.length,logDatabase:path.basename(logsDbPath()),dbReadable,
     sessionFiles:files.length,latestLogAt:files[0]?.mtimeMs?new Date(files[0].mtimeMs).toISOString():null,
-    recovery:index.recovery??null, mode:"local-only"};
+    recovery:index.recovery??null, mode:"local-usage-and-online-standby-quota"};
 }
 
 async function readLocalResetCredits(scope, records) {
@@ -925,6 +933,86 @@ function markAccountAuthSnapshot(account, auth, content, now, { trustedLogin = f
   }
 }
 
+function getOnlineAccounts() {
+  if (onlineAccounts) return onlineAccounts;
+  onlineAccounts = createOnlineAccounts({
+    runExclusive: runAccountOperation,
+    readAccount: async (id) => {
+      const index = await readIndex();
+      const account = index.accounts.find((item) => item.id === id);
+      if (!account) return null;
+      let current = null;
+      try { current = await readCurrentAuth(); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      const active = index.activeAccountId === id || (current && identityKey(current.identity) === identityKey(account.identity));
+      if (active) return { account, active: true };
+      const content = await loadAccountAuth(id);
+      const auth = validateAuthJson(content);
+      if (!account.identity?.userId || identityKey(auth.identity) !== identityKey(account.identity)) throw new Error("账号身份不匹配。");
+      return { account, content, active: false };
+    },
+    validateRenewal: (before, after) => {
+      const original = validateAuthJson(before), updated = validateAuthJson(after);
+      if (identityKey(original.identity) !== identityKey(updated.identity)) throw new Error("续期返回的账号身份不匹配。");
+    },
+    saveAuth: (id, previous, next) => mutateIndex(async (index) => {
+      const account = index.accounts.find((item) => item.id === id);
+      if (!account) throw new Error("账号已删除。");
+      const stored = await loadAccountAuth(id);
+      if (stored !== previous && stored !== next) throw new Error("账号凭据已改变。");
+      const auth = validateAuthJson(next);
+      if (identityKey(account.identity) !== identityKey(auth.identity)) throw new Error("续期身份不匹配。");
+      // Persist the rotated refresh token first. Retrying an index write must
+      // never send the old refresh token again or overwrite the live auth file.
+      if (stored !== next) await saveAccountAuth(id, next);
+      markAccountAuthSnapshot(account, auth, next, new Date().toISOString(), { trustedLogin: true });
+    }),
+    saveQuota: (id, content, quota) => mutateIndex(async (index) => {
+      const account = index.accounts.find((item) => item.id === id);
+      if (!account || await loadAccountAuth(id) !== content || account.identity?.userId !== quota.accountId) throw new Error("账号状态已改变。");
+      if (Date.parse(account.quotaSnapshot?.checkedAt) > Date.parse(quota.checkedAt)) return { write: false };
+      account.quotaSnapshot = { ...quota, identityKey: identityKey(account.identity) };
+      account.quotaSnapshotUpdatedAt = quota.checkedAt;
+      account.onlineQuotaStatus = { checkedAt: quota.checkedAt, error: null };
+      delete account.needsReauth;
+      delete account.reauthReason;
+      delete account.reauthMarkedAt;
+      localDataCache.invalidate();
+      broadcastStateChanged({ scope: "accounts" });
+    }),
+    saveStatus: (id, content, status) => mutateIndex(async (index) => {
+      const account = index.accounts.find((item) => item.id === id);
+      if (!account || await loadAccountAuth(id) !== content) return { write: false };
+      account.onlineQuotaStatus = { checkedAt: status.checkedAt, error: status.error };
+      if (status.needsReauth) {
+        account.needsReauth = true;
+        account.reauthReason = status.error;
+        account.reauthMarkedAt = status.checkedAt;
+      }
+      broadcastStateChanged({ scope: "accounts" });
+    }),
+  });
+  return onlineAccounts;
+}
+
+async function refreshStandbyAccounts() {
+  if (onlineMaintenanceRunning || isQuitting || loginQuitPending || accountLogin?.isBusy()) return;
+  onlineMaintenanceRunning = true;
+  try {
+    const index = await readIndex();
+    for (const account of index.accounts) {
+      if (isQuitting || loginQuitPending || accountLogin?.isBusy()) break;
+      if (account.id !== index.activeAccountId && !account.needsReauth) await getOnlineAccounts().check(account.id);
+    }
+  } finally { onlineMaintenanceRunning = false; }
+}
+
+function startStandbyMaintenance() {
+  getOnlineAccounts();
+  refreshStandbyAccounts().catch(() => {});
+  onlineAccountsTimer = setInterval(() => refreshStandbyAccounts().catch(() => {}), MAINTENANCE_MS);
+  onlineAccountsTimer.unref?.();
+}
+
 function portableSnapshotRisk(previous, incoming) {
   if (JSON.stringify(previous.tokens) === JSON.stringify(incoming.tokens)) return null;
   const before = Date.parse(authLastRefresh(previous));
@@ -957,8 +1045,9 @@ function stripWindowEstimate(window) {
 }
 
 function normalizePublicQuotaSnapshot(snapshot) {
-  const localSnapshot = localStoredQuotaSnapshot(snapshot);
-  if (!localSnapshot) return null;
+  const stored = localStoredQuotaSnapshot(snapshot);
+  if (!stored) return null;
+  const { authFingerprint, identityKey: snapshotIdentity, ...localSnapshot } = stored;
   if (!localSnapshot.estimate || localSnapshot.estimate.algorithm === QUOTA_ESTIMATE_ALGORITHM) return localSnapshot;
   return {
     ...localSnapshot,
@@ -1000,6 +1089,7 @@ function normalizePublicAccount(account, activeId, currentIdentityKey) {
     lastSwitchedAt: account.lastSwitchedAt ?? null,
     quotaSnapshot: normalizePublicQuotaSnapshot(account.quotaSnapshot),
     quotaSnapshotUpdatedAt: account.quotaSnapshotUpdatedAt ?? null,
+    onlineQuotaStatus: account.onlineQuotaStatus ?? null,
     isActive: account.id === activeId || (!!currentIdentityKey && key === currentIdentityKey),
   };
 }
@@ -1094,6 +1184,7 @@ async function startAutoRecovery() {
     saveJournal: (journal) => writeJsonAtomic(journalPath, journal),
     beforeSwitch: (details, signal) => recoveryCountdown.request(details, signal),
     runAccountOperation,
+    checkCandidate: (id, allowed, force = false) => getOnlineAccounts().check(id, { allowed, force }),
     getAccounts: async () => {
       const index = await readIndex();
       const current = await readCurrentAuth();
@@ -1110,6 +1201,12 @@ async function startAutoRecovery() {
       if (!target || target.needsReauth) throw new Error("备用账号不可用，请重新登录。");
       // Validate the encrypted snapshot before changing the active auth file.
       validateAuthJson(await loadAccountAuth(targetId));
+      const checked = await getOnlineAccounts().checkLocked(targetId, { allowed });
+      if (checked.available !== true) {
+        const error = new Error(checked.reason || "备用账号的在线额度不足或未知，已取消自动切换。");
+        error.code = "ONLINE_PREFLIGHT";
+        throw error;
+      }
       if (!allowed()) throw new Error("自动恢复已关闭。");
       await switchAccountLocked(targetId, { restartCodex: true, allowed });
     }),
@@ -3911,6 +4008,7 @@ function emptyLocalUsage(since = null) {
 
 function localStoredQuotaSnapshot(snapshot) {
   if (!snapshot || snapshot.source === QUOTA_MODE_ONLINE || snapshot.schemaVersion !== 2) return null;
+  if (snapshot.source === ONLINE_ACCOUNT_SOURCE && (!snapshot.identityKey || !snapshot.authFingerprint || !snapshot.accountId)) return null;
   const session = rateWindowHasDisplayData(snapshot.session) ? snapshot.session : null;
   const weekly = rateWindowHasDisplayData(snapshot.weekly) ? snapshot.weekly : null;
   const strippedSession = !!snapshot.session && !session;
@@ -3955,7 +4053,7 @@ async function dashboardScope() {
     accountId: account?.id ?? null,
     hasCurrentAuth: !!currentIdentityKey,
     accountPlanType: account?.identity?.planType ?? null,
-    accountQuotaSnapshot: localStoredQuotaSnapshot(account?.quotaSnapshot),
+    accountQuotaSnapshot: normalizePublicQuotaSnapshot(account?.quotaSnapshot),
     accountQuotaCalibration: account?.quotaCalibration ?? null,
     settings: normalizeSettingsForState(index.settings),
     since: account?.lastSwitchedAt ?? null,
@@ -3981,6 +4079,20 @@ async function saveAccountQuotaSnapshot(accountId, quota, expectedSince) {
     account.quotaSnapshot = nextSnapshot;
     account.quotaSnapshotUpdatedAt = new Date().toISOString();
     return { value: true };
+  });
+}
+
+async function recordOfficialCalibration(scope, quota, records) {
+  if (!scope.hasCurrentAuth || !scope.accountId || !scope.since) return null;
+  return mutateIndex(async (index) => {
+    const account = index.accounts.find((item) => item.id === scope.accountId);
+    if (index.activeAccountId !== scope.accountId || !account || account.lastSwitchedAt !== scope.since
+      || !quotaMatchesAccount(account, quota)) return { write: false, value: null };
+    const previous = account.officialQuotaCalibration ?? null;
+    const next = observeOfficialQuota(previous, quota, records, scope, Date.now());
+    if (next === previous || JSON.stringify(previous) === JSON.stringify(next)) return { write: false, value: previous };
+    account.officialQuotaCalibration = next;
+    return { value: next };
   });
 }
 
@@ -4109,7 +4221,9 @@ async function cleanupMismatchedQuotaSnapshots() {
     for (const account of index.accounts) {
       if (
         account.quotaSnapshot &&
-        (account.quotaSnapshot.source === QUOTA_MODE_ONLINE || !quotaMatchesAccount(account, account.quotaSnapshot))
+        (account.quotaSnapshot.source === QUOTA_MODE_ONLINE || (account.quotaSnapshot.source === ONLINE_ACCOUNT_SOURCE
+          ? account.quotaSnapshot.identityKey !== identityKey(account.identity)
+          : !quotaMatchesAccount(account, account.quotaSnapshot)))
       ) {
         delete account.quotaSnapshot;
         delete account.quotaSnapshotUpdatedAt;
@@ -4142,7 +4256,7 @@ function resolveQuota(scope, latestQuota) {
           ...scope.accountQuotaSnapshot,
           source: "account-cache",
           error: scope.since
-            ? "当前账号切换后还没有新的额度快照，显示此账号上次本地快照。"
+            ? "当前账号切换后还没有新的额度快照，显示此账号上次保存的快照。"
             : null,
         }
       : null;
@@ -4169,6 +4283,10 @@ async function readBestLocalQuota(scope, files) {
   const sqlite = await readLatestSqliteRateLimitQuota({since:scope.since, accountIdentity:scope.account});
   // Structured bucket snapshots outrank legacy errors that do not name a bucket.
   const logged = combineBuckets([local, sqlite]) ?? await readLatestUsageLimitQuota({since:scope.since, accountIdentity:scope.account});
+  // Recent official readings remain the display baseline between polls. New
+  // local events can estimate the interval without replacing the official value.
+  const desktopAge = Date.now() - Date.parse(desktop?.checkedAt);
+  if (desktop && desktopAge >= 0 && desktopAge <= 90000) return desktop;
   // The desktop map describes the current account's pools; do not attach stale
   // Business pools from an old thread. Newer compatible logs remain a fallback.
   return desktop && (!logged || logged.limitId !== desktop.limitId || !planTypesMatch(logged.planType, scope.accountPlanType) ||
@@ -4179,8 +4297,13 @@ async function resolveQuotaWithMode(scope, files) {
   const latestQuota = await readBestLocalQuota(scope, files);
   const baseQuota = resolveQuota(scope, latestQuota);
   const records = await readLocalRecords(files, scope.since);
-  const estimated = latestQuota && latestQuota.source !== "local-desktop"
-    ? estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration}) : baseQuota;
+  let estimated = baseQuota;
+  if (latestQuota && OFFICIAL_SOURCES.has(latestQuota.source)) {
+    const calibration = await recordOfficialCalibration(scope, latestQuota, records);
+    estimated = estimateOfficialQuota(baseQuota, records, calibration, scope, Date.now());
+  } else if (latestQuota) {
+    estimated = estimateLocalQuota(baseQuota, records, {since:scope.since, calibration:scope.accountQuotaCalibration});
+  }
   const reset = await readLocalResetCredits(scope, records);
   const savedReset = scope.accountQuotaSnapshot?.resetCredits;
   estimated.resetCredits = newestResetCredits(estimated.resetCredits, reset, savedReset);
@@ -4242,8 +4365,10 @@ async function getAllAccountsQuotaSummary() {
       displayName: account.displayName,
       planType: account.identity?.planType ?? null,
       isActive,
+      onlineQuotaStatus: account.onlineQuotaStatus ?? null,
       quotaSnapshot: snapshot
         ? {
+            source: snapshot.source,
             checkedAt: snapshot.checkedAt,
             isCachedSnapshot: !isActive,
             resetCredits: snapshot.resetCredits ?? null,
@@ -4949,6 +5074,13 @@ async function checkForUpdates(event) {
 }
 
 function registerIpc() {
+  ipcMain.handle("account:check-quota", async (_event, accountId) => {
+    if (typeof accountId !== "string") throw new Error("请选择账号。");
+    const result = await getOnlineAccounts().check(accountId, { force: true });
+    broadcastStateChanged({ scope: "quota" });
+    return { available: result.available, reason: result.reason ?? (result.available === true ? "在线额度可用。"
+      : result.available === false ? "当前额度不足，自动切换会跳过此账号。" : "额度数据不完整，暂不能确认可用。") };
+  });
   ipcMain.handle("account:login-start", (_event, label) => runAccountOperation(() => getAccountLogin().start(label)));
   ipcMain.handle("account:login-cancel", () => getAccountLogin().cancel());
   ipcMain.handle("account:login-open", () => getAccountLogin().reopen());
@@ -5074,6 +5206,7 @@ if (hasSingleInstanceLock) {
     await startSessionsWatcher();
     await startSessionsPolling();
     await startAutoRecovery();
+    startStandbyMaintenance();
 
     app.on("activate", () => {
       showMainWindow();
@@ -5090,11 +5223,25 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
-  if (accountLogin?.isBusy()) {
+  if (!onlineQuitReady && (accountLogin?.isBusy() || onlineAccounts)) {
     event.preventDefault();
     if (!loginQuitPending) {
       loginQuitPending = true;
-      accountLogin.shutdown().finally(() => app.quit());
+      if (onlineAccountsTimer) clearInterval(onlineAccountsTimer);
+      autoRecovery?.configure(false, null);
+      (async () => {
+        await accountLogin?.shutdown();
+        await onlineAccounts?.shutdown();
+        onlineQuitReady = true;
+        app.quit();
+      })().catch(() => {
+        loginQuitPending = false;
+        onlineAccounts?.resume();
+        configureAutoRecovery();
+        onlineAccountsTimer = setInterval(() => refreshStandbyAccounts().catch(() => {}), MAINTENANCE_MS);
+        onlineAccountsTimer.unref?.();
+        dialog.showErrorBox("凭据尚未保存", "新的登录凭据尚未成功保存，已暂缓退出。请检查磁盘空间与文件权限后重试，避免丢失续期结果。");
+      });
     }
     return;
   }
@@ -5112,6 +5259,7 @@ app.on("before-quit", (event) => {
   if (sessionsWatcher) sessionsWatcher.close();
   if (sessionsPollingInterval) clearInterval(sessionsPollingInterval);
   if (autoRecoveryTimer) clearInterval(autoRecoveryTimer);
+  if (onlineAccountsTimer) clearInterval(onlineAccountsTimer);
   autoRecovery?.configure(false, null);
   clearWidgetDockTimers();
   for (const timer of reauthCheckTimers.values()) clearTimeout(timer);

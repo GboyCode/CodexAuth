@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("codexAuth", {
   cancelPortable: (selectionId) => ipcRenderer.invoke("account:cancel-portable", selectionId),
   importPortable: (password, selectionId) => ipcRenderer.invoke("account:import-portable", password, selectionId),
   switchAccount: (accountId, options) => ipcRenderer.invoke("account:switch", accountId, options),
+  checkAccountQuota: (accountId) => ipcRenderer.invoke("account:check-quota", accountId),
   reorderAccounts: (accountIds) => ipcRenderer.invoke("account:reorder", accountIds),
   reauthAccount: (accountId) => ipcRenderer.invoke("account:reauth", accountId),
   updateAccount: (accountId, patch) => ipcRenderer.invoke("account:update", accountId, patch),

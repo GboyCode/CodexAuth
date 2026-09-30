@@ -34,6 +34,9 @@ async function main(){
   assert.equal(subagent.segments[0].tokenUsage.totalTokens,150,"subagent first usage must not be treated as inherited");
   const rollback=await parseRecordFile(await write("rollout-reset.jsonl",[meta,context("a","x"),event(1,100),event(2,50),event(3,70)]));
   assert.equal(aggregateUsage([rollback]).tokenUsage.totalTokens,180);assert.equal(rollback.counterResets,1);
+  assert.equal(rollback.events[1].counterReset, true, "official training must see counter rollback boundaries");
+  assert.equal(fork.events[0].missingBaseline, true, "fork baselines cannot train an official quota interval");
+  assert.equal(record.events[1].intervalStartMs, Date.parse(ts(1)), "retain the time boundary for account attribution");
   const gz=path.join(root,"rollout-a.jsonl.gz");await fs.writeFile(gz,zlib.gzipSync(await fs.readFile(file.path)));assert.equal((await parseRecordFile({path:gz})).segments.length,2);
   if(zlib.zstdCompressSync){const zst=path.join(root,"rollout-a.jsonl.zst");await fs.writeFile(zst,zlib.zstdCompressSync(await fs.readFile(file.path)));assert.equal((await parseRecordFile({path:zst})).segments.length,2);}
   const week=normalizeBucket(quota(25,"premium",10080),ts(1));assert.equal(week.session,null);assert.equal(week.weekly.usedPercent,25);

@@ -81,7 +81,7 @@ function bucketsFromRecord(payload) {
 function createRecordState(previous) {
   if (previous) return { ...previous, result: { ...previous.result, segments: previous.result.segments.slice(),
     events: previous.result.events.slice(), resets: previous.result.resets.slice() } };
-  return { previous:null, model:null, tier:null, turnId:null, inherited:false,
+  return { previous:null, previousMs:null, model:null, tier:null, turnId:null, inherited:false,
     result: { id:null, forkedFrom:null, cwd:null, startedAt:null, model:null, segments:[], events:[], resets:[], invalidLines:0, counterResets:0, missingBaselines:0 } };
 }
 
@@ -113,16 +113,20 @@ function consumeRecordLine(state, file, line) {
   const usage = rawUsage ? normalizeTokenUsage(rawUsage) : null;
   const eventModel = p.model ?? state.model;
   const eventTier = p.service_tier ?? p.serviceTier ?? state.tier ?? "unknown";
-  let delta = null, boundary = false;
+  let delta = null, boundary = false, counterReset = false;
+  const intervalStartMs = state.previousMs;
+  const firstUsage = !!usage && !state.previous;
+  const missingBaseline = firstUsage && state.inherited;
   if (usage) {
     if (state.previous) {
       if (tokenUsageTotal(usage) < tokenUsageTotal(state.previous)) {
         // Rebase a reset; do not invent newly billed usage from a lower counter.
-        result.counterResets++;
+        result.counterResets++; counterReset = true;
       } else delta = subtractTokenUsage(usage, state.previous);
     } else if (!state.inherited) { delta = usage; boundary = true; }
     else result.missingBaselines++;
     state.previous = usage;
+    state.previousMs = ms;
   }
   const eventKey = crypto.createHash("sha256").update(JSON.stringify([timestamp, state.turnId, usage])).digest("hex");
   if (delta && tokenUsageTotal(delta) > 0) result.segments.push({ timestamp, ms, model:eventModel, cwd:result.cwd,
@@ -135,6 +139,7 @@ function consumeRecordLine(state, file, line) {
   const reset = normalizeResetCredits(p.rateLimitResetCredits ?? p.rate_limit_reset_credits, timestamp);
   if (reset) result.resets.push(reset);
   result.events.push({ timestamp, ms, model:eventModel, serviceTier:eventTier, tokenUsage:usage, delta,
+    intervalStartMs, firstUsage, missingBaseline, counterReset, turnId: state.turnId,
     sessionId:result.id ?? file.path, key:eventKey, rates });
 }
 

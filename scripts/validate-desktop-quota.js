@@ -86,11 +86,12 @@ async function validateReader() {
 
 async function validateIntegration() {
   const filename = path.resolve(__dirname, "../src/main.js"), realRequire = createRequire(filename);
-  let native = quotaFromDesktopUsage(usage(), scope, stamp());
+  let native = quotaFromDesktopUsage(usage(), scope, stamp()), clock = NOW;
   const sandbox = vm.createContext({ require: (name) => name === "electron"
     ? { app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => __dirname } }
     : name === "./quota/desktop-quota" ? { quotaFromDesktopUsage, createDesktopQuotaReader: () => ({ read: () => native }) } : realRequire(name),
-    process, __dirname: path.dirname(filename), console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval });
+    process, __dirname: path.dirname(filename), console, Buffer, Date: class extends Date { static now() { return clock; } },
+    setTimeout, clearTimeout, setInterval, clearInterval });
   vm.runInContext(fs.readFileSync(filename, "utf8"), sandbox);
   const old = { ...quotaFromDesktopUsage(usage(33), scope, stamp(-120000)), source: "local" };
   sandbox.readLatestLocalQuota = async () => old;
@@ -103,13 +104,16 @@ async function validateIntegration() {
   const resolved = await sandbox.resolveQuotaWithMode(scope, []);
   assert.equal(resolved.session.usedPercent, 100, "desktop replaces the stuck 67% remaining snapshot");
   assert.equal(resolved.weekly.usedPercent, 16);
-  assert.equal(resolved.estimate, undefined, "do not estimate from an unrelated old quota pool");
+  assert.equal(resolved.estimate.available, false, "do not estimate without matching official samples");
+  assert.equal(account.officialQuotaCalibration.latestAt, NOW, "persist the official observation for future correction");
   assert.equal(account.quotaSnapshot.session.usedPercent, 100);
   assert.equal(account.quotaSnapshot.resetCredits.availableCount, 0);
   assert.equal(await sandbox.saveAccountQuotaSnapshot(scope.accountId, old, scope.since), false, "in-flight older log cannot roll back native snapshot");
   account.lastSwitchedAt = stamp(5000);
   assert.equal(await sandbox.saveAccountQuotaSnapshot(scope.accountId, { ...native, checkedAt: stamp(10000) }, scope.since), false);
   old.checkedAt = stamp(15000);
+  assert.equal((await sandbox.readBestLocalQuota(scope, [])).source, "local-desktop", "a newer local event cannot replace a fresh official baseline");
+  native = { ...native, checkedAt: stamp(-120000) };
   assert.equal((await sandbox.readBestLocalQuota(scope, [])).source, "local", "newer logs take over when native snapshot is stale");
   sandbox.readLatestLocalQuota = async () => ({ ...old, limitId: "base_model_inference", planType: null,
     session: null, weekly: { usedPercent: 4, windowMinutes: 10080 } });
@@ -131,6 +135,38 @@ async function validateIntegration() {
   sandbox.dashboardScope = async () => (++scopeReads === 1 ? scope : { ...scope, since: stamp(10000) });
   await sandbox.readRecoveryUsage({ readUsage: async () => usage(25) }, "old-thread");
   assert.equal(account.quotaSnapshot.session.usedPercent, 100, "a recovery response crossing a switch cannot overwrite the snapshot");
+
+  // Exercise persisted official learning through the actual display pipeline.
+  account.quotaSnapshot = null; account.officialQuotaCalibration = null;
+  const record = { startedAt: stamp(), events: [] };
+  sandbox.readLocalRecords = async () => [record];
+  const addUsage = (ms, units) => record.events.push({ ms, key: `fixture-${ms}`, model: "model-a", serviceTier: "default",
+    rates: [{ limit_id: "codex" }], tokenUsage: { totalTokens: units },
+    delta: { totalTokens: units, inputTokens: units * 0.8, outputTokens: units * 0.2, cachedInputTokens: 0 }, intervalStartMs: ms - 5000 });
+  for (let i = 0; i <= 3; i++) {
+    clock = NOW + i * 30000;
+    if (i) addUsage(clock - 5000, 2000);
+    native = quotaFromDesktopUsage(usage(20 + i * 2), scope, stamp(i * 30000));
+    await sandbox.resolveQuotaWithMode(scope, []);
+  }
+  clock += 10000; addUsage(clock - 5000, 1000);
+  const interim = await sandbox.resolveQuotaWithMode(scope, []);
+  assert.equal(interim.session.usedPercent, 26);
+  assert.equal(interim.session.estimatedUsedPercent, 27);
+  assert.equal(interim.estimate.confidence, "official-calibrated");
+  assert.equal(account.quotaSnapshot.session.estimatedUsedPercent, 27, "account cards share the calibrated display");
+  record.events.at(-1).intervalStartMs = NOW + 85000;
+  const crossed = await sandbox.resolveQuotaWithMode(scope, []);
+  assert.equal(crossed.session.estimatedUsedPercent, undefined, "a delta crossing the official reading cannot inflate account cards");
+  assert.equal(crossed.session.usedPercent, 26);
+  clock += 20000; native = quotaFromDesktopUsage(usage(29), scope, stamp(clock - NOW));
+  const correction = await sandbox.resolveQuotaWithMode(scope, []);
+  assert.equal(correction.session.usedPercent, 29);
+  assert.equal(correction.session.estimatedUsedPercent, undefined, "the next official value corrects the rendered forecast");
+  account.lastSwitchedAt = stamp(clock - NOW);
+  const unchanged = JSON.stringify(account.officialQuotaCalibration);
+  assert.equal(await sandbox.recordOfficialCalibration(scope, native, [record]), null);
+  assert.equal(JSON.stringify(account.officialQuotaCalibration), unchanged, "old-account work cannot mutate calibration after switching");
 }
 
 (async () => {

@@ -2,8 +2,6 @@ const api = window.codexAuth;
 const q = window.CodexQuotaUI;
 const REFRESH_MS = 5000;
 const OPACITY_KEY = "codex-auth-widget-opacity";
-const ACCOUNT_POPOVER_CLOSE_DELAY_MS = 320;
-const ACCOUNT_POPOVER_SAFE_GAP_PX = 28;
 
 const els = {
   currentIdentity: document.querySelector("#currentIdentity"),
@@ -44,8 +42,6 @@ let latestSnapshot = null;
 let restartAfterSwitch = true;
 let expandedAccountId = null;
 let accountPopover = null;
-let accountPopoverTimer = null;
-let accountPopoverPointer = { x: Number.NaN, y: Number.NaN };
 let accountOrderDrag = null;
 let suppressAccountClickUntil = 0;
 
@@ -190,7 +186,7 @@ function createAccountQuotaDetails(account) {
   const snapshot = account.quotaSnapshot;
   const resets = document.createElement("p");
   resets.className = "account-reset-credits";
-  resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits);
+  resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits, { compact: true });
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
@@ -207,10 +203,10 @@ function createAccountQuotaDetails(account) {
   plan.textContent = q.formatPlanType(snapshot.planType || account.planType);
   summary.append(time, plan);
 
-  if (!account.isActive) {
+  if (account.onlineQuotaStatus?.error) {
     const note = document.createElement("p");
     note.className = "account-quota-empty";
-    note.textContent = "该账号上次保存的本地快照";
+    note.textContent = "在线查询失败，保留旧快照";
     details.append(note);
   }
 
@@ -223,62 +219,12 @@ function createAccountQuotaDetails(account) {
   return details;
 }
 
-function clearAccountPopoverTimer() {
-  window.clearTimeout(accountPopoverTimer);
-  accountPopoverTimer = null;
-}
-
-function trackAccountPopoverPointer(event) {
-  accountPopoverPointer = { x: event.clientX, y: event.clientY };
-}
-
-function pointerWithinRect(point, rect, padding = 0) {
-  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
-  return (
-    point.x >= rect.left - padding &&
-    point.x <= rect.right + padding &&
-    point.y >= rect.top - padding &&
-    point.y <= rect.bottom + padding
-  );
-}
-
-function pointerWithinPopoverZone(accountId) {
-  if (!accountPopover || accountPopover.accountId !== accountId) return false;
-  const rowRect = accountPopover.row.getBoundingClientRect();
-  const popoverRect = accountPopover.element.getBoundingClientRect();
-  const bridgeRect = {
-    left: Math.min(rowRect.left, popoverRect.left),
-    right: Math.max(rowRect.right, popoverRect.right),
-    top: Math.min(rowRect.top, popoverRect.top),
-    bottom: Math.max(rowRect.bottom, popoverRect.bottom),
-  };
-  return (
-    pointerWithinRect(accountPopoverPointer, rowRect, ACCOUNT_POPOVER_SAFE_GAP_PX) ||
-    pointerWithinRect(accountPopoverPointer, popoverRect, ACCOUNT_POPOVER_SAFE_GAP_PX) ||
-    pointerWithinRect(accountPopoverPointer, bridgeRect, 8)
-  );
-}
-
 function destroyAccountPopover() {
-  clearAccountPopoverTimer();
   accountPopover?.row?.classList.remove("expanded");
   accountPopover?.row?.setAttribute("aria-expanded", "false");
   accountPopover?.element?.remove();
   accountPopover = null;
   expandedAccountId = null;
-}
-
-function scheduleAccountPopoverClose(accountId) {
-  if (expandedAccountId !== accountId) return;
-  clearAccountPopoverTimer();
-  accountPopoverTimer = window.setTimeout(() => {
-    if (expandedAccountId !== accountId) return;
-    if (pointerWithinPopoverZone(accountId)) {
-      scheduleAccountPopoverClose(accountId);
-      return;
-    }
-    destroyAccountPopover();
-  }, ACCOUNT_POPOVER_CLOSE_DELAY_MS);
 }
 
 function positionAccountPopover(popover, row) {
@@ -305,6 +251,7 @@ function showAccountPopover(account, row) {
   destroyAccountPopover();
   expandedAccountId = account.id;
   row.classList.add("expanded");
+  row.setAttribute("aria-expanded", "true");
 
   const popover = document.createElement("div");
   popover.className = "account-quota-popover";
@@ -312,9 +259,20 @@ function showAccountPopover(account, row) {
   document.body.append(popover);
   positionAccountPopover(popover, row);
 
-  popover.addEventListener("mouseenter", clearAccountPopoverTimer);
-  popover.addEventListener("mouseleave", () => scheduleAccountPopoverClose(account.id));
   accountPopover = { accountId: account.id, element: popover, row };
+}
+
+function updateAccountPopover(snapshot) {
+  if (!accountPopover) return;
+  const account = snapshot.accounts.find((item) => item.id === accountPopover.accountId);
+  if (!account || !accountPopover.row.isConnected) {
+    destroyAccountPopover();
+    return;
+  }
+  const scrollTop = accountPopover.element.scrollTop;
+  accountPopover.element.replaceChildren(createAccountQuotaDetails(account));
+  positionAccountPopover(accountPopover.element, accountPopover.row);
+  accountPopover.element.scrollTop = scrollTop;
 }
 
 function updateAccountListOverflow() {
@@ -374,12 +332,17 @@ async function saveDraggedAccountOrder() {
 }
 
 function renderAccounts(snapshot) {
+  // A refresh that started before a drag must not replace or reorder its targets.
+  if (accountOrderDrag) return;
   latestSnapshot = snapshot;
   restartAfterSwitch = snapshot?.settings?.restartAfterSwitch !== false;
-  destroyAccountPopover();
-  els.accountList.replaceChildren();
+  const existingRows = new Map(Array.from(els.accountList.querySelectorAll(".account-row"),
+    (row) => [row.dataset.accountId, row]));
+  els.accountList.querySelector(".empty")?.remove();
   api.resizeWidget?.(snapshot.accounts.length).catch(() => {});
   if (!snapshot.accounts.length) {
+    destroyAccountPopover();
+    els.accountList.replaceChildren();
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = "暂无已保存账号";
@@ -387,106 +350,114 @@ function renderAccounts(snapshot) {
     queueAccountListOverflowUpdate();
     return;
   }
-  snapshot.accounts.forEach((account) => {
-    const row = document.createElement("div");
-    row.className = "account-row";
-    row.dataset.accountId = account.id;
-    row.draggable = true;
-    row.title = "按住拖动可调整顺序";
-    row.setAttribute("role", "button");
-    row.setAttribute("tabindex", "0");
-    row.setAttribute("aria-expanded", "false");
-    row.addEventListener("click", (event) => {
-      if (Date.now() < suppressAccountClickUntil) return;
-      if (event.target instanceof HTMLElement && event.target.closest("button")) return;
-      row.setAttribute("aria-expanded", expandedAccountId === account.id ? "false" : "true");
-      showAccountPopover(account, row);
-    });
-    row.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      row.setAttribute("aria-expanded", expandedAccountId === account.id ? "false" : "true");
-      showAccountPopover(account, row);
-    });
-    row.addEventListener("mouseenter", clearAccountPopoverTimer);
-    row.addEventListener("mouseleave", () => scheduleAccountPopoverClose(account.id));
-    let dragAllowed = false;
-    row.addEventListener("pointerdown", (event) => {
-      dragAllowed =
-        event.button === 0 &&
-        !(event.target instanceof HTMLElement && event.target.closest("button"));
-    });
-    row.addEventListener("pointerup", () => {
-      dragAllowed = false;
-    });
-    row.addEventListener("pointercancel", () => {
-      dragAllowed = false;
-    });
-    row.addEventListener("dragstart", (event) => {
-      if (!dragAllowed || !event.dataTransfer) {
+  snapshot.accounts.forEach((account, index) => {
+    let row = existingRows.get(account.id);
+    existingRows.delete(account.id);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "account-row";
+      row.dataset.accountId = account.id;
+      row.title = "点击查看额度";
+      row.setAttribute("role", "button");
+      row.setAttribute("tabindex", "0");
+      row.setAttribute("aria-expanded", "false");
+      row.addEventListener("click", (event) => {
+        if (Date.now() < suppressAccountClickUntil) return;
+        if (event.target instanceof HTMLElement && event.target.closest("button, .account-drag-handle")) return;
+        const currentAccount = latestSnapshot.accounts.find((item) => item.id === account.id);
+        if (currentAccount) showAccountPopover(currentAccount, row);
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.target !== row) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        return;
-      }
-      destroyAccountPopover();
-      accountOrderDrag = { row, originalIds: accountRowIds() };
-      row.classList.add("dragging");
-      els.accountList.classList.add("reordering");
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", account.id);
-    });
-    row.addEventListener("dragend", () => {
-      dragAllowed = false;
-      if (!accountOrderDrag) return;
-      const originalOrder = new Map(accountOrderDrag.originalIds.map((accountId, index) => [accountId, index]));
-      const rows = Array.from(els.accountList.querySelectorAll(".account-row"));
-      rows
-        .sort((left, right) => originalOrder.get(left.dataset.accountId) - originalOrder.get(right.dataset.accountId))
-        .forEach((accountRow) => els.accountList.append(accountRow));
-      clearAccountOrderDrag();
-    });
+        const currentAccount = latestSnapshot.accounts.find((item) => item.id === account.id);
+        if (currentAccount) showAccountPopover(currentAccount, row);
+      });
+      row.addEventListener("dragstart", (event) => {
+        if (!(event.target instanceof HTMLElement) ||
+            !event.target.closest(".account-drag-handle") || !event.dataTransfer) {
+          event.preventDefault();
+          return;
+        }
+        destroyAccountPopover();
+        accountOrderDrag = { row, originalIds: accountRowIds() };
+        row.classList.add("dragging");
+        els.accountList.classList.add("reordering");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", account.id);
+        event.dataTransfer.setDragImage(row, 12, row.offsetHeight / 2);
+      });
+      row.addEventListener("dragend", () => {
+        if (!accountOrderDrag) return;
+        const originalOrder = new Map(accountOrderDrag.originalIds.map((accountId, index) => [accountId, index]));
+        const rows = Array.from(els.accountList.querySelectorAll(".account-row"));
+        rows
+          .sort((left, right) => originalOrder.get(left.dataset.accountId) - originalOrder.get(right.dataset.accountId))
+          .forEach((accountRow) => els.accountList.append(accountRow));
+        clearAccountOrderDrag();
+      });
 
-    const label = document.createElement("div");
-    label.className = "account-label";
-    const name = document.createElement("strong");
-    name.textContent = account.displayName;
-    const meta = document.createElement("small");
-    meta.textContent = account.needsReauth
+      const handle = document.createElement("span");
+      handle.className = "account-drag-handle";
+      handle.draggable = true;
+      handle.title = "拖动调整账号顺序";
+      handle.setAttribute("aria-hidden", "true");
+      handle.textContent = "⠿";
+
+      const label = document.createElement("div");
+      label.className = "account-label";
+      const name = document.createElement("strong");
+      const meta = document.createElement("small");
+      label.append(name, meta);
+
+      const actions = document.createElement("div");
+      actions.className = "account-row-actions";
+
+      const button = document.createElement("button");
+      button.dataset.action = "switch";
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        switchAccount(account.id, button);
+      });
+
+      const reauth = document.createElement("button");
+      reauth.dataset.action = "reauth";
+      reauth.addEventListener("click", (event) => {
+        event.stopPropagation();
+        reauthAccount(account.id, reauth);
+      });
+      actions.append(button, reauth);
+
+      row.append(handle, label, actions);
+    }
+
+    row.querySelector("strong").textContent = account.displayName;
+    row.querySelector("small").textContent = account.needsReauth
       ? "需要重新登录"
       : account.accessTokenExpired
         ? "切换后自动刷新"
         : account.isActive
-        ? account.planType
-          ? `当前账号 · ${q.formatPlanType(account.planType)}`
-          : "当前账号"
-        : account.planType
-          ? `${identityLabel(account)} · ${q.formatPlanType(account.planType)}`
-          : identityLabel(account);
-    label.append(name, meta);
-
-    const actions = document.createElement("div");
-    actions.className = "account-row-actions";
-
-    const button = document.createElement("button");
-    button.textContent = account.isActive ? "已启用" : "切换";
-    button.className = account.isActive ? "" : "primary";
-    button.disabled = account.isActive;
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      switchAccount(account.id, button);
-    });
-
-    const reauth = document.createElement("button");
-    reauth.textContent = account.needsReauth ? "登录" : "重登";
-    reauth.className = account.needsReauth ? "primary" : "";
-    reauth.addEventListener("click", (event) => {
-      event.stopPropagation();
-      reauthAccount(account.id, reauth);
-    });
-    actions.append(button, reauth);
-
-    row.append(label, actions);
-    els.accountList.append(row);
+          ? account.planType ? `当前账号 · ${q.formatPlanType(account.planType)}` : "当前账号"
+          : account.planType ? `${identityLabel(account)} · ${q.formatPlanType(account.planType)}` : identityLabel(account);
+    const button = row.querySelector('[data-action="switch"]');
+    if (!button.hasAttribute("aria-busy")) {
+      button.textContent = account.isActive ? "已启用" : "切换";
+      button.className = account.isActive ? "" : "primary";
+      button.disabled = account.isActive;
+    }
+    const reauth = row.querySelector('[data-action="reauth"]');
+    if (!reauth.hasAttribute("aria-busy")) {
+      reauth.textContent = account.needsReauth ? "登录" : "重登";
+      reauth.className = account.needsReauth ? "primary" : "";
+      reauth.disabled = false;
+    }
+    if (els.accountList.children[index] !== row) {
+      els.accountList.insertBefore(row, els.accountList.children[index] ?? null);
+    }
   });
+  existingRows.forEach((row) => row.remove());
+  updateAccountPopover(snapshot);
   queueAccountListOverflowUpdate();
 }
 
@@ -526,32 +497,42 @@ async function refresh(silent = true) {
 }
 
 async function switchAccount(accountId, button) {
+  destroyAccountPopover();
   const previous = button.textContent;
+  button.setAttribute("aria-busy", "true");
   button.textContent = "切换中";
   button.disabled = true;
   try {
     await api.switchAccount(accountId, { restartCodex: restartAfterSwitch });
+    button.removeAttribute("aria-busy");
     await refresh(true);
     showToast(restartAfterSwitch ? "已切换并重启 Codex" : "已切换账号");
   } catch (error) {
     button.textContent = previous;
     button.disabled = false;
     showToast(error instanceof Error ? error.message : String(error));
+  } finally {
+    button.removeAttribute("aria-busy");
   }
 }
 
 async function reauthAccount(accountId, button) {
+  destroyAccountPopover();
   const previous = button.textContent;
+  button.setAttribute("aria-busy", "true");
   button.textContent = "打开中";
   button.disabled = true;
   try {
     await api.reauthAccount(accountId);
+    button.removeAttribute("aria-busy");
     await refresh(true);
     showToast("已打开 Codex 官方登录流程");
   } catch (error) {
     button.textContent = previous;
     button.disabled = false;
     showToast(error instanceof Error ? error.message : String(error));
+  } finally {
+    button.removeAttribute("aria-busy");
   }
 }
 
@@ -580,6 +561,10 @@ function wireEvents() {
     window.localStorage.setItem(OPACITY_KEY, String(percent));
   });
   window.addEventListener("click", () => setSettingsOpen(false));
+  window.addEventListener("pointerdown", (event) => {
+    if (accountPopover && !accountPopover.row.contains(event.target) &&
+        !accountPopover.element.contains(event.target)) destroyAccountPopover();
+  });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       setSettingsOpen(false);
@@ -587,10 +572,9 @@ function wireEvents() {
     }
   });
   window.addEventListener("resize", () => {
-    destroyAccountPopover();
+    if (accountPopover) positionAccountPopover(accountPopover.element, accountPopover.row);
     queueAccountListOverflowUpdate();
   });
-  window.addEventListener("mousemove", trackAccountPopoverPointer, { passive: true });
   window.addEventListener("mouseenter", () => api.widgetPointerEnter?.().catch(() => {}));
   window.addEventListener("mouseleave", () => api.widgetPointerLeave?.().catch(() => {}));
   els.accountList.addEventListener("scroll", destroyAccountPopover);

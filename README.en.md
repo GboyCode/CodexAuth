@@ -6,7 +6,7 @@ English README | [中文说明](README.md)
 
 CodexAuth Switch is a local Windows and macOS desktop utility for quickly switching between multiple Codex App login accounts.
 
-It is designed for people who use more than one OpenAI / Codex App account. Start official sign-in from the panel or save the current login, then switch the active Codex account through this tool. Credentials are stored locally. Usage comes from local Codex logs; Windows quota also updates through the local Codex desktop interface, with Codex handling associated service requests. Conversation history is not uploaded to the project author or third parties.
+It is designed for people who use more than one OpenAI / Codex App account. Start official sign-in from the panel or save the current login, then switch accounts. Credentials are encrypted locally and usage statistics come from local logs. Windows active-account quota comes through Codex; standby quota and token renewal use direct requests to fixed OpenAI endpoints. Credentials and conversation history are never uploaded to the project author or third parties.
 
 One-line positioning: **CodexAuth Switch is a local-first Codex App multi-account switcher with `auth.json` snapshot management, Windows DPAPI / macOS Keychain encryption, quota display, and token usage statistics.**
 
@@ -22,7 +22,7 @@ v0.1.37 fixes stretched and clipped icons in GitHub installers and adds renderin
 - Users who want to switch the active OpenAI Codex / Codex App account quickly.
 - Users who want to safely save and restore local `~/.codex/auth.json` login snapshots.
 - Users who want to view local session quota, weekly quota, remaining resets, token usage, and project/model statistics.
-- Users who want local log estimation without sending tokens, account data, or conversation history to remote quota endpoints.
+- Users who want local usage statistics and a live quota check before switching to a standby account.
 
 ## Search Keywords
 
@@ -79,9 +79,8 @@ CodexAuth Switch is intentionally scoped to the local Codex login file and the a
 - It does not delete `~/.codex/sessions`.
 - It does not write to `logs_2.sqlite`.
 - It does not upload credentials, account data, logs or usage to the project author or third parties. User-triggered official sign-in and continuation communicate with OpenAI through Codex.
-- It does not use the current access token to request remote quota endpoints.
-- It does not refresh OpenAI tokens by itself.
-- It does not call remote quota endpoints directly; the local desktop interface delegates quota reads to Codex.
+- Codex owns active-account quota reads and renewal; updated `auth.json` contents are synchronized into encrypted snapshots.
+- Standby access tokens and workspace IDs go only to `https://chatgpt.com/backend-api/wham/usage`; refresh credentials go only to `https://auth.openai.com/oauth/token`. No conversation or usage logs are sent, and redirects are refused.
 
 Features that intentionally affect Codex App runtime state include account switching, reauth, deleting the active account, restarting Codex App, and opt-in automatic switching and continuation. These actions may update `config.toml`, replace or remove the current `auth.json`, and restart Codex App so the new local login state takes effect. Automatic continuation also asks the local Codex interface to verify the active account's quota and send a continuation prompt; Codex itself performs the associated service requests.
 
@@ -111,7 +110,9 @@ Backups created before operating on the active login are stored in:
 - Windows: `%APPDATA%\codex-auth-switcher\backups`
 - macOS: `~/Library/Application Support/codex-auth-switcher/backups`
 
-The app does not call an OpenAI token-refresh endpoint itself. Codex refreshes access and refresh tokens during actual use; CodexAuth Switch watches the current `auth.json` and re-encrypts updated contents into the matching account snapshot. An expired access token alone does not mean the login is invalid—reauth is needed only when Codex can no longer refresh it.
+Codex renews the active account, and CodexAuth watches and encrypts the latest `auth.json`. Standby credentials renew when the access token expires within five minutes, or the last renewal is older than seven days or unknown. A quota HTTP 401 permits one renewal and retry. Renewal shares the account-mutation queue with switching, importing and deletion. Replacement credentials are atomically encrypted before further queries or mutations; failed writes retain the pending replacement, block account changes and are retried before exit.
+
+Renewal does not guarantee a permanent login. Definitively expired, revoked or reused refresh tokens require sign-in again; network errors and rate limits retain credentials and back off. Maintenance requires the app to be running. Separate sign-ins per machine are recommended because concurrent refresh-token rotation on different machines can invalidate saved copies.
 
 The newest 60 encrypted backups are retained. Atomic-write temporary files older than one hour are cleaned at startup so long-running switching and usage tracking do not create unbounded cache growth.
 
@@ -145,15 +146,21 @@ This does not bypass or replace official login. The real login still happens ins
 
 The optional recovery toggle is off by default. Every 15 seconds it checks local tasks for explicit new quota failures or goals in `usageLimited`. A nearly empty widget estimate alone does not trigger switching.
 
-Candidates are grouped as Plus, Business with a five-hour limit, weekly-only Business, Business with unknown windows, then other plans. Within each group, the nearest upcoming reset comes first, with remaining balance breaking ties. Missing or stale records keep their plan priority but follow valid records within that group, so an unknown-quota Plus is still tried before Business. Reauthentication flags, unreset low balances and remembered exhaustion exclude an account; exhaustion persists across recovery rounds and restarts. Each attempt has a cancellable countdown and waits for other work to finish. Only verified target identity and live availability allow a visible continuation message to the original task. Goal objective, budget and accounting are preserved.
+Candidates are grouped as Plus, Business with a five-hour limit, weekly-only Business, Business with unknown windows, then other plans. Within a group, the nearest reset comes first, with remaining balance breaking ties. Missing records can be checked online; reauthentication flags and known unreset exhaustion exclude accounts. Live availability is required before the cancellable countdown and queried again afterward, before closing Codex. Unknown or failed checks keep the current account. All returned model pools are retained and checked conservatively: a pool with 2% or less remaining or incomplete data blocks automatic switching. A passed reset is not proof of replenishment. Other work must finish first, and target identity and availability are still verified through Codex after switching. Goal objective, budget and accounting are preserved.
 
 This continues existing context rather than restoring process state. Manual account operations cancel pending recovery; uncertain sends are never replayed. Recovery tries to open the first confirmed task once. Requires a compatible Windows desktop interface and never automatically consumes reset credits.
 
 ### Quota Mode
 
-On Windows, the quota panel reads the current account through the local Codex desktop interface in the background every 30 seconds. Account and switch-boundary checks prevent an old conversation's quota pool from freezing the display after switching plans. If the interface is unavailable, local logs and timestamped snapshots remain available; other platforms continue using local logs. CodexAuth does not request remote quota endpoints directly; Codex handles service requests needed by its desktop interface.
+On Windows, active-account quota is read through Codex every 30 seconds, with local logs and timestamped snapshots as fallback. Other platforms retain local reads for the active account. Standby accounts are queried at startup and every five minutes, with renewal when needed; expanded account details provide a manual online refresh button. Requests share a one-minute cache, deduplicate concurrent reads and back off on failure. The post-countdown query bypasses the success cache. Online, desktop and log sources are labeled separately. Failed checks preserve the last successful snapshot and its timestamp, with an error; an old snapshot never authorizes automatic switching.
 
 ### Local Quota And Usage
+
+Successive official snapshots calibrate estimates between queries for the active account. Samples are isolated by account, plan, pool, window duration, model and service tier, and retained for seven days. Training requires at least a two-percentage-point change attributable to local records; prediction requires three stable samples with similar input/output and cache proportions. Actual official percentages remain intact, estimates are labeled, and each new official reading replaces the forecast. Missing logs, mixed-model training intervals, counter rollbacks, account-switch boundaries and reset crossings do not train the model. Predictions stop after two minutes without a fresh official snapshot or when the projected increment exceeds five percentage points. Usage from other devices cannot be fully attributed locally, so this remains a conservative estimate. Automatic switching still uses actual quota only.
+
+When logs omit the speed tier, samples are restricted to the same thread and turn. Missing metadata is never treated as the default tier or reused across turns.
+
+Usage increments used for training or prediction must lie entirely after the corresponding official snapshot. Crossing intervals, unknown starts and reversed timestamps retain the official value; older calibration samples are rebuilt. Malformed quota windows remain unknown and block automatic switching even when another window is valid.
 
 Local estimate mode reads:
 
@@ -198,9 +205,9 @@ ws://
 wss://
 ```
 
-These restrictions keep renderer pages local-only and help prevent account data or local history from being uploaded. The main process delegates quota reads to Codex through its local interface without giving renderer pages tokens or network access.
+Renderer pages remain offline and receive no credentials or network access. The main process queries standby quota and renews credentials at fixed official HTTPS endpoints, and delegates active-account quota reads to Codex. Saved online results are bound to the account identity and encrypted credential version.
 
-The explicit exception is a user-triggered update check: the main process makes a separate HTTPS request to this repository's fixed public GitHub endpoint. Only matching installer links within this repository are accepted and opened in the system browser. GitHub login data and Codex credentials are not read.
+User-triggered update checks also use separate main-process HTTPS requests to this repository's fixed public GitHub endpoint. Only matching installer links within this repository are accepted and opened in the system browser. GitHub login data and Codex credentials are not read.
 
 User-triggered account sign-in also connects to OpenAI authentication services through the system browser and an isolated official Codex helper, using the official local callback. Renderer pages remain offline.
 

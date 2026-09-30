@@ -439,14 +439,14 @@ button {
 
 .account-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   min-height: var(--account-row-height);
   border: 1px solid transparent;
   border-radius: 10px;
   padding: 5px 7px;
-  cursor: grab;
+  cursor: pointer;
   outline: none;
   user-select: none;
   transition:
@@ -455,7 +455,17 @@ button {
     box-shadow 140ms ease;
 }
 
-.account-row:active {
+.account-drag-handle {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: grab;
+}
+
+.account-drag-handle:active,
+.account-row.dragging {
   cursor: grabbing;
 }
 
@@ -479,10 +489,6 @@ button {
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.68);
   box-shadow: var(--shadow);
-}
-
-.account-row.expanded {
-  align-items: start;
 }
 
 .account-row-actions {
@@ -563,6 +569,7 @@ button {
   grid-column: auto;
   border-top: 0;
   padding-top: 0;
+  animation: none;
 }
 
 .account-quota-details {

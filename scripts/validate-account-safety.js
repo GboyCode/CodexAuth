@@ -25,10 +25,20 @@ async function storage() {
     const filename = path.resolve(__dirname, "../src/main.js"), realRequire = createRequire(filename);
     const selectedFile = path.join(root, "transfer.codexauth");
     const prompts = []; let confirm = 1;
+    let onlineRequests = 0;
+    const onlineModule = realRequire("./quota/online-accounts");
     const sandbox = vm.createContext({ require: (name) => name === "electron" ? {
       app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => root },
       dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [selectedFile] }) },
-    } : name === "node:child_process" ? { spawn() { throw new Error("No real process execution in this test"); } } : realRequire(name),
+    } : name === "node:child_process" ? { spawn() { throw new Error("No real process execution in this test"); } }
+      : name === "./quota/online-accounts" ? { ...onlineModule, createOnlineAccounts: (deps) => onlineModule.createOnlineAccounts({ ...deps,
+        now: () => NOW,
+        request: async (url) => {
+          onlineRequests++;
+          return url === onlineModule.TOKEN_URL ? { status: 200, data: { access_token: "FAKE-renewed-access", refresh_token: "FAKE-renewed-refresh" } }
+            : { status: 200, data: { account_id: "shared-workspace", plan_type: "plus", rate_limit: { allowed: true,
+              primary_window: { used_percent: 20, limit_window_seconds: 18000, reset_at: NOW / 1000 + 7200 } } } };
+        } }) } : realRequire(name),
       __dirname: path.dirname(filename), process: { ...process, env: { ...process.env, CODEX_HOME: home } },
       Buffer, console, setTimeout, clearTimeout, setInterval, clearInterval });
     vm.runInContext(await fs.readFile(filename, "utf8"), sandbox);
@@ -152,6 +162,44 @@ async function storage() {
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(order, ["check"]); release(); await Promise.all([first, second]);
     assert.deepEqual(order, ["check", "send", "switch"]);
+
+    // Exercise the real encrypted-storage adapter and account queue, without a
+    // real service, app restart, or access to the user's account directory.
+    await sandbox.saveAccountAuth(records.a.id, aNew);
+    await sandbox.saveAccountAuth(records.b.id, bNew);
+    await sandbox.writeIndex({ accounts: Object.values(records), activeAccountId: records.b.id, settings: {} });
+    await fs.writeFile(authFile, bNew);
+    sandbox.broadcastStateChanged = () => {};
+    const online = sandbox.getOnlineAccounts();
+    assert.equal((await online.check(records.a.id)).available, true);
+    assert.equal(onlineRequests, 2, "renewal is persisted before querying standby quota");
+    assert.equal(await fs.readFile(authFile, "utf8"), bNew, "standby renewal leaves the live auth file untouched");
+    const saved = (await sandbox.readIndex()).accounts.find((item) => item.id === records.a.id);
+    assert.equal(saved.quotaSnapshot.source, "online-account");
+    assert.equal(saved.quotaSnapshot.authFingerprint, saved.authFingerprint);
+    assert.equal(saved.quotaSnapshot.identityKey, sandbox.identityKey(saved.identity));
+    assert.equal(JSON.parse(await sandbox.loadAccountAuth(saved.id)).tokens.refresh_token, "FAKE-renewed-refresh");
+    assert.equal((await fs.readFile(sandbox.accountBlobPath(saved.id), "utf8")).includes("FAKE-renewed"), false);
+    assert.equal(sandbox.normalizePublicAccount(saved, records.b.id, null).quotaSnapshot.authFingerprint, undefined);
+    await sandbox.cleanupMismatchedQuotaSnapshots();
+    assert.ok((await sandbox.readIndex()).accounts.find((item) => item.id === saved.id).quotaSnapshot,
+      "restart cleanup preserves a correctly scoped online snapshot");
+    await online.check(records.b.id);
+    assert.equal(onlineRequests, 2, "active-account credentials are owned by Codex");
+    // A failed encrypted write blocks queued account changes until the rotated
+    // token can be saved. No operation can overwrite it with an older snapshot.
+    const persist = sandbox.saveAccountAuth;
+    await sandbox.saveAccountAuth(saved.id, aNew);
+    sandbox.saveAccountAuth = async () => { throw new Error("disk full"); };
+    assert.equal((await online.check(saved.id, { force: true })).available, null);
+    let mutated = false;
+    await assert.rejects(sandbox.runAccountOperation(async () => { mutated = true; }), /disk full/);
+    assert.equal(mutated, false);
+    sandbox.saveAccountAuth = persist;
+    await sandbox.runAccountOperation(async () => { mutated = true; });
+    assert.equal(mutated, true);
+    assert.equal(JSON.parse(await sandbox.loadAccountAuth(saved.id)).tokens.refresh_token, "FAKE-renewed-refresh");
+    await online.shutdown();
   } finally {
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
     assert.ok(path.basename(root).startsWith("codexauth-safety-"));
@@ -191,6 +239,7 @@ async function recovery(stage) {
     },
   };
   const deps = { now: () => NOW, bridge, getAnchor: async () => "task", getAccounts: async () => ({ accounts, activeAccountId: active }),
+    checkCandidate: async () => ({ available: true }),
     loadJournal: async () => stored, saveJournal: async (value) => { stored = clone(value); },
     beforeSwitch: async () => "elapsed", switchAccount: async (id) => { active = id; },
     runAccountOperation: async (task) => { assert.equal(locked, false); locked = true; try { return await task(); } finally { locked = false; } },

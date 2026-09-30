@@ -237,7 +237,7 @@ function setUsageScope(scope) {
 }
 
 function renderSettings(snapshot) {
-  els.quotaModeHint.textContent = "本地预估：只读取本机 Codex 日志，不联网。";
+  els.quotaModeHint.textContent = "当前账号：Codex 桌面额度与本地日志。备用账号：每 5 分钟在线查询并按需续期；自动切换前重新核验。";
   if (els.restartAfterSwitch) {
     els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
@@ -271,7 +271,7 @@ function renderStatus(snapshot) {
       `CodexAuth ${d.version} · Codex ${d.codexVersion ?? "版本未知"}`,
       `文件凭据：${d.fileCredentials?"正常":"需检查"} · 账号同步：${d.authSynchronized?"一致":"待同步"}`,
       `${d.sessionFiles} 个本地日志 · ${d.logDatabase} ${d.dbReadable?"可读":"暂不可读"}`,
-      `日志更新：${d.latestLogAt?formatDate(d.latestLogAt):"未知"} · 全程本地`,
+      `日志更新：${d.latestLogAt?formatDate(d.latestLogAt):"未知"} · 用量统计来自本机`,
     ].join("\n");
     els.recoveryInfo.hidden=!d.recovery;
     if(d.recovery)els.recoveryInfo.textContent=`已从加密快照恢复 ${d.recovery.recovered} 个账号，${d.recovery.skipped} 个未恢复。原文件保留于 ${d.recovery.path}`;
@@ -315,10 +315,33 @@ function createAccountQuotaDetails(account) {
   const details = document.createElement("section");
   details.className = "account-quota-details";
 
+  if (!account.isActive) {
+    const check = document.createElement("button");
+    check.className = "account-action";
+    check.textContent = "刷新在线额度";
+    check.addEventListener("click", async () => {
+      check.disabled = true;
+      check.textContent = "查询中…";
+      try {
+        const result = await api.checkAccountQuota(account.id);
+        await refresh(true);
+        showToast(result.reason);
+      } catch (error) { showToast(error.message); }
+      finally { check.disabled = false; check.textContent = "刷新在线额度"; }
+    });
+    details.append(check);
+  }
+  if (account.onlineQuotaStatus?.error) {
+    const warning = document.createElement("p");
+    warning.className = "account-quota-empty";
+    warning.textContent = `${account.onlineQuotaStatus.error} · ${formatDate(account.onlineQuotaStatus.checkedAt)}；下方保留上次成功快照。`;
+    details.append(warning);
+  }
+
   const snapshot = account.quotaSnapshot;
   const resets = document.createElement("p");
   resets.className = "account-reset-credits";
-  resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits);
+  resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits, { compact: true });
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
@@ -331,7 +354,7 @@ function createAccountQuotaDetails(account) {
   summary.className = "account-quota-summary";
 
   const source = document.createElement("span");
-  source.textContent = `${snapshotTimeLabel(snapshot)} · ${q.quotaSourceLabel(snapshot.source)}`;
+  source.textContent = snapshotTimeLabel(snapshot);
 
   const plan = document.createElement("strong");
   plan.textContent = q.formatPlanType(snapshot.planType || account.planType);
@@ -342,6 +365,15 @@ function createAccountQuotaDetails(account) {
   grid.append(createAccountQuotaMetric("session", snapshot.session), createAccountQuotaMetric("weekly", snapshot.weekly));
 
   details.append(summary, resets, grid);
+  for (const bucket of snapshot.additional ?? []) {
+    const label = document.createElement("p");
+    label.className = "account-quota-foot";
+    label.textContent = bucket.label || bucket.limitId;
+    const windows = document.createElement("div");
+    windows.className = "account-quota-grid";
+    windows.append(createAccountQuotaMetric("session", bucket.session), createAccountQuotaMetric("weekly", bucket.weekly));
+    details.append(label, windows);
+  }
   return details;
 }
 
@@ -670,8 +702,7 @@ async function renderAllAccountsQuota() {
       note.className = "all-account-status";
       note.textContent = !account.quotaSnapshot
         ? (account.isActive ? "当前账号 · 暂无额度记录" : "暂无额度记录")
-        : account.isActive ? "当前账号 · 本地快照"
-        : account.quotaSnapshot.isCachedSnapshot ? "上次切换时的本地快照" : "本地额度快照";
+        : `${account.isActive ? "当前账号 · " : ""}${q.quotaSourceLabel(account.quotaSnapshot.source)} · ${formatDate(account.quotaSnapshot.checkedAt)}${account.onlineQuotaStatus?.error ? " · 在线查询失败，保留旧快照" : ""}`;
       card.append(note,
         createAllAccountQuotaMeter("session", account.quotaSnapshot?.session),
         createAllAccountQuotaMeter("weekly", account.quotaSnapshot?.weekly)

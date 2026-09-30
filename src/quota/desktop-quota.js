@@ -16,7 +16,8 @@ function quotaFromDesktopUsage(usage, scope, checkedAt) {
   if (buckets.some((bucket) => plan && bucket.planType && normalizePlanType(bucket.planType) !== plan)) return null;
   const quota = combineBuckets(buckets.map((bucket) => ({ ...bucket, source: "local-desktop" })));
   if (!quota) return null;
-  return { ...quota, resetCredits: normalizeResetCredits(usage.rateLimitResetCredits, checkedAt) };
+  const resetCredits = normalizeResetCredits(usage.rateLimitResetCredits, checkedAt);
+  return { ...quota, resetCredits: resetCredits ? { ...resetCredits, source: "local-desktop" } : null };
 }
 
 // Read through the existing desktop bridge, without handling tokens or calling
