@@ -6,6 +6,7 @@ const GOAL_CONTINUE_PROMPT = "刚才本任务的目标因 Codex 账号额度耗�
 const POLL_MS = 15000;
 const MAX_SNAPSHOT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MIN_REMAINING_PERCENT = 2;
+const UNKNOWN_RESET_RETRY_MS = 30 * 60 * 1000;
 
 function windowScore(window, now) {
   if (!window || typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) return null;
@@ -65,16 +66,26 @@ function isAccountExcluded(account, excluded, now) {
   const quota = account.quotaSnapshot;
   const checkedAt = Date.parse(quota?.checkedAt);
   const windows = [quota?.session, quota?.weekly].filter(Boolean);
-  const fresh = quota?.schemaVersion === 2 && quota.source === "local"
-    && Number.isFinite(checkedAt) && checkedAt > record.confirmedAt && checkedAt <= now;
+  const fresh = quota?.schemaVersion === 2 && ["local", "local-desktop"].includes(quota.source)
+    && Number.isFinite(checkedAt) && checkedAt > record.confirmedAt && checkedAt <= now
+    && windows.length > 0 && windows.every((window) => {
+      const observedAt = Date.parse(window.checkedAt ?? quota.checkedAt);
+      return observedAt > record.confirmedAt && observedAt <= now;
+    });
   const recovered = fresh && windows.length > 0 && windows.every((window) => {
       const score = windowScore(window, now);
       const observedAt = Date.parse(window.checkedAt ?? quota.checkedAt);
       return score && !score.inferred && score.remaining > MIN_REMAINING_PERCENT && observedAt > record.confirmedAt;
     });
   if (recovered) return false;
-  const retryAt = record.retryAt ?? (fresh ? quotaExclusion(account, null, record.confirmedAt).retryAt : null);
-  // Unknown reset times stay excluded until a new actual quota record arrives.
+  // A newly observed depleted window can move the reset in either direction.
+  // Inferred balances alone cannot clear or shorten a confirmed exclusion.
+  const updatedReset = fresh && windows.some((window) => typeof window.usedPercent === "number"
+    && window.usedPercent >= 100 - MIN_REMAINING_PERCENT)
+    ? quotaExclusion(account, null, record.confirmedAt).retryAt : null;
+  const retryAt = updatedReset ?? record.retryAt ?? (record.confirmedAt + UNKNOWN_RESET_RETRY_MS);
+  // Missing reset data is temporary uncertainty, not a permanent ban. Each
+  // retry still requires a live account/availability check before continuing.
   return !Number.isFinite(retryAt) || retryAt > now;
 }
 

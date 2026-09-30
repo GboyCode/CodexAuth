@@ -95,7 +95,9 @@ async function run() {
   assert.equal(isAccountExcluded(remembered, legacyExpiry, NOW + 31 * 60000), true, "old journal entries must not silently expire after upgrading");
   const unknownBlock = quotaExclusion(businessWithoutQuota("unknown"), null, NOW);
   assert.equal(unknownBlock.retryAt, null);
-  assert.equal(isAccountExcluded(businessWithoutQuota("unknown"), unknownBlock, NOW + 86400000), true);
+  assert.equal(isAccountExcluded(businessWithoutQuota("unknown"), unknownBlock, NOW + 30 * 60000 - 1), true);
+  assert.equal(isAccountExcluded(businessWithoutQuota("unknown"), unknownBlock, NOW + 30 * 60000), false,
+    "missing reset data permits a live retry after cooldown, including old journals");
   const learnedReset = account("unknown", 100);
   learnedReset.quotaSnapshot.checkedAt = new Date(NOW + 60000).toISOString();
   learnedReset.quotaSnapshot.weekly.usedPercent = 20;
@@ -106,6 +108,21 @@ async function run() {
   restoredQuota.quotaSnapshot.session.usedPercent = 10;
   restoredQuota.quotaSnapshot.weekly.usedPercent = 10;
   assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), false, "new observed available quota lifts the block early");
+  restoredQuota.quotaSnapshot.source = "local-desktop";
+  assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), false, "desktop observations lift known-reset exclusions");
+  assert.equal(isAccountExcluded(restoredQuota, unknownBlock, NOW + 60000), false, "desktop observations lift unknown-reset exclusions immediately");
+  assert.equal(rankAccounts([restoredQuota], "a", { remembered: unknownBlock }, NOW + 60000).length, 1);
+  restoredQuota.quotaSnapshot.weekly.checkedAt = new Date(NOW - 1000).toISOString();
+  assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), true, "a newer envelope cannot renew an old weekly observation");
+  delete restoredQuota.quotaSnapshot.weekly.checkedAt;
+  const changedReset = clone(learnedReset);
+  changedReset.quotaSnapshot.source = "local-desktop";
+  changedReset.quotaSnapshot.session.resetsAt = NOW / 1000 + 3600;
+  assert.equal(isAccountExcluded(changedReset, block, NOW + 3600000), false,
+    "latest depleted-window reset replaces a later saved reset");
+  changedReset.quotaSnapshot.session.resetsAt = NOW / 1000 + 2 * 86400;
+  assert.equal(isAccountExcluded(changedReset, block, NOW + 86400000), true,
+    "a later observed reset prevents reuse at the outdated reset time");
   restoredQuota.quotaSnapshot.source = "local-estimate";
   assert.equal(isAccountExcluded(restoredQuota, block, NOW + 60000), true, "predictions cannot clear confirmed exhaustion");
   restoredQuota.quotaSnapshot.source = "local";
@@ -466,11 +483,15 @@ async function run() {
   assert.equal(missingQuotaRecovery.stats().stored.excluded["missing-plus"].retryAt, null);
   for (let i = 0; i < 3; i++) await missingQuotaRecovery.recovery.tick();
   assert.equal(missingQuotaRecovery.stats().sends, 1, "only live-verified availability resumes the task");
-  missingQuotaRecovery.advance(31 * 60000);
+  missingQuotaRecovery.advance(29 * 60000);
   missingQuotaRecovery.results.set("task", failed("task", "unknown-next-round"));
   const restartedMissing = createAutoRecovery(missingQuotaRecovery.deps); restartedMissing.configure(true, NOW - 1000);
   await restartedMissing.tick();
   assert.equal(missingQuotaRecovery.stats().switches, 2, "an already-rejected unknown account is not tried again in the next round");
+  missingQuotaRecovery.advance(2 * 60000);
+  await restartedMissing.tick();
+  assert.equal(missingQuotaRecovery.stats().switches, 3, "unknown quota is retried after cooldown rather than permanently excluded");
+  assert.equal(missingQuotaRecovery.stats().sends, 1, "retry still waits for live verification");
   const skipLow = fixture(); skipLow.accounts[1] = account("b", 98); skipLow.accounts[2] = businessWithoutQuota("c");
   await skipLow.recovery.tick(); assert.equal(skipLow.stats().activeId, "c", "skip near-empty accounts before an unknown Business");
   const noUnknownQuota = fixture({ usage: { ordinaryUsageAllowed: null } });
@@ -488,6 +509,15 @@ async function run() {
   assert.equal(allUnknownEmpty.recovery.getStatus().state, "waiting");
   assert.equal(allUnknownEmpty.stats().stored.excluded.c.retryAt, null);
   assert.equal(allUnknownEmpty.stats().stored.excluded.d.retryAt, null);
+  allUnknownEmpty.advance(31 * 60000);
+  const recoveredUnknown = createAutoRecovery(allUnknownEmpty.deps); recoveredUnknown.configure(true, NOW - 1000);
+  allUnknownEmpty.bridge.readUsage = async () => ({ accountId: `workspace-${allUnknownEmpty.stats().activeId}`,
+    ordinaryUsageAllowed: allUnknownEmpty.stats().activeId === "c" });
+  await recoveredUnknown.tick();
+  assert.equal(allUnknownEmpty.stats().activeId, "c", "previously rejected Team returns to fallback candidates after cooldown");
+  assert.equal(allUnknownEmpty.stats().sends, 0);
+  await recoveredUnknown.tick();
+  assert.equal(allUnknownEmpty.stats().sends, 1, "Team without numeric quota can recover via verified live availability");
   const cancelFallback = fixture({ beforeSwitch: async () => cancelFallback.stats().warnings === 1 ? "elapsed" : "cancelled" });
   cancelFallback.bridge.readUsage = async () => ({ accountId: `workspace-${cancelFallback.stats().activeId}`, ordinaryUsageAllowed: false });
   for (let i = 0; i < 5; i++) await cancelFallback.recovery.tick();

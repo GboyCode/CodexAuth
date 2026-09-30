@@ -42,7 +42,16 @@ function createDesktopQuotaReader({ getAnchor, readUsage, getScope, onUpdate, no
         current.quota = quota;
         await onUpdate(scope, quota);
       }).catch(() => { /* Keep the timestamp of the last successful snapshot. */ })
-        .finally(() => { current.pending = null; current.retryAt = now() + refreshMs; });
+        .finally(() => {
+          current.pending = null;
+          const completedAt = now();
+          const resets = [current.quota?.session, current.quota?.weekly]
+            .map((window) => Number(window?.resetsAt) * 1000)
+            .filter((reset) => Number.isFinite(reset) && reset > completedAt);
+          // Re-read at the next poll after a known reset instead of retaining
+          // the old balance until the regular refresh interval expires.
+          current.retryAt = Math.min(completedAt + refreshMs, ...resets);
+        });
     }
     return current.quota;
   }

@@ -66,6 +66,22 @@ async function validateReader() {
     onUpdate: () => assert.fail("unavailable desktop must not update") });
   unavailable.read(scope); await flush(); unavailable.read(scope); await flush();
   assert.equal(failures, 1, "failed reads are throttled too");
+
+  let resetClock = NOW, resetCalls = 0;
+  const resetting = createDesktopQuotaReader({ now: () => resetClock, getScope: async () => scope,
+    getAnchor: async () => "thread", readUsage: async () => {
+      resetCalls++;
+      const latest = usage(resetCalls === 1 ? 100 : 0);
+      latest.rateLimitsByLimitId.codex.primary.resetsAt = NOW / 1000 + (resetCalls === 1 ? 5 : 18005);
+      return latest;
+    }, onUpdate: () => {} });
+  resetting.read(scope); await flush();
+  resetClock += 4999; resetting.read(scope); await flush(); assert.equal(resetCalls, 1);
+  resetClock += 1; resetting.read(scope); await flush();
+  assert.equal(resetCalls, 2, "the first poll at reset refreshes without waiting 30 seconds");
+  assert.equal(resetting.read(scope).session.usedPercent, 0);
+  assert.equal(resetting.read(scope).session.resetsAt, NOW / 1000 + 18005, "store the actual new reset returned by Codex");
+  resetClock += 1; resetting.read(scope); await flush(); assert.equal(resetCalls, 2, "the old reset cannot cause repeated reads");
 }
 
 async function validateIntegration() {
