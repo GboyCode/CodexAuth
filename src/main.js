@@ -19,6 +19,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const { fileCredentialStoreConfig, resolveCodexHome } = require("./codex-config");
+const { normalizeSubscription, subscriptionFromClaims } = require("./subscription");
 const {
   QUOTA_CONFLICT_WINDOW_MS,
   QUOTA_ESTIMATE_ALGORITHM,
@@ -99,8 +100,8 @@ const isMac = process.platform === "darwin";
 const WIDGET_WIDTH = 340;
 const WIDGET_MIN_WIDTH = 300;
 const WIDGET_MAX_WIDTH = 620;
-// Reserve the compact reset line above two complete account rows.
-const WIDGET_BASE_HEIGHT = 445;
+// Match the single-line quota footer; keep two complete account rows at minimum height.
+const WIDGET_BASE_HEIGHT = 415;
 const WIDGET_ACCOUNT_ROW_DELTA = 49;
 const WIDGET_MIN_ACCOUNT_ROWS = 2;
 const WIDGET_MIN_HEIGHT = WIDGET_BASE_HEIGHT + (WIDGET_MIN_ACCOUNT_ROWS - 1) * WIDGET_ACCOUNT_ROW_DELTA;
@@ -724,7 +725,8 @@ function extractIdentity(authJson) {
     nestedClaim(accessPayload, "chatgpt_plan_type") ||
     nestedClaim(idPayload, "chatgpt_plan_type") ||
     null;
-  return { email, userId, subject, accountUserId, chatgptUserId, planType };
+  const identity = { email, userId, subject, accountUserId, chatgptUserId, planType };
+  return { ...identity, subscription: subscriptionFromClaims([accessPayload, idPayload], identity) };
 }
 
 function tokenExpirySeconds(token) {
@@ -4364,6 +4366,7 @@ async function getAllAccountsQuotaSummary() {
       id: account.id,
       displayName: account.displayName,
       planType: account.identity?.planType ?? null,
+      subscription: normalizeSubscription(account.identity?.subscription),
       isActive,
       onlineQuotaStatus: account.onlineQuotaStatus ?? null,
       quotaSnapshot: snapshot
@@ -4560,6 +4563,7 @@ function createWidgetWindow() {
     maximizable: false,
     minimizable: false,
     alwaysOnTop: widgetAlwaysOnTop,
+    movable: !widgetAlwaysOnTop,
     skipTaskbar: true,
     transparent: true,
     backgroundColor: "#00000000",
@@ -4596,8 +4600,15 @@ function createWidgetWindow() {
 function setWidgetTopmost(pinned) {
   widgetAlwaysOnTop = pinned === true;
   const win = createWidgetWindow();
+  if (widgetAlwaysOnTop) {
+    if (widgetResizeSession) finishWidgetResize();
+    if (widgetDockState.collapsed) expandWidgetDock();
+    resetWidgetDockState();
+  }
+  win.setMovable(!widgetAlwaysOnTop);
   win.setAlwaysOnTop(widgetAlwaysOnTop);
   win.setVisibleOnAllWorkspaces(widgetAlwaysOnTop, { visibleOnFullScreen: false });
+  if (!widgetAlwaysOnTop) scheduleWidgetDockCheck();
   return { ok: true, pinned: widgetAlwaysOnTop };
 }
 
@@ -4775,6 +4786,7 @@ function expandWidgetDock() {
 }
 
 function collapseWidgetDock({ force = false } = {}) {
+  if (widgetAlwaysOnTop) return;
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   if (!isWidgetDockEdge(widgetDockState.edge) || !widgetDockState.expandedBounds) return;
   if (widgetDockState.pointerInside && !force) return;
@@ -4840,6 +4852,7 @@ function markWidgetNearDockEdge(edge, bounds) {
 }
 
 function collapseWidgetToDock() {
+  if (widgetAlwaysOnTop) return { ok: false, reason: "pinned" };
   if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
   if (widgetDockState.collapsed) return { ok: true, collapsed: true };
 
@@ -4902,11 +4915,13 @@ function startWidgetDockPointerPoll() {
 }
 
 function scheduleWidgetDockCheck() {
+  if (widgetAlwaysOnTop) return;
   if (!widgetWindow || widgetWindow.isDestroyed()) return;
   if (widgetResizeSession) return;
   if (widgetDockState.settleTimer) clearTimeout(widgetDockState.settleTimer);
   const runDockCheck = () => {
     widgetDockState.settleTimer = null;
+    if (widgetAlwaysOnTop) return;
     if (!widgetWindow || widgetWindow.isDestroyed() || !widgetWindow.isVisible()) return;
     if (widgetResizeSession) return;
     const waitMs = widgetDockState.suppressMoveUntil - Date.now();
@@ -4981,6 +4996,7 @@ function resizeWidgetBoundsFromSession(session) {
 }
 
 function startWidgetResize(edge) {
+  if (widgetAlwaysOnTop) return { ok: false, reason: "pinned" };
   if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
   const direction = String(edge || "");
   if (!VALID_RESIZE_EDGES.has(direction)) return { ok: false };
@@ -4996,6 +5012,7 @@ function startWidgetResize(edge) {
 }
 
 function updateWidgetResize() {
+  if (widgetAlwaysOnTop) return { ok: false, reason: "pinned" };
   if (!widgetWindow || widgetWindow.isDestroyed()) return { ok: false };
   if (!widgetResizeSession) return { ok: true, bounds: widgetWindow.getBounds() };
   const nextBounds = resizeWidgetBoundsFromSession(widgetResizeSession);
@@ -5073,14 +5090,22 @@ async function checkForUpdates(event) {
   } finally { updateDialogPending = false; }
 }
 
+async function checkAccountQuota(accountId) {
+  if (typeof accountId !== "string") throw new Error("请选择账号。");
+  const scope = await dashboardScope();
+  if (scope.hasCurrentAuth && scope.accountId === accountId) {
+    const quota = await desktopQuotaReader.refresh(scope);
+    return { refreshed: !!quota, available: null, reason: quota ? "在线额度已更新。"
+      : "当前账号在线查询未成功，请确认 Codex 已打开且有可用任务。" };
+  }
+  const result = await getOnlineAccounts().check(accountId, { force: true });
+  broadcastStateChanged({ scope: "quota" });
+  return { refreshed: !!result.quota, available: result.available, reason: result.reason ?? (result.available === true ? "在线额度可用。"
+    : result.available === false ? "当前额度不足，自动切换会跳过此账号。" : "额度数据不完整，暂不能确认可用。") };
+}
+
 function registerIpc() {
-  ipcMain.handle("account:check-quota", async (_event, accountId) => {
-    if (typeof accountId !== "string") throw new Error("请选择账号。");
-    const result = await getOnlineAccounts().check(accountId, { force: true });
-    broadcastStateChanged({ scope: "quota" });
-    return { available: result.available, reason: result.reason ?? (result.available === true ? "在线额度可用。"
-      : result.available === false ? "当前额度不足，自动切换会跳过此账号。" : "额度数据不完整，暂不能确认可用。") };
-  });
+  ipcMain.handle("account:check-quota", (_event, accountId) => checkAccountQuota(accountId));
   ipcMain.handle("account:login-start", (_event, label) => runAccountOperation(() => getAccountLogin().start(label)));
   ipcMain.handle("account:login-cancel", () => getAccountLogin().cancel());
   ipcMain.handle("account:login-open", () => getAccountLogin().reopen());

@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { app, BrowserWindow } = require("electron");
+const vm = require("node:vm");
+const { app, BrowserWindow, ipcMain } = require("electron");
 
 // Load the real widget with fake accounts and APIs; never load the application main process.
 function installFixture() {
@@ -29,6 +30,13 @@ function installFixture() {
     getQuota: async () => ({ quota: {} }),
     getVersion: async () => "test",
     getWidgetTopmost: async () => ({ pinned: false }),
+    setWidgetTopmost: async (pinned) => {
+      if (fixture.failNextPin) {
+        fixture.failNextPin = false;
+        throw new Error("fixture pin failure");
+      }
+      return require("electron").ipcRenderer.invoke("widget-test:set-pinned", pinned);
+    },
     resizeWidget: async () => ({}),
     widgetPointerEnter: async () => ({}),
     widgetPointerLeave: async () => ({}),
@@ -54,13 +62,91 @@ async function run() {
   await app.whenReady();
   const win = new BrowserWindow({
     width: 304, height: 760, useContentSize: true, show: false,
-    webPreferences: { preload, contextIsolation: false, sandbox: false, backgroundThrottling: false },
+    webPreferences: { preload, contextIsolation: false, sandbox: false, offscreen: true, backgroundThrottling: false },
   });
   const evaluate = (code) => win.webContents.executeJavaScript(code);
   try {
     await win.loadFile(path.resolve(__dirname, "../src/ui/widget.html"));
     await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     assert.equal(await evaluate(`document.querySelectorAll('.account-row').length`), 7);
+
+    const mainSource = await fs.readFile(path.resolve(__dirname, "../src/main.js"), "utf8");
+    const pinContext = vm.createContext({
+      widgetAlwaysOnTop: false, widgetWindow: win, widgetResizeSession: null,
+      widgetManualSize: false, widgetDockState: { collapsed: false },
+      createWidgetWindow: () => win,
+      finishWidgetResize: () => { pinContext.widgetResizeSession = null; },
+      expandWidgetDock: () => {}, resetWidgetDockState: () => {}, scheduleWidgetDockCheck: () => {},
+      screen: { getCursorScreenPoint: () => ({ x: 100, y: 100 }) },
+      VALID_RESIZE_EDGES: new Set(["nw"]),
+    });
+    for (const name of ["setWidgetTopmost", "startWidgetResize", "updateWidgetResize", "collapseWidgetToDock", "collapseWidgetDock"]) {
+      const start = mainSource.indexOf(`function ${name}(`);
+      const end = mainSource.indexOf("\nfunction ", start + 1);
+      vm.runInContext(mainSource.slice(start, end), pinContext);
+    }
+    ipcMain.handle("widget-test:set-pinned", (_event, pinned) => pinContext.setWidgetTopmost(pinned));
+    assert.equal(pinContext.startWidgetResize("nw").ok, true);
+    const originalBounds = win.getBounds();
+    for (const pinned of [true, false]) {
+      const ui = await evaluate(`(async () => {
+        const button = document.querySelector('#pinBtn');
+        button.click();
+        while (button.disabled) await new Promise(resolve => setTimeout(resolve, 0));
+        await new Promise(resolve => setTimeout(resolve, 250));
+        const icon = new DOMMatrix(getComputedStyle(button.querySelector('svg')).transform);
+        return { pressed: button.getAttribute('aria-pressed'),
+          drag: getComputedStyle(document.querySelector('.widget-head')).webkitAppRegion,
+          handlesHidden: [...document.querySelectorAll('.resize-handle')].every(el => getComputedStyle(el).display === 'none'),
+          angle: Math.round(Math.atan2(icon.b, icon.a) * 180 / Math.PI) };
+      })()`);
+      assert.equal(ui.pressed, String(pinned));
+      assert.equal(ui.drag, pinned ? "no-drag" : "drag");
+      assert.equal(ui.handlesHidden, pinned);
+      assert.equal(ui.angle, pinned ? 0 : 45);
+      assert.equal(win.isMovable(), !pinned);
+      assert.equal(win.isAlwaysOnTop(), pinned);
+      if (pinned) {
+        assert.equal(pinContext.widgetResizeSession, null, "pinning cancels an active edge resize");
+        assert.equal(pinContext.startWidgetResize("nw").ok, false);
+        assert.equal(pinContext.updateWidgetResize().ok, false);
+        assert.equal(pinContext.collapseWidgetToDock().ok, false);
+        pinContext.collapseWidgetDock({ force: true });
+        assert.deepEqual(win.getBounds(), originalBounds, "pinning and rejected movement must retain the position");
+      }
+    }
+    assert.equal(pinContext.startWidgetResize("nw").ok, true, "unpinning restores edge resize");
+    pinContext.finishWidgetResize();
+    await evaluate(`(async () => {
+      widgetFixture.failNextPin = true;
+      document.querySelector('#pinBtn').click();
+      while (document.querySelector('#pinBtn').disabled) await new Promise(resolve => setTimeout(resolve, 0));
+    })()`);
+    assert.equal(await evaluate(`document.body.classList.contains('pinned')`), false, "failed pinning restores the unlocked UI");
+    assert.equal(win.isMovable(), true);
+
+    const sizingConstants = mainSource.match(/^const WIDGET_(?:BASE_HEIGHT|ACCOUNT_ROW_DELTA|MIN_ACCOUNT_ROWS) = .+;$/gm).join("\n");
+    const sizingFunction = mainSource.slice(mainSource.indexOf("function widgetHeightForAccounts("), mainSource.indexOf("function widgetMaxHeightForBounds("));
+    const heightForAccounts = vm.runInNewContext(`${sizingConstants}\n${sizingFunction}\nwidgetHeightForAccounts`);
+    await evaluate(`widgetFixture.allAccounts = [...widgetFixture.snapshot.accounts]`);
+    for (const count of [2, 7]) {
+      const height = heightForAccounts(count);
+      win.setContentSize(304, height);
+      await evaluate(`widgetFixture.snapshot.accounts = widgetFixture.allAccounts.slice(0, ${count}); refresh(true)`);
+      await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      const layout = await evaluate(`(() => {
+        const list = document.querySelector('.account-list');
+        const last = list.lastElementChild.getBoundingClientRect();
+        return { height: innerHeight, gap: list.getBoundingClientRect().bottom - last.bottom,
+          overflow: list.scrollHeight - list.clientHeight };
+      })()`);
+      if (layout.height >= height - 1) {
+        assert.ok(layout.gap >= -1 && layout.gap <= 4,
+          `${count} accounts must fit without unused height below the last row: ${JSON.stringify(layout)}`);
+      } else {
+        assert.ok(layout.overflow > 1, "a screen-height-limited widget must keep the account list scrollable");
+      }
+    }
 
     const point = await evaluate(`(() => {
       const r = document.querySelector('.account-label').getBoundingClientRect();
@@ -159,11 +245,12 @@ async function run() {
     assert.equal(await evaluate(`document.querySelector('.account-quota-popover') === widgetFixture.popupBeforeTimer`), true);
     const screenshot = path.join(root, "widget.png");
     await fs.writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
-    console.log("Widget interactions passed: native click across refresh, pointer motion, live popup updates, dismissal, keyboard, handle-only reorder, cancel, in-flight refresh and action isolation.");
+    console.log("Widget interactions passed: native pin movement lock, resize/dock guards, rotated icon, unpin/failure recovery, compact height for 2/7 accounts, screen-height overflow, native click across refresh, pointer motion, live popup updates, dismissal, keyboard, handle-only reorder, cancel, in-flight refresh and action isolation.");
     console.log(`Preview: ${screenshot}`);
   } finally {
+    ipcMain.removeHandler("widget-test:set-pinned");
     win.destroy();
   }
 }
 
-run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => app.quit());
+run().then(() => app.quit(), error => { console.error(error); app.exit(1); });

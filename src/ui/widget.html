@@ -28,7 +28,7 @@
           </div>
         </div>
         <div class="head-actions">
-          <button id="pinBtn" title="固定在最前" aria-label="固定在最前" aria-pressed="false">
+          <button id="pinBtn" title="钉住：置顶并锁定位置" aria-label="钉住：置顶并锁定位置" aria-pressed="false">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 17v4" />
               <path d="M8 4h8" />
@@ -76,8 +76,10 @@
         </div>
         <div class="meter"><span id="weeklyMeter"></span></div>
         <p id="weeklyReset">--</p>
-        <p id="quotaFreshness" class="freshness">--</p>
-        <p id="resetCreditsInfo" class="freshness">重置次数：未知 · 尚无本地记录</p>
+        <div class="quota-footer">
+          <span id="quotaFreshness">--</span>
+          <span id="resetCreditsInfo">重置 未知</span>
+        </div>
       </section>
 
       <section class="quick-actions">

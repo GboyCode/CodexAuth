@@ -24,6 +24,8 @@ const state = {
   allAccountsRequestId: 0,
   overviewEmailsHidden: readOverviewPrivacy(),
   overviewNames: [],
+  overviewRefreshing: false,
+  overviewRefreshFailures: new Map(),
   usageScope: "current", // "current" or "all"
 };
 
@@ -93,6 +95,8 @@ const els = {
   modelStats: document.querySelector("#modelStats"),
   allAccountsGrid: document.querySelector("#allAccountsGrid"),
   overviewPrivacyBtn: document.querySelector("#overviewPrivacyBtn"),
+  overviewRefreshBtn: document.querySelector("#overviewRefreshBtn"),
+  overviewRefreshStatus: document.querySelector("#overviewRefreshStatus"),
   toast: document.querySelector("#toast"),
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
@@ -237,7 +241,7 @@ function setUsageScope(scope) {
 }
 
 function renderSettings(snapshot) {
-  els.quotaModeHint.textContent = "当前账号：Codex 桌面额度与本地日志。备用账号：每 5 分钟在线查询并按需续期；自动切换前重新核验。";
+  els.quotaModeHint.textContent = "当前账号：在线额度与本地日志。备用账号：每 5 分钟在线查询并按需续期；自动切换前重新核验。";
   if (els.restartAfterSwitch) {
     els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
@@ -674,6 +678,56 @@ function toggleOverviewPrivacy() {
   renderOverviewPrivacy();
 }
 
+async function refreshAllAccountsQuota() {
+  if (state.overviewRefreshing) return;
+  state.overviewRefreshing = true;
+  state.overviewRefreshFailures.clear();
+  els.overviewRefreshBtn.disabled = true;
+  els.overviewRefreshBtn.setAttribute("aria-busy", "true");
+  els.overviewRefreshBtn.textContent = "读取账号…";
+  els.overviewRefreshStatus.hidden = false;
+  els.overviewRefreshStatus.textContent = "正在读取账号列表…";
+  try {
+    const data = await api.getAllAccountsQuota();
+    if (!Array.isArray(data?.accounts)) throw new Error("账号列表暂时不可用，请稍后重试。");
+    const total = data.accounts.length;
+    let completed = 0, refreshed = 0;
+    for (const account of data.accounts) {
+      els.overviewRefreshBtn.textContent = `刷新中 ${completed}/${total}`;
+      els.overviewRefreshStatus.textContent = "正在逐个查询在线额度，失败账号保留旧快照。";
+      try {
+        const result = await api.checkAccountQuota(account.id);
+        if (result?.refreshed) refreshed++;
+        else state.overviewRefreshFailures.set(account.id, { at: Date.now(), reason: result?.reason || "在线查询未成功。" });
+      } catch {
+        state.overviewRefreshFailures.set(account.id, { at: Date.now(), reason: "在线查询失败，请稍后重试。" });
+      }
+      completed++;
+      els.overviewRefreshBtn.textContent = `刷新中 ${completed}/${total}`;
+      await renderAllAccountsQuota();
+    }
+    els.overviewRefreshStatus.textContent = total
+      ? `已刷新 ${refreshed}/${total} 个账号${refreshed < total ? `，${total - refreshed} 个未更新，保留旧快照。` : "。"}`
+      : "暂无已保存账号。";
+  } catch (error) {
+    els.overviewRefreshStatus.textContent = error.message || "批量刷新失败，请稍后重试。";
+  } finally {
+    state.overviewRefreshing = false;
+    els.overviewRefreshBtn.disabled = false;
+    els.overviewRefreshBtn.removeAttribute("aria-busy");
+    els.overviewRefreshBtn.textContent = "刷新全部";
+  }
+}
+
+function overviewQuotaFailure(account) {
+  const snapshotAt = Date.parse(account.quotaSnapshot?.checkedAt);
+  const failed = state.overviewRefreshFailures.get(account.id);
+  if (failed && (!Number.isFinite(snapshotAt) || snapshotAt <= failed.at)) return failed.reason;
+  const status = account.onlineQuotaStatus;
+  return status?.error && (!Number.isFinite(snapshotAt) || Date.parse(status.checkedAt) >= snapshotAt)
+    ? "在线查询失败。" : null;
+}
+
 async function renderAllAccountsQuota() {
   try {
     const requestId = ++state.allAccountsRequestId;
@@ -702,16 +756,27 @@ async function renderAllAccountsQuota() {
       note.className = "all-account-status";
       note.textContent = !account.quotaSnapshot
         ? (account.isActive ? "当前账号 · 暂无额度记录" : "暂无额度记录")
-        : `${account.isActive ? "当前账号 · " : ""}${q.quotaSourceLabel(account.quotaSnapshot.source)} · ${formatDate(account.quotaSnapshot.checkedAt)}${account.onlineQuotaStatus?.error ? " · 在线查询失败，保留旧快照" : ""}`;
+        : `${account.isActive ? "当前账号 · " : ""}${q.quotaSourceLabel(account.quotaSnapshot.source)} · ${formatDate(account.quotaSnapshot.checkedAt)}`;
+      const failure = overviewQuotaFailure(account);
+      if (failure) note.textContent += ` · ${failure}${account.quotaSnapshot ? "保留旧快照。" : ""}`;
       card.append(note,
         createAllAccountQuotaMeter("session", account.quotaSnapshot?.session),
         createAllAccountQuotaMeter("weekly", account.quotaSnapshot?.weekly)
       );
 
-      const resets=document.createElement("p");
-      resets.className="all-account-footer";
-      resets.textContent=q.resetCreditsLabel(account.quotaSnapshot?.resetCredits,{compact:true});
-      card.append(resets);
+      const footer = document.createElement("div");
+      footer.className = "all-account-footer";
+      const resets = document.createElement("span");
+      resets.className = "all-account-resets";
+      resets.textContent = q.resetCreditsLabel(account.quotaSnapshot?.resetCredits, { compact: true });
+      resets.title = q.resetCreditsLabel(account.quotaSnapshot?.resetCredits);
+      const subscription = document.createElement("span");
+      subscription.className = "all-account-subscription";
+      const expiry = q.subscriptionDisplay(account.subscription);
+      subscription.textContent = expiry.label;
+      subscription.title = expiry.title;
+      footer.append(resets, subscription);
+      card.append(footer);
       els.allAccountsGrid.append(card);
     }
   } catch (error) {
@@ -967,6 +1032,7 @@ function wireEvents() {
   els.scopeCurrentBtn.addEventListener("click", () => setUsageScope("current"));
   els.scopeAllBtn.addEventListener("click", () => setUsageScope("all"));
   els.overviewPrivacyBtn.addEventListener("click", toggleOverviewPrivacy);
+  els.overviewRefreshBtn.addEventListener("click", refreshAllAccountsQuota);
   renderOverviewPrivacy();
   els.restartAfterSwitch?.addEventListener("change", () => {
     api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked }).catch((error) => showToast(error.message));

@@ -157,7 +157,7 @@
           <div class="quota-mode-panel">
             <div>
               <strong>额度读取模式</strong>
-              <p id="quotaModeHint">当前账号读取 Codex 桌面额度与本地日志；备用账号在线查询并按需续期。</p>
+              <p id="quotaModeHint">当前账号读取在线额度与本地日志；备用账号在线查询并按需续期。</p>
             </div>
           </div>
 
@@ -226,7 +226,9 @@
                 <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
                 <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a20 20 0 0 1-3.1 4M6.2 6.2A21 21 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.1-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
               </button>
+              <button id="overviewRefreshBtn" class="ghost-btn overview-refresh" type="button">刷新全部</button>
             </div>
+            <p id="overviewRefreshStatus" class="overview-refresh-status" role="status" hidden></p>
             <div class="all-accounts-grid" id="allAccountsGrid"></div>
           </section>
         </section>

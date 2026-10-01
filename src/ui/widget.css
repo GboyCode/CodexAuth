@@ -91,6 +91,14 @@ button {
   -webkit-app-region: drag;
 }
 
+body.pinned .widget-head {
+  -webkit-app-region: no-drag;
+}
+
+body.pinned .resize-handle {
+  display: none;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -312,22 +320,37 @@ button {
   white-space: nowrap;
 }
 
-.quota-card .freshness {
-  display: block;
-  height: 29px;
-  line-height: 20px;
-  max-width: 100%;
-  padding-top: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
+.quota-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid var(--line);
-  text-align: center;
-  white-space: nowrap;
-  scrollbar-width: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
 }
 
-.quota-card .freshness::-webkit-scrollbar {
-  display: none;
+#pinBtn svg {
+  transform: rotate(45deg);
+  transition: transform 200ms var(--ease-out);
+}
+
+#pinBtn[aria-pressed="true"] svg {
+  transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pinBtn svg { transition: none; }
+}
+
+.quota-footer > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quick-actions {
@@ -757,15 +780,6 @@ button {
   top: 0;
   left: 0;
   cursor: nwse-resize;
-}
-
-#resetCreditsInfo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-
-.quota-card #resetCreditsInfo {
-  height: 20px;
-  margin-top: 4px;
-  padding-top: 0;
-  border-top: 0;
 }
 
 .settings-panel:not([hidden]) { animation: surface-in 200ms var(--ease-out); transform-origin: top right; }

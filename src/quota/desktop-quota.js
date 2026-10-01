@@ -25,12 +25,12 @@ function quotaFromDesktopUsage(usage, scope, checkedAt) {
 function createDesktopQuotaReader({ getAnchor, readUsage, getScope, onUpdate, now = Date.now,
   refreshMs = DESKTOP_QUOTA_REFRESH_MS }) {
   let state = null;
-  function read(scope) {
+  function read(scope, { force = false } = {}) {
     const key = scopeKey(scope);
     if (!key) { state = null; return null; }
     if (state?.key !== key) state = { key, quota: null, pending: null, retryAt: 0 };
     const current = state;
-    if (!current.pending && now() >= current.retryAt) {
+    if (!current.pending && (force || now() >= current.retryAt)) {
       current.retryAt = now() + refreshMs;
       current.pending = Promise.resolve().then(async () => {
         const anchor = await getAnchor();
@@ -42,6 +42,7 @@ function createDesktopQuotaReader({ getAnchor, readUsage, getScope, onUpdate, no
         if (!quota) return;
         current.quota = quota;
         await onUpdate(scope, quota);
+        return quota;
       }).catch(() => { /* Keep the timestamp of the last successful snapshot. */ })
         .finally(() => {
           current.pending = null;
@@ -56,7 +57,14 @@ function createDesktopQuotaReader({ getAnchor, readUsage, getScope, onUpdate, no
     }
     return current.quota;
   }
-  return { read };
+  async function refresh(scope) {
+    read(scope, { force: true });
+    const current = state;
+    if (!current || current.key !== scopeKey(scope)) return null;
+    const quota = await current.pending;
+    return state === current && scopeKey(await getScope()) === current.key ? quota ?? null : null;
+  }
+  return { read, refresh };
 }
 
 module.exports = { DESKTOP_QUOTA_REFRESH_MS, quotaFromDesktopUsage, createDesktopQuotaReader };

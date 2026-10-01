@@ -51,9 +51,8 @@ function identityLabel(accountLike) {
 }
 
 function renderQuotaFreshness(quota) {
-  const text = q.quotaFreshnessLabel(quota, { compact: true });
-  els.quotaFreshness.textContent = text;
-  els.quotaFreshness.title = text;
+  els.quotaFreshness.textContent = q.quotaFreshnessLabel(quota, { compact: true, inline: true });
+  els.quotaFreshness.title = q.quotaFreshnessLabel(quota, { compact: true });
 }
 
 function showToast(message) {
@@ -65,7 +64,7 @@ function showToast(message) {
 
 function setDockHint(payload) {
   if (!els.dockCollapseBtn) return;
-  if (!payload?.available) {
+  if (!payload?.available || document.body.classList.contains("pinned")) {
     els.dockCollapseBtn.hidden = true;
     return;
   }
@@ -103,10 +102,19 @@ function setSettingsOpen(open) {
 }
 
 function applyPinState(pinned) {
+  document.body.classList.toggle("pinned", pinned);
+  if (pinned) {
+    resizeDrag = null;
+    if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+    resizeFrame = null;
+    document.body.classList.remove("resizing");
+    setDockHint(null);
+  }
   els.pinBtn.classList.toggle("active", pinned);
   els.pinBtn.setAttribute("aria-pressed", String(pinned));
-  els.pinBtn.title = pinned ? "取消固定" : "固定在最前";
-  els.pinBtn.setAttribute("aria-label", pinned ? "取消固定" : "固定在最前");
+  const label = pinned ? "取消钉住：恢复拖动" : "钉住：置顶并锁定位置";
+  els.pinBtn.title = label;
+  els.pinBtn.setAttribute("aria-label", label);
 }
 
 async function loadPinState() {
@@ -467,7 +475,8 @@ function render(snapshot, dashboard) {
   renderWindow("session", quota?.session);
   renderWindow("weekly", quota?.weekly);
   renderQuotaFreshness(quota);
-  els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits,{compact:true});
+  els.resetCreditsInfo.textContent = q.resetCreditsLabel(quota?.resetCredits, { compact: true, inline: true });
+  els.resetCreditsInfo.title = q.resetCreditsLabel(quota?.resetCredits);
   renderAccounts(snapshot);
 }
 
@@ -540,15 +549,19 @@ function wireEvents() {
   els.refreshBtn.addEventListener("click", () => refresh(false));
   els.pinBtn.addEventListener("click", async (event) => {
     event.stopPropagation();
+    if (els.pinBtn.disabled) return;
     const nextPinned = els.pinBtn.getAttribute("aria-pressed") !== "true";
+    els.pinBtn.disabled = true;
     applyPinState(nextPinned);
     try {
       const result = await api.setWidgetTopmost?.(nextPinned);
       applyPinState(result?.pinned === true);
-      showToast(result?.pinned ? "浮窗已固定在最前" : "浮窗已取消固定");
+      showToast(result?.pinned ? "浮窗已钉住，位置已锁定" : "浮窗已取消钉住，可拖动");
     } catch (error) {
       applyPinState(!nextPinned);
       showToast(error instanceof Error ? error.message : String(error));
+    } finally {
+      els.pinBtn.disabled = false;
     }
   });
   els.settingsBtn.addEventListener("click", (event) => {
@@ -644,7 +657,7 @@ function queueResize() {
 function wireResizeHandles() {
   els.resizeHandles.forEach((handle) => {
     handle.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || document.body.classList.contains("pinned")) return;
       event.preventDefault();
       handle.setPointerCapture(event.pointerId);
       resizeDrag = {

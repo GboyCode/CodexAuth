@@ -992,6 +992,10 @@ code {
 
 .all-accounts-heading { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; }
 .all-accounts-heading .usage-title { margin: 0; }
+.overview-refresh { margin-left: auto; min-width: 108px; min-height: 32px; height: 32px; padding: 0 12px; border-radius: 8px; font-size: 13px; white-space: nowrap; }
+.overview-refresh:disabled { cursor: wait; opacity: 0.6; }
+.overview-refresh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.overview-refresh-status { margin: -6px 0 12px; color: var(--muted); font-size: 12px; }
 .privacy-toggle { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 5px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .privacy-toggle:hover { color: var(--accent); background: var(--accent-soft); transform: none; }
 .privacy-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -1101,13 +1105,30 @@ code {
 }
 
 .all-account-footer {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
   margin: 0;
   border-top: 1px solid var(--line-soft);
   padding-top: 8px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
-  overflow-wrap: anywhere;
+}
+
+.all-account-resets {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.all-account-subscription {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .all-account-no-data {

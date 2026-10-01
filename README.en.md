@@ -152,9 +152,11 @@ This continues existing context rather than restoring process state. Manual acco
 
 ### Quota Mode
 
-On Windows, active-account quota is read through Codex every 30 seconds, with local logs and timestamped snapshots as fallback. Other platforms retain local reads for the active account. Standby accounts are queried at startup and every five minutes, with renewal when needed; expanded account details provide a manual online refresh button. Requests share a one-minute cache, deduplicate concurrent reads and back off on failure. The post-countdown query bypasses the success cache. Online, desktop and log sources are labeled separately. Failed checks preserve the last successful snapshot and its timestamp, with an error; an old snapshot never authorizes automatic switching.
+On Windows, active-account quota is read through Codex every 30 seconds, with local logs and timestamped snapshots as fallback. Other platforms retain local reads for the active account. Standby accounts are queried at startup and every five minutes, with renewal when needed; expanded account details provide a manual online refresh button. Requests share a one-minute cache, deduplicate concurrent reads and back off on failure. The post-countdown query bypasses the success cache. Quota sources use consistent online snapshot, local snapshot and local cache labels. Failed checks preserve the last successful snapshot and its timestamp, with an error; an old snapshot never authorizes automatic switching.
 
 ### Local Quota And Usage
+
+The all-account overview includes a refresh-all button with progress and success counts. It queries the active account through Codex and standby accounts online, bypassing successful snapshot caches while respecting failure backoff. Individual failures do not stop the batch; affected cards retain the previous snapshot and show the reason.
 
 Successive official snapshots calibrate estimates between queries for the active account. Samples are isolated by account, plan, pool, window duration, model and service tier, and retained for seven days. Training requires at least a two-percentage-point change attributable to local records; prediction requires three stable samples with similar input/output and cache proportions. Actual official percentages remain intact, estimates are labeled, and each new official reading replaces the forecast. Missing logs, mixed-model training intervals, counter rollbacks, account-switch boundaries and reset crossings do not train the model. Predictions stop after two minutes without a fresh official snapshot or when the projected increment exceeds five percentage points. Usage from other devices cannot be fully attributed locally, so this remains a conservative estimate. Automatic switching still uses actual quota only.
 
@@ -175,9 +177,9 @@ Quota snapshots are saved only into this app's own account metadata. They are no
 
 Multi-account statistics use the most recent account-switch time as their boundary. A session that continues across a switch is attributed through adjacent token-snapshot deltas, and quota calibration combines only post-switch events with that account's own saved learning so same-plan accounts do not leak into each other.
 
-### Quota Pace Hints
+### Quota Display
 
-The app uses the current used percentage, quota window length, and reset time to estimate consumption pace. It can show whether usage is light, on track, or likely to run out early. This is a trend hint, not a promise of how much quota the next request will consume.
+Quota details show used and remaining percentages and reset times, with estimates marked as approximate. The interface does not rate consumption pace or predict whether quota will run out early.
 
 ### Network Isolation
 

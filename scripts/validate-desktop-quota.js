@@ -82,6 +82,54 @@ async function validateReader() {
   assert.equal(resetting.read(scope).session.usedPercent, 0);
   assert.equal(resetting.read(scope).session.resetsAt, NOW / 1000 + 18005, "store the actual new reset returned by Codex");
   resetClock += 1; resetting.read(scope); await flush(); assert.equal(resetCalls, 2, "the old reset cannot cause repeated reads");
+
+  current = scope; request = deferred();
+  const callsBeforeManual = calls;
+  const manual = reader.refresh(scope), shared = reader.refresh(scope);
+  await flush(); assert.equal(calls, callsBeforeManual + 1, "manual refresh joins an in-flight query");
+  request.resolve(usage(42));
+  assert.equal((await manual).session.usedPercent, 42);
+  assert.equal((await shared).session.usedPercent, 42);
+  request = deferred();
+  const forced = reader.refresh(scope);
+  await flush(); assert.equal(calls, callsBeforeManual + 2, "manual refresh bypasses the normal throttle");
+  request.resolve({ ...usage(20), accountId: "wrong-account" });
+  assert.equal(await forced, null, "an old cached snapshot cannot count as a successful refresh");
+  assert.equal(reader.read(scope).session.usedPercent, 42);
+  request = deferred();
+  const switched = reader.refresh(scope);
+  await flush(); current = { ...scope, since: stamp(200000) };
+  request.resolve(usage(30));
+  assert.equal(await switched, null, "a manual refresh crossing an account switch is discarded");
+  assert.equal(await unavailable.refresh(scope), null, "failed manual reads do not report stale data as fresh");
+}
+
+async function validateManualDispatch() {
+  const filename = path.resolve(__dirname, "../src/main.js"), realRequire = createRequire(filename);
+  let currentCalls = 0, standbyCalls = 0, fresh = true;
+  const sandbox = vm.createContext({ require: (name) => name === "electron"
+    ? { app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => __dirname } }
+    : name === "./quota/desktop-quota" ? { quotaFromDesktopUsage, createDesktopQuotaReader: () => ({
+      refresh: async () => { currentCalls++; return fresh ? { checkedAt: stamp() } : null; },
+    }) } : realRequire(name),
+    process, __dirname: path.dirname(filename), console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval });
+  vm.runInContext(fs.readFileSync(filename, "utf8"), sandbox);
+  sandbox.dashboardScope = async () => scope;
+  sandbox.broadcastStateChanged = () => {};
+  sandbox.getOnlineAccounts = () => ({ check: async (id, options) => {
+    standbyCalls++; assert.equal(id, "standby"); assert.equal(options.force, true);
+    return fresh ? { available: false, quota: { weekly: { usedPercent: 100 } } } : { available: null, reason: "offline" };
+  } });
+  assert.equal((await sandbox.checkAccountQuota(scope.accountId)).refreshed, true);
+  assert.equal(standbyCalls, 0, "active account reads must never use standby credentials");
+  const exhausted = await sandbox.checkAccountQuota("standby");
+  assert.equal(exhausted.refreshed, true, "successfully reading an exhausted account still counts as refreshed");
+  assert.equal(exhausted.available, false);
+  fresh = false;
+  assert.equal((await sandbox.checkAccountQuota(scope.accountId)).refreshed, false);
+  assert.equal((await sandbox.checkAccountQuota("standby")).refreshed, false);
+  assert.equal(currentCalls, 2); assert.equal(standbyCalls, 2);
+  await assert.rejects(sandbox.checkAccountQuota(null), /请选择账号/);
 }
 
 async function validateIntegration() {
@@ -170,6 +218,6 @@ async function validateIntegration() {
 }
 
 (async () => {
-  await validateReader(); await validateIntegration();
+  await validateReader(); await validateIntegration(); await validateManualDispatch();
   console.log("Desktop quota validation passed: resumed-thread refresh, account/plan isolation, throttle, nonblocking reads, switch races, persistence and log fallback.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

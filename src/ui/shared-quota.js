@@ -112,7 +112,7 @@
       "learned-fallback": "学习 + 保守估算",
       "learned-low-sample": "学习 + 低样本",
       calibrated: "历史校准",
-      "official-calibrated": "官方快照校准",
+      "official-calibrated": "在线快照校准",
       "low-sample": "低样本校准",
       fallback: "保守估算",
     };
@@ -145,40 +145,16 @@
   }
 
   function compactQuotaFreshnessStatus(quota, seconds) {
-    if (quota?.estimate?.available && quota.estimate.confidence === "official-calibrated") return "官方校准预估";
-    if (quota?.source === "online-account") return seconds < 60 ? "在线额度快照" : "在线旧快照";
-    if (quota?.source === "local-desktop") return "桌面额度快照";
-    if (quota?.estimate?.available) return seconds < 10 ? "已写入校准" : "已预估校准";
-    if (quota?.estimate) return "等待新记录";
-    return "等待写入";
-  }
-
-  function paceLabel(window, options = {}) {
-    if (!window?.resetsAt || !window?.windowMinutes) return "";
-    const used = displayUsedPercent(window);
-    if (!Number.isFinite(used) || used <= 0) {
-      return options.compact ? " · 速度宽松" : " · 消耗速度宽松";
-    }
-    const resetsAtMs = Number(window.resetsAt) * 1000;
-    const periodMs = Number(window.windowMinutes) * 60 * 1000;
-    if (!Number.isFinite(resetsAtMs) || !Number.isFinite(periodMs) || periodMs <= 0) return "";
-    const startMs = resetsAtMs - periodMs;
-    const elapsedMs = Date.now() - startMs;
-    if (elapsedMs <= 0 || Date.now() >= resetsAtMs) return "";
-    const elapsedFraction = elapsedMs / periodMs;
-    if (elapsedFraction < 0.05 && used < 100) return "";
-    const projectedUsed = (used / elapsedMs) * periodMs;
-    if (projectedUsed <= 80) return options.compact ? " · 速度宽松" : " · 消耗速度宽松";
-    if (projectedUsed <= 100) return options.compact ? " · 速度正常" : " · 消耗速度正常";
-    return options.compact ? " · 会提前用完" : " · 按当前速度会提前用完";
+    if (quota?.estimate?.available && quota.estimate.confidence === "official-calibrated") return "在线校准预估";
+    if (["online-account", "local-desktop"].includes(quota?.source)) return seconds < 60 ? "在线快照" : "在线旧快照";
+    if (quota?.estimate?.available) return "本地校准预估";
+    return seconds < 60 ? "本地快照" : "本地旧快照";
   }
 
   function quotaSourceLabel(source) {
-    if (source === "online-account" || source === "local-desktop") return "官方快照";
-    if (source === "official") return "来自本地保存的额度快照";
-    if (source === "local") return "来自本地 Codex 日志";
-    if (source === "local-error") return "来自本地 Codex 限额日志";
-    if (source === "account-cache") return "此账号上次保存的额度快照";
+    if (source === "online-account" || source === "local-desktop") return "在线快照";
+    if (["official", "local", "account-cache"].includes(source)) return "本地快照";
+    if (source === "local-error") return "本地限额记录";
     return "不可用";
   }
 
@@ -193,6 +169,7 @@
         hour: "2-digit",
         minute: "2-digit",
       }).format(date);
+      if (options.inline) return `${compactQuotaFreshnessStatus(quota, seconds)} ${time}`;
       return `${compactAgeLabel(seconds)}·快照${time} ${compactQuotaFreshnessStatus(quota, seconds)}`;
     }
     const time = new Intl.DateTimeFormat("zh-CN", {
@@ -233,21 +210,41 @@
       const reset = compactReset(window?.resetsAt);
       return reset ? `${prefix}${Math.round(used)}% · ${reset}` : `${prefix}${Math.round(used)}%`;
     }
-    return `${prefix} ${Math.round(used)}%${estimateRemainingLabel(window)} · ${relativeReset(window?.resetsAt)}${paceLabel(window, options)}`;
+    return `${prefix} ${Math.round(used)}%${estimateRemainingLabel(window)} · ${relativeReset(window?.resetsAt)}`;
   }
 
   function resetCreditsLabel(reset, options = {}) {
-    if (!reset || !Number.isInteger(reset.availableCount)) return "重置次数：未知 · 尚无本地记录";
+    if (!reset || !Number.isInteger(reset.availableCount)) return options.inline ? "重置 未知" : "重置次数：未知 · 尚无本地记录";
     const stamp=Date.parse(reset.checkedAt);
     const stale=!Number.isFinite(stamp)||Date.now()-stamp>5*60*1000;
     const expiry=(reset.credits??[]).filter((c)=>c.status==="available"&&Number.isFinite(c.expiresAt)).map((c)=>c.expiresAt);
     const hasExpired=expiry.some((n)=>n*1000<=Date.now());
-    const origin=["online-account","local-desktop"].includes(reset.source)?"官方快照":reset.source==="local-browser-cache"?"Codex缓存":"本地快照";
-    const status=hasExpired?"含已到期记录，待更新":stale?(reset.source==="local-browser-cache"?"Codex旧缓存，待更新":"旧快照，待更新"):origin;
-    return `重置次数：${reset.availableCount} · ${status}${options.compact?"":` · ${formatSnapshotTime(reset.checkedAt)}`}`;
+    const origin=["online-account","local-desktop"].includes(reset.source)?"在线快照":reset.source==="local-browser-cache"?"本地缓存":"本地快照";
+    const status=hasExpired?`${origin} · 含已到期记录，待更新`:stale?`${origin.replace("快照","旧快照").replace("缓存","旧缓存")}，待更新`:origin;
+    const countLabel = options.inline ? `重置 ${reset.availableCount}` : `重置次数：${reset.availableCount}`;
+    return `${countLabel} · ${status}${options.compact?"":` · ${formatSnapshotTime(reset.checkedAt)}`}`;
+  }
+
+  function subscriptionDisplay(subscription, now = Date.now()) {
+    const until = typeof subscription?.activeUntil === "string" ? Date.parse(subscription.activeUntil) : NaN;
+    if (!Number.isFinite(until)) return { label: "到期 未知", title: "账号快照未提供订阅到期日。" };
+    const date = new Date(until);
+    const fullDate = new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    }).format(date);
+    const checkedAt = Date.parse(subscription.checkedAt);
+    let title = `订阅有效期至：${fullDate}\n本地账号快照`;
+    if (Number.isFinite(checkedAt)) title += ` · 核验于 ${new Date(checkedAt).toLocaleDateString("zh-CN")}`;
+    title += "。此日期不代表自动扣费日。";
+    if (until <= now) return { label: "到期 待更新", title: `${title}\n该快照日期已过，当前到期日待更新。` };
+    return {
+      label: `到期 ${new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date)}`,
+      title,
+    };
   }
 
   global.CodexQuotaUI = {
+    subscriptionDisplay,
     resetCreditsLabel,
     clampPercent,
     remainingPercent,
@@ -261,7 +258,6 @@
     estimateRemainingLabel,
     quotaConfidenceLabel,
     quotaEstimateStatusLabel,
-    paceLabel,
     quotaSourceLabel,
     quotaFreshnessLabel,
     formatSnapshotTime,

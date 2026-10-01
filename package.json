@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.64",
+  "version": "0.1.71",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -55,7 +55,8 @@
     "updates:validate": "node scripts/validate-github-updates.js && node scripts/validate-message-dialog.js",
     "auto-recovery:validate": "node scripts/validate-auto-recovery.js && node scripts/validate-goals.js && node scripts/validate-recovery-countdown.js",
     "online-accounts:validate": "node scripts/validate-online-accounts.js",
-    "official-estimate:validate": "node scripts/validate-official-estimate.js"
+    "official-estimate:validate": "node scripts/validate-official-estimate.js",
+    "subscription:validate": "node scripts/validate-subscription.js"
   },
   "devDependencies": {
     "electron": "^39.8.10",

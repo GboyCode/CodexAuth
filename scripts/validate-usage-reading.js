@@ -152,9 +152,54 @@ async function validateScopeLabels() {
   assert.equal(elements.get("#totalTokens").textContent,"200");
 }
 
+async function validateOverviewRefresh() {
+  const source = await fs.readFile(path.join(__dirname, "../src/ui/app.js"), "utf8");
+  const first = deferred(), elements = new Map(), calls = [];
+  let paints = 0;
+  const api = {
+    getAllAccountsQuota: async () => ({ accounts: ["active", "offline", "reauth", "empty-quota"].map(id => ({ id })) }),
+    checkAccountQuota: async (id) => {
+      calls.push(id);
+      if (id === "active") return first.promise;
+      if (id === "offline") throw new Error("offline");
+      if (id === "reauth") return { refreshed: false, reason: "需要重新登录。" };
+      return { refreshed: true, available: false };
+    },
+  };
+  const sandbox = vm.createContext({ window: { codexAuth: api, CodexQuotaUI: {} },
+    document: { documentElement: { classList: { toggle() {} } }, querySelector: (key) => {
+      if (!elements.has(key)) elements.set(key, { setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; } });
+      return elements.get(key);
+    } }, console });
+  vm.runInContext(source.replace(/wireEvents\(\);\s*refresh\(true\)\.catch\([^\n]+\);\s*$/, ""), sandbox);
+  sandbox.renderAllAccountsQuota = async () => { paints++; };
+  const pending = sandbox.refreshAllAccountsQuota();
+  await new Promise(resolve => setImmediate(resolve));
+  const button = elements.get("#overviewRefreshBtn"), status = elements.get("#overviewRefreshStatus");
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, "刷新中 0/4");
+  await sandbox.refreshAllAccountsQuota();
+  assert.equal(calls.length, 1, "repeated clicks cannot start overlapping batches");
+  first.resolve({ refreshed: true }); await pending;
+  assert.deepEqual(calls, ["active", "offline", "reauth", "empty-quota"]);
+  assert.equal(paints, 4, "each completed account updates the overview");
+  assert.match(status.textContent, /已刷新 2\/4 个账号，2 个未更新/);
+  assert.equal(button.disabled, false); assert.equal(button["aria-busy"], undefined);
+  assert.equal(button.textContent, "刷新全部");
+  assert.match(sandbox.overviewQuotaFailure({ id: "reauth" }), /重新登录/);
+  assert.equal(sandbox.overviewQuotaFailure({ id: "reauth", quotaSnapshot: { checkedAt: new Date(Date.now() + 1000).toISOString() } }), null,
+    "a newer successful background update clears the batch failure display");
+  api.getAllAccountsQuota = async () => ({ accounts: [] });
+  await sandbox.refreshAllAccountsQuota();
+  assert.equal(status.textContent, "暂无已保存账号。"); assert.equal(calls.length, 4);
+  api.getAllAccountsQuota = async () => { throw new Error("list failed"); };
+  await sandbox.refreshAllAccountsQuota();
+  assert.equal(status.textContent, "list failed"); assert.equal(button.disabled, false);
+}
+
 (async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),"codexauth-usage-reading-"));
-  try{await validateRecords(root);await validateCache();await validateScopeRace();await validateScopeLabels();
+  try{await validateRecords(root);await validateCache();await validateScopeRace();await validateScopeLabels();await validateOverviewRefresh();
     console.log("Usage reading validation passed: incremental bytes, UTF-8/partial tails, immutable snapshots, rewrite/truncate/replacement, compressed logs, concurrent cache invalidation, session deduplication, project attribution and UI scope races.");
   }finally{
     assert.ok(path.resolve(root).startsWith(path.join(path.resolve(os.tmpdir()),"codexauth-usage-reading-")));

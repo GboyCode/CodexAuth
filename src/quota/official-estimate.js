@@ -119,14 +119,14 @@ function estimateOfficialQuota(quota, records, calibration, scope, now = Date.no
   const apply = (bucket) => {
     const next = { ...bucket, session: withoutEstimate(bucket.session), weekly: withoutEstimate(bucket.weekly) };
     delete next.estimate;
-    let available = false, reason = "等待本账号、模型和速度档的官方校准样本";
-    if (!eligible) reason = "等待新的官方快照";
+    let available = false, reason = "等待本账号、模型和速度档的在线校准样本";
+    if (!eligible) reason = "等待新的在线快照";
     if (eligible) for (const kind of ["session", "weekly"]) {
       const w = next[kind];
       if (!validWindow(w, now) || w.usedPercent >= 100) continue;
       const usage = intervalUsage(records, at, now, bucket.limitId, since);
-      if (!usage) { reason = "本地记录不完整，保留官方值"; continue; }
-      if (!usage.length) { reason = "等待官方快照后的本地消耗"; continue; }
+      if (!usage) { reason = "本地记录不完整，保留在线快照"; continue; }
+      if (!usage.length) { reason = "等待在线快照后的本地消耗"; continue; }
       let delta = 0, samples = Infinity, units = 0, supported = true;
       for (const group of usage) {
         const fit = fittedRate(calibration.groups[groupKey(bucket.limitId, group.model, group.tier, kind, w.windowMinutes)], group, now);
@@ -134,7 +134,7 @@ function estimateOfficialQuota(quota, records, calibration, scope, now = Date.no
         delta += fit.coefficient * group.units; units += group.units; samples = Math.min(samples, fit.samples);
       }
       if (!supported) continue;
-      if (delta > 5) { reason = "消耗变化较大，等待官方确认"; continue; }
+      if (delta > 5) { reason = "消耗变化较大，等待在线更新"; continue; }
       if (delta < 0.25) continue;
       const used = Math.min(100, w.usedPercent + delta);
       next[kind] = { ...w, estimatedUsedPercent: Math.ceil(used), estimatedRemainingPercent: Math.floor(100 - used),
