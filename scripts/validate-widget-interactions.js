@@ -70,6 +70,26 @@ async function run() {
     await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     assert.equal(await evaluate(`document.querySelectorAll('.account-row').length`), 7);
 
+    const logoPoint = await evaluate(`(() => {
+      widgetFixture.logoDrags = 0;
+      const logo = document.querySelector('.mark');
+      logo.addEventListener('dragstart', event => {
+        widgetFixture.logoDrags += 1;
+        event.preventDefault();
+      });
+      const bounds = logo.getBoundingClientRect();
+      return { x: Math.round(bounds.left + bounds.width / 2), y: Math.round(bounds.top + bounds.height / 2) };
+    })()`);
+    for (const pinned of [false, true]) {
+      await evaluate(`document.body.classList.toggle('pinned', ${pinned})`);
+      win.webContents.sendInputEvent({ type: "mouseDown", ...logoPoint, button: "left", clickCount: 1 });
+      win.webContents.sendInputEvent({ type: "mouseMove", x: logoPoint.x + 20, y: logoPoint.y + 15, modifiers: ["leftButtonDown"] });
+      win.webContents.sendInputEvent({ type: "mouseUp", x: logoPoint.x + 20, y: logoPoint.y + 15, button: "left", clickCount: 1 });
+      assert.equal(await evaluate(`widgetFixture.logoDrags`), 0,
+        `dragging the logo must not start an image/file drag when pinned=${pinned}`);
+    }
+    await evaluate(`document.body.classList.remove('pinned')`);
+
     const mainSource = await fs.readFile(path.resolve(__dirname, "../src/main.js"), "utf8");
     const pinContext = vm.createContext({
       widgetAlwaysOnTop: false, widgetWindow: win, widgetResizeSession: null,
@@ -93,8 +113,10 @@ async function run() {
         const button = document.querySelector('#pinBtn');
         button.click();
         while (button.disabled) await new Promise(resolve => setTimeout(resolve, 0));
-        await new Promise(resolve => setTimeout(resolve, 250));
-        const icon = new DOMMatrix(getComputedStyle(button.querySelector('svg')).transform);
+        const pinIcon = button.querySelector('svg');
+        getComputedStyle(pinIcon).transform;
+        await Promise.all(pinIcon.getAnimations().map(animation => animation.finished));
+        const icon = new DOMMatrix(getComputedStyle(pinIcon).transform);
         return { pressed: button.getAttribute('aria-pressed'),
           drag: getComputedStyle(document.querySelector('.widget-head')).webkitAppRegion,
           handlesHidden: [...document.querySelectorAll('.resize-handle')].every(el => getComputedStyle(el).display === 'none'),
@@ -245,7 +267,7 @@ async function run() {
     assert.equal(await evaluate(`document.querySelector('.account-quota-popover') === widgetFixture.popupBeforeTimer`), true);
     const screenshot = path.join(root, "widget.png");
     await fs.writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
-    console.log("Widget interactions passed: native pin movement lock, resize/dock guards, rotated icon, unpin/failure recovery, compact height for 2/7 accounts, screen-height overflow, native click across refresh, pointer motion, live popup updates, dismissal, keyboard, handle-only reorder, cancel, in-flight refresh and action isolation.");
+    console.log("Widget interactions passed: no logo image/file drag, native pin movement lock, resize/dock guards, rotated icon, unpin/failure recovery, compact height for 2/7 accounts, screen-height overflow, native click across refresh, pointer motion, live popup updates, dismissal, keyboard, handle-only reorder, cancel, in-flight refresh and action isolation.");
     console.log(`Preview: ${screenshot}`);
   } finally {
     ipcMain.removeHandler("widget-test:set-pinned");
