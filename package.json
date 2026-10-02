@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.72",
+  "version": "0.1.74",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -33,8 +33,10 @@
     "site:dev": "node scripts/site-dev.mjs",
     "site:build": "npm --prefix site run build",
     "site:validate": "npm --prefix site run validate",
+    "site:ui:validate": "npm run site:build && electron scripts/validate-website-interactions.js",
     "glass:validate": "node scripts/validate-glass.js",
     "widget:validate": "electron scripts/validate-widget-interactions.js",
+    "panel:validate": "electron scripts/validate-panel-interactions.js",
     "start": "npm run icon:app && electron .",
     "dev": "npm run icon:app && electron .",
     "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",

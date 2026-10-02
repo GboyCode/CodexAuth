@@ -17,7 +17,24 @@ export const translations = {
   previewHint: "Interactive preview · Sample data",
   previewLocal: "LOCAL WORKSPACE",
   appEyebrow: "A LITTLE MORE ORGANIZED",
-  appTitle: "Codex App account switcher",
+  appTitle: "CodexAuth",
+  addAccount: "Add account",
+  settings: "Settings",
+  localUsage: "Local usage",
+  localScopeNote: "Local records since the last switch, not your official account total.",
+  inputUsage: "Input tokens",
+  outputUsage: "Output tokens",
+  sessionCount: "Sessions",
+  statDetails: "Statistics details",
+  statExplanation: "The scope affects local usage only, not the current account quota. Cached input and reasoning output are already included in the totals.",
+  restartOnSwitch: "Restart Codex after switching",
+  autoSwitch: "Auto-switch when quota runs out",
+  autoSwitchHelp: "Windows: restart Codex and resume the task, with 15 seconds to cancel before switching.",
+  autoReset: "Use reset credits automatically",
+  autoResetHelp: "Requires auto-switch. When no account is available, use one reset credit for a backup account with exhausted weekly quota. You can cancel before it is used.",
+  screenshotsTitle: "View the desktop interface · Sample accounts",
+  accountsScreenshot: "Accounts and quotas at a glance",
+  settingsScreenshot: "Settings and explanations when you need them",
   tabAccounts: "Accounts",
   tabUsage: "Usage",
   widgetButton: "Widget",
@@ -25,7 +42,7 @@ export const translations = {
   vaultTitle: "LOCAL VAULT",
   savedAccounts: "accounts, ready to go",
   vaultHint: "Credentials protected by your operating system",
-  myAccounts: "MY ACCOUNTS",
+  myAccounts: "Saved accounts",
   strategyTitle: "A smoother switch.",
   strategyCopy:
     "Check your quota. Pick your account.<br>Your next workspace is ready.",
@@ -33,8 +50,8 @@ export const translations = {
   tryCopy:
     "Select “Switch” to see the active account and its quota update together.",
   demoOnly: "Website demo only",
-  usageTitle: "Current account overview",
-  usageScope: "Sample · Last 7 days of local records",
+  usageTitle: "Current account quota",
+  usageScope: "Current session · Sample",
   sessionQuota: "5-hour quota remaining",
   weekQuota: "Weekly quota remaining",
   sessionReset: "Resets in 2h 18m · Sample",
@@ -73,11 +90,11 @@ export const translations = {
     "From switching accounts to tracking usage, make your everyday Codex workflow feel easier.",
   feature1Title: "Your accounts. One workspace.",
   feature1Copy:
-    "Sign in on the official login page and save accounts locally. Add labels for work, personal use, or projects, and see account status before you switch.",
+    "See account status and remaining quota directly in the list. Dedicated controls for adding, renaming, and transferring accounts keep everyday actions clear.",
   feature1Note: "Keep every switch organized",
   feature2Title: "Know where your quota stands.",
   feature2Copy:
-    "View session and weekly quotas alongside reset times. Explore local token usage by project and model, with clear data scopes and timestamps.",
+    "View session and weekly quotas with reset times and clear online, cached, or estimated labels. Choose the local usage scope separately and expand statistics details when needed.",
   feature2Note: "See the status. Make your choice.",
   feature3Title: "Switch automatically. Keep going.",
   feature3Copy:
@@ -102,7 +119,7 @@ export const translations = {
   step1Link: "Choose your platform",
   step2Title: "Add your accounts",
   step2Copy:
-    "Use “Sign in and add account” to complete the official login, or import your current Codex login.",
+    "Choose “Add account”, then sign in to a new account or save your current login. To move accounts between computers, import a credential file from “More”.",
   step2Tip: "Credentials are encrypted on your computer",
   step3Title: "Switch. Keep creating.",
   step3Copy:
@@ -137,6 +154,10 @@ export const translations = {
 };
 export const messages = {
   zh: {
+    autoOff: "自动切换：关闭",
+    autoOn: "自动切换：开启 · 示例",
+    addHint: "请在桌面应用中添加账号；网页仅展示示例。",
+    closeSettings: "关闭设置预览",
     names: ["日常创作", "工作空间", "个人项目", "研究探索", "灵感实验室"],
     active: "使用中",
     switch: "切换",
@@ -177,6 +198,10 @@ export const messages = {
       "CodexAuth Switch：本地优先的 Codex App 多账号管理工具。Windows 支持额度耗尽后自动切换账号并继续任务。支持 Windows 与 macOS，免费开源。",
   },
   en: {
+    autoOff: "Auto-switch: off",
+    autoOn: "Auto-switch: on · Demo",
+    addHint: "Add accounts in the desktop app. This website uses sample data only.",
+    closeSettings: "Close settings preview",
     names: ["Daily creation", "Work space", "Personal projects", "Research", "Idea lab"],
     active: "Active",
     switch: "Switch",

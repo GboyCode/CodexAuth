@@ -233,10 +233,7 @@
             <div class="app-content">
               <div class="app-toolbar">
                 <div>
-                  <p class="eyebrow" data-i18n="appEyebrow">
-                    一个面板，井井有条
-                  </p>
-                  <h2 data-i18n="appTitle">Codex App 账号切换</h2>
+                  <h2 data-i18n="appTitle">CodexAuth</h2>
                 </div>
                 <div class="app-tools">
                   <div class="segmented" role="tablist" aria-label="演示页面">
@@ -282,6 +279,7 @@
                     <svg class="icon"><use href="#i-window" /></svg
                     ><span data-i18n="widgetButton">浮窗</span>
                   </button>
+                  <button id="demo-settings" class="mini-button" type="button" aria-haspopup="dialog" data-i18n="settings">设置</button>
                 </div>
               </div>
               <div
@@ -295,32 +293,21 @@
                   <article class="current-account">
                     <div class="status-top">
                       <span data-i18n="currentAccount">当前登录</span
-                      ><svg class="icon"><use href="#i-check" /></svg>
+                      >
                     </div>
                     <strong id="current-name">日常创作</strong>
+                    <span id="demo-auto-label" class="demo-auto-label">自动切换：关闭</span>
                     <div class="status-bottom">
                       <span id="current-email">studio@example.com</span
                       ><span class="plan-tag inverted">PLUS</span>
                     </div>
                   </article>
-                  <article class="vault-summary">
-                    <div class="status-top">
-                      <span data-i18n="vaultTitle">本地保险箱</span
-                      ><svg class="icon"><use href="#i-lock" /></svg>
-                    </div>
-                    <strong
-                      ><span id="saved-account-count">5</span>
-                      <span data-i18n="savedAccounts"
-                        >个账号，随时就绪</span
-                      ></strong
-                    >
-                    <p data-i18n="vaultHint">凭证由操作系统加密保护</p>
-                  </article>
                 </div>
                 <div class="account-content">
                   <div class="accounts-column">
                     <div class="list-heading">
-                      <h3 data-i18n="myAccounts">我的账号</h3>
+                      <h3><span data-i18n="myAccounts">已保存账号</span> <span id="saved-account-count" class="list-account-count">5</span></h3>
+                      <button id="demo-add" class="mini-button" type="button" data-i18n="addAccount">添加账号</button>
                       <button
                         id="privacy-toggle"
                         class="icon-button"
@@ -333,24 +320,6 @@
                     </div>
                     <div id="demo-accounts" class="account-list"></div>
                   </div>
-                  <aside class="strategy-panel">
-                    <div class="strategy-icon">
-                      <svg class="icon"><use href="#i-switch" /></svg>
-                    </div>
-                    <h3 data-i18n="strategyTitle">切换，从容一点。</h3>
-                    <p data-i18n="strategyCopy">
-                      先看额度，再选账号。<br />你的下一个工作空间，已经就绪。
-                    </p>
-                    <div class="strategy-divider"></div>
-                    <span class="tiny-label" data-i18n="tryLabel">试一试</span>
-                    <p class="try-copy" data-i18n="tryCopy">
-                      点击左侧的「切换」，体验账号与额度同步更新。
-                    </p>
-                    <span class="local-chip"
-                      ><svg class="icon"><use href="#i-shield" /></svg
-                      ><span data-i18n="demoOnly">仅在网页中演示</span></span
-                    >
-                  </aside>
                 </div>
               </div>
               <div
@@ -362,10 +331,7 @@
                 hidden
               >
                 <div class="usage-heading">
-                  <h3 data-i18n="usageTitle">当前账号概览</h3>
-                  <span class="tiny-label" data-i18n="usageScope"
-                    >示例 · 最近 7 天本地记录</span
-                  >
+                  <h3 data-i18n="usageTitle">当前账号额度</h3>
                 </div>
                 <div class="quota-cards">
                   <article>
@@ -382,54 +348,18 @@
                     <div class="meter"><span id="week-meter"></span></div>
                     <small data-i18n="weekReset">4 天后重置 · 示例</small>
                   </article>
-                  <article class="token-card">
-                    <span data-i18n="tokenTotal">本地 Token 用量</span
-                    ><strong>12.8<span>M</span></strong
-                    ><small data-i18n="tokenHint">24 个本地会话 · 示例</small>
-                  </article>
                 </div>
-                <div class="chart-panel">
-                  <div>
-                    <h3 data-i18n="chartTitle">创作的每一天，都有迹可循。</h3>
-                    <p data-i18n="chartSubtitle">
-                      本地 Token 用量趋势 · 示例数据
-                    </p>
+                <section class="demo-local-usage">
+                  <div class="usage-heading"><h3 data-i18n="localUsage">本地用量</h3><span class="tiny-label" data-i18n="usageScope">本次使用 · 示例</span></div>
+                  <p class="demo-scope-note" data-i18n="localScopeNote">最近切换后的本机记录，不等于官方账号累计。</p>
+                  <div class="demo-local-stats">
+                    <article><span data-i18n="tokenTotal">本地 Token 用量</span><strong>12.8M</strong></article>
+                    <article><span data-i18n="inputUsage">输入用量</span><strong>12.3M</strong></article>
+                    <article><span data-i18n="outputUsage">输出用量</span><strong>0.5M</strong></article>
+                    <article><span data-i18n="sessionCount">会话数</span><strong>24</strong></article>
                   </div>
-                  <div
-                    class="bar-chart"
-                    role="img"
-                    aria-label="示例 Token 用量，周一到周日：1.2、2.4、1.8、3.2、0.8、2.0、1.4 百万"
-                  >
-                    <div>
-                      <span style="--bar: 37.5%"><i>1.2M</i></span
-                      ><small data-i18n="mon">一</small>
-                    </div>
-                    <div>
-                      <span style="--bar: 75%"><i>2.4M</i></span
-                      ><small data-i18n="tue">二</small>
-                    </div>
-                    <div>
-                      <span style="--bar: 56%"><i>1.8M</i></span
-                      ><small data-i18n="wed">三</small>
-                    </div>
-                    <div>
-                      <span style="--bar: 100%"><i>3.2M</i></span
-                      ><small data-i18n="thu">四</small>
-                    </div>
-                    <div>
-                      <span style="--bar: 25%"><i>0.8M</i></span
-                      ><small data-i18n="fri">五</small>
-                    </div>
-                    <div>
-                      <span style="--bar: 62.5%"><i>2.0M</i></span
-                      ><small data-i18n="sat">六</small>
-                    </div>
-                    <div>
-                      <span style="--bar: 44%"><i>1.4M</i></span
-                      ><small data-i18n="sun">日</small>
-                    </div>
-                  </div>
-                </div>
+                  <details class="demo-stat-details"><summary data-i18n="statDetails">统计详情</summary><p data-i18n="statExplanation">统计范围只影响本地用量，不改变当前账号额度。缓存输入和推理输出已包含在总量中。</p></details>
+                </section>
               </div>
               <div class="app-status">
                 <span
@@ -577,7 +507,27 @@
             >点一点，感受切换。真实的账号管理，在你的电脑上完成。</span
           >
         </p>
+
+        <details class="desktop-screenshots">
+          <summary data-i18n="screenshotsTitle">查看桌面界面 · 示例账号</summary>
+          <div class="screenshot-grid">
+            <figure><a href="./assets/panel-accounts.png" target="_blank" rel="noopener noreferrer"><img src="./assets/panel-accounts.png" width="1300" height="900" loading="lazy" alt="CodexAuth accounts panel" /></a><figcaption data-i18n="accountsScreenshot">账号与额度，直接可见</figcaption></figure>
+            <figure><a href="./assets/panel-settings.png" target="_blank" rel="noopener noreferrer"><img src="./assets/panel-settings.png" width="1300" height="900" loading="lazy" alt="CodexAuth settings panel" /></a><figcaption data-i18n="settingsScreenshot">策略与说明，按需查看</figcaption></figure>
+          </div>
+        </details>
       </section>
+      <dialog id="demo-settings-dialog" class="demo-settings-dialog" aria-labelledby="demo-settings-title">
+        <form method="dialog">
+          <div class="demo-settings-heading"><h2 id="demo-settings-title" data-i18n="settings">设置</h2><button class="icon-button" value="close" aria-label="Close">×</button></div>
+          <p class="demo-scope-note" data-i18n="demoOnly">仅在网页中演示</p>
+          <label><input type="checkbox" checked /><span data-i18n="restartOnSwitch">切换后重启 Codex</span></label>
+          <label><input id="demo-auto-switch" type="checkbox" aria-describedby="demo-auto-help" /><span data-i18n="autoSwitch">额度用尽时自动切换</span></label>
+          <p id="demo-auto-help" data-i18n="autoSwitchHelp">Windows：重启 Codex 并继续原任务，执行前有 15 秒可取消。</p>
+          <label><input id="demo-auto-reset" type="checkbox" disabled aria-describedby="demo-reset-help" /><span data-i18n="autoReset">自动使用重置卡</span></label>
+          <p id="demo-reset-help" data-i18n="autoResetHelp">需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。</p>
+        </form>
+      </dialog>
+
 
       <section
         id="features"
@@ -603,7 +553,7 @@
             </div>
             <h3 data-i18n="feature1Title">多个账号，一个工作空间。</h3>
             <p data-i18n="feature1Copy">
-              在官方页面完成登录，保存到本地面板。为工作、个人和不同项目添加备注，切换前就能看清账号状态。
+              账号状态和剩余额度直接显示在列表中。添加账号、重命名和迁移各有入口，日常操作更清楚。
             </p>
             <div class="feature-note">
               <span class="keycap">A</span><span class="key-line"></span
@@ -618,8 +568,7 @@
             </div>
             <h3 data-i18n="feature2Title">额度与用量，心里有数。</h3>
             <p data-i18n="feature2Copy">
-              一起查看会话额度、周额度和重置时间，按项目与模型了解本地 Token
-              用量。数据范围和更新时间，清楚呈现。
+              查看会话额度、周额度和重置时间，区分在线、缓存与预估。本地用量单独选择统计范围，详细记录按需展开。
             </p>
             <div class="feature-note">
               <div class="small-meter"><span></span></div>
@@ -733,7 +682,7 @@
             <span class="step-number">02</span>
             <h3 data-i18n="step2Title">添加你的账号</h3>
             <p data-i18n="step2Copy">
-              点击「登录并添加账号」完成官方登录，或导入当前 Codex 登录。
+              点击「添加账号」，选择「登录新账号」或「保存当前登录」。跨电脑迁移可从「更多」导入凭证文件。
             </p>
             <span class="step-tip" data-i18n="step2Tip"
               >凭证在本机加密保存</span

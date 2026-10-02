@@ -74,12 +74,14 @@ export async function buildSite({preview = false, outputDirectory = path.join(so
     const byId = id => findNode(doc, node => attribute(node, 'id') === id);
     const labels = {'demo-refresh':'refresh','widget-close':'closeWidget','demo-widget':'widgetLabel','widget-settings-toggle':'widgetSettings','widget-pin':'widgetPin','site-nav':'nav','menu-toggle':'menu','privacy-toggle':'hide'};
     for (const [id, key] of Object.entries(labels)) setAttribute(byId(id), 'aria-label', copy[key]);
-    const classLabels = {'widget-quota-card':'widgetQuotas','download-platforms':'platforms','bar-chart':'chart'};
+    const classLabels = {'widget-quota-card':'widgetQuotas','download-platforms':'platforms'};
     for (const [className, key] of Object.entries(classLabels)) setAttribute(findNode(doc, node => attribute(node, 'class')?.split(' ').includes(className)), 'aria-label', copy[key]);
     setAttribute(findNode(doc, node => attribute(node, 'role') === 'tablist'), 'aria-label', copy.tabs);
     const brand = findNode(doc, node => attribute(node, 'class') === 'brand');
     setAttribute(brand, 'aria-label', copy.home);
     setHtml(byId('current-name'), copy.names[0]);
+    setHtml(byId('demo-auto-label'), copy.autoOff);
+    setAttribute(findNode(byId('demo-settings-dialog'), node => attribute(node, 'value') === 'close'), 'aria-label', copy.closeSettings);
     // Keep fictional demo addresses intact without changing zone-wide email protection.
     for (const id of ['current-email', 'widget-name']) {
       setHtml(byId(id), '<!--email_off-->studio@example.com<!--/email_off-->');

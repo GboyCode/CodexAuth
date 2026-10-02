@@ -22,14 +22,10 @@
     <main class="shell">
       <section class="topbar">
         <div>
-          <div class="app-meta">
-            <p id="platformLabel" class="eyebrow">本机本地</p>
-            <button id="checkUpdatesBtn" class="version-btn" type="button" title="从 GitHub 检查更新"><span id="appVersion">版本…</span> · 检查更新</button>
-          </div>
-          <h1>Codex App 账号切换</h1>
+          <h1>CodexAuth</h1>
         </div>
         <div class="top-actions">
-          <div class="page-tabs" role="tablist" aria-label="Main pages">
+          <div class="page-tabs" role="tablist" aria-label="页面">
             <button id="accountsTab" class="page-tab active" type="button" role="tab" aria-selected="true">
               账号
             </button>
@@ -37,132 +33,45 @@
               用量
             </button>
           </div>
-          <button id="refreshBtn" class="icon-btn" title="刷新">↻</button>
+          <button id="refreshBtn" class="icon-btn" title="刷新" aria-label="刷新">↻</button>
           <button id="widgetBtn" class="ghost-btn">浮窗</button>
-          <button id="restartBtn" class="ghost-btn">重启 Codex App</button>
+          <button id="settingsBtn" class="ghost-btn" aria-haspopup="dialog">设置</button>
         </div>
       </section>
 
       <section id="accountsPage" class="page active">
-        <section class="status-grid">
-          <article class="status-panel">
+        <section class="current-account-bar">
+          <div class="current-account-identity">
             <p class="label">当前登录</p>
             <h2 id="currentIdentity">读取中</h2>
-            <p id="currentPath" class="muted"></p>
-          </article>
-          <article class="status-panel compact">
-            <p class="label">本地保险箱</p>
-            <h2 id="accountCount">0 个账号</h2>
-            <p id="storePath" class="muted link-like"></p>
-          </article>
+          </div>
+          <button id="autoRecoverySummary" class="status-link" aria-haspopup="dialog">自动切换：关闭</button>
         </section>
-
-        <section class="import-row">
-          <input
-            id="displayNameInput"
-            class="name-input"
-            placeholder="账号备注，例如 work / personal"
-            autocomplete="off"
-          />
-          <button id="importBtn" class="ghost-btn">导入当前登录</button>
-          <button id="loginAccountBtn" class="primary-btn">登录并添加账号</button>
+        <p id="recoveryNotice" class="inline-notice" role="status" hidden></p>
+        <section class="account-toolbar">
+          <h2>已保存账号 <span id="accountCount" class="count-label">0</span></h2>
+          <div class="toolbar-actions">
+            <button id="addAccountBtn" class="primary-btn" aria-haspopup="dialog">添加账号</button>
+            <button class="ghost-btn" popovertarget="transferMenu">更多</button>
+          </div>
         </section>
-        <section class="account-login-status" aria-live="polite">
-          <span id="accountLoginStatus">在官方页面登录，完成后自动添加；当前 Codex 登录保持不变。</span>
+        <section id="accountLoginPanel" class="account-login-status" aria-live="polite" hidden>
+          <span id="accountLoginStatus"></span>
           <button id="openAccountLoginBtn" class="ghost-btn" type="button" hidden>重新打开登录页</button>
           <button id="cancelAccountLoginBtn" class="ghost-btn" type="button" hidden>取消登录</button>
         </section>
-
-        <section class="credential-transfer">
-          <div><strong>跨电脑迁移</strong><p>用迁移密码保护账号凭证，在另一台电脑导入后即可选择切换。</p></div>
-          <div class="transfer-actions">
-            <button id="exportCredentialsBtn" class="ghost-btn">导出账号凭证</button>
-            <button id="importCredentialsBtn" class="ghost-btn">导入凭证文件</button>
-          </div>
-        </section>
-
-        <section class="content-layout">
-          <div class="account-list" id="accountList"></div>
-          <aside class="side-panel">
-            <p class="label">切换策略</p>
-            <label class="toggle-row">
-              <input id="restartAfterSwitch" type="checkbox" checked />
-              <span>切换账号自动重启Codex</span>
-            </label>
-            <div class="recovery-option">
-              <label class="toggle-row">
-                <input id="autoSwitchOnLimit" type="checkbox" />
-                <span>额度耗尽自动切换并继续</span>
-              </label>
-              <span class="info-tip">
-                <button id="autoRecoveryInfo" class="info-tip-button" type="button" aria-label="自动切换说明" aria-describedby="autoRecoveryHelp">!</button>
-                <span id="autoRecoveryHelp" class="info-tip-content" role="tooltip">
-                  <strong>账号优先顺序</strong>
-                  Plus → 有五小时限制的 Business → 仅有周额度的 Business → 限制不明确的 Business → 其他套餐。同类账号优先下次重置更近的，重置时间相同再选剩余额度更多的。
-                  无记录账号保留套餐优先级，在同组有明确重置时间的账号之后尝试；Plus 始终先于 Business。任一窗口剩余不超过 2% 且未重置，或已确认耗尽尚未恢复的账号跳过。切换后核验实际额度。
-                  <strong>如何继续任务</strong>
-                  切换前弹出 15 秒倒计时，可取消本次。随后重启 Codex、核验账号与额度，并在原任务发送继续指令。其他本地任务运行时暂缓切换。
-                  <strong>生效范围</strong>
-                  支持开启后因额度耗尽中断的本地任务和目标模式，保留原目标预算与进度。手动暂停、目标预算用完或已完成时不会自动恢复。取消本次后不再重试同一次中断；新的中断仍会监听。
-                </span>
-              </span>
-            </div>
-            <label class="toggle-row">
-              <input id="autoResetOnWeeklyLimit" type="checkbox" />
-              <span>周额度耗尽后自动使用重置卡</span>
-            </label>
-            <p class="small-copy">先用有额度的账号；均不可用时，仅对周额度已用完的备用账号用卡。顺序：Plus → 有五小时限制的团队 → 仅周额度的团队；同类型跨账号优先用最早到期的卡。仅五小时用完不用卡；用卡前有 15 秒可取消提醒。</p>
-            <p id="autoRecoveryStatus" class="small-copy" role="status">未开启自动切换与续任务。</p>
-            <div class="divider"></div>
-            <details class="local-diagnostics">
-              <summary>凭证保存原理</summary>
-              <p class="small-copy">凭证使用 <span id="credentialProtection">操作系统当前用户安全存储</span> 加密保存。切换前会备份并保存当前 <code>auth.json</code>，减少刷新令牌丢失。</p>
-              <p class="small-copy">如果 Codex 提示 refresh token 已被使用，需要在 Codex App 重新登录该账号，然后回到这里重新导入当前登录。</p>
-            </details>
-            <div class="divider"></div>
-            <details class="local-diagnostics">
-              <summary>本地兼容性自检</summary>
-              <p id="diagnosticsInfo" class="small-copy" role="status">读取中</p>
-              <p id="recoveryInfo" class="small-copy" hidden></p>
-            </details>
-            <div class="divider"></div>
-            <section class="app-about" aria-label="项目与更新">
-              <div class="about-heading"><strong>CodexAuth</strong><span class="about-version" data-app-version>版本…</span></div>
-              <a class="about-link" href="https://github.com/GboyCode/CodexAuth" data-app-link="github" target="_blank" rel="noopener noreferrer" title="在浏览器打开 GitHub 项目主页">
-                <span class="about-link-label"><img src="./assets/github.svg" width="17" height="17" alt="" />GitHub</span>
-                <span class="about-link-value">项目主页 <span aria-hidden="true">↗</span></span>
-              </a>
-              <a class="about-link" href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer" title="查看开发者联系方式">
-                <span class="about-link-label"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>开发者</span>
-                <span class="about-link-value">Ryan Lin <span aria-hidden="true">↗</span></span>
-              </a>
-              <button class="about-update-btn" type="button" data-check-updates><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.2 6a8 8 0 0 1 13.6 6M4.2 12a8 8 0 0 0 13.6 6" /></svg>检查更新</button>
-              <p id="updateStatus" class="about-update-status" role="status">从 GitHub 获取正式版本</p>
-            </section>
-          </aside>
-        </section>
+        <p id="switchEffect" class="action-hint">切换账号将重启 Codex</p>
+        <div class="account-list" id="accountList"></div>
       </section>
 
       <section id="usagePage" class="page">
         <section class="dashboard-panel">
           <div class="section-head">
             <div>
-              <p class="label">额度与用量</p>
-              <h2>当前账号概览</h2>
+              <h2>当前账号额度</h2>
             </div>
             <div class="section-head-actions">
-              <div class="scope-tabs" role="tablist" aria-label="Usage scope">
-                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true">本次本地</button>
-                <button id="scopeAllBtn" class="scope-tab" type="button" role="tab" aria-selected="false">全部本地</button>
-              </div>
               <button id="statsRefreshBtn" class="ghost-btn">刷新</button>
-            </div>
-          </div>
-
-          <div class="quota-mode-panel">
-            <div>
-              <strong>额度读取模式</strong>
-              <p id="quotaModeHint">当前账号读取在线额度与本地日志；备用账号仅手动刷新或自动切换前查询并按需续期，不定时查询。</p>
             </div>
           </div>
 
@@ -194,7 +103,17 @@
             </article>
           </div>
 
-          <p id="localUsageScope" class="usage-title">最近切换后的本地用量</p>
+          <section class="local-usage-section" aria-labelledby="localUsageTitle">
+          <div class="section-head">
+            <h2 id="localUsageTitle">本地用量</h2>
+            <div class="section-head-actions">
+              <div class="scope-tabs" role="tablist" aria-label="本地用量范围">
+                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true">本次使用</button>
+                <button id="scopeAllBtn" class="scope-tab" type="button" role="tab" aria-selected="false">本机全部</button>
+              </div>
+            </div>
+          </div>
+          <p id="localUsageScope" class="usage-note">最近切换后的本地用量</p>
           <div class="usage-grid">
             <article class="metric-card">
               <span>本地总用量</span>
@@ -213,11 +132,14 @@
               <strong id="sessionCount">--</strong>
             </article>
           </div>
-          <p id="tokenBreakdown" class="usage-note"></p>
-          <p id="usageCoverage" class="usage-note"></p>
-          <p class="usage-note">
-            本次本地仅统计最近切换后的日志；全部本地包含不同账号，均不等于官方账号累计。官方个人面板按服务器统计截止日期显示，可能不含今天的用量。缓存输入和推理输出已包含在各自总数中。
-          </p>
+          <p id="usageWarning" class="inline-notice" role="status" hidden></p>
+          <details class="local-diagnostics usage-details">
+            <summary>统计详情</summary>
+            <p id="tokenBreakdown" class="usage-note"></p>
+            <p id="usageCoverage" class="usage-note"></p>
+            <p class="usage-note">本地日志统计不等于官方账号累计。缓存输入和推理输出已包含在各自总数中。</p>
+          </details>
+          </section>
 
           <section class="all-accounts-section" id="allAccountsSection">
             <div class="all-accounts-heading">
@@ -236,6 +158,79 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="transferMenu" class="action-menu" popover aria-label="账号迁移">
+      <button id="importCredentialsBtn" type="button">导入凭证文件</button>
+      <button id="exportCredentialsBtn" type="button">导出账号凭证</button>
+    </div>
+    <div id="accountMenu" class="action-menu" popover aria-label="账号操作">
+      <button id="accountDetailsBtn" type="button">查看详情</button>
+      <button id="renameAccountBtn" type="button">重命名</button>
+      <button id="reauthAccountBtn" type="button">重新登录</button>
+      <button id="deleteAccountBtn" class="menu-danger" type="button">删除账号</button>
+    </div>
+    <dialog id="addAccountDialog" class="confirm-dialog" aria-labelledby="addAccountTitle">
+      <div class="dialog-content">
+        <div class="dialog-heading">
+          <h2 id="addAccountTitle">添加账号</h2>
+          <button class="dialog-close" data-close-dialog="addAccountDialog" aria-label="关闭添加账号">×</button>
+        </div>
+        <label for="displayNameInput">备注（选填）</label>
+        <input id="displayNameInput" class="name-input dialog-input" placeholder="例如：工作账号" autocomplete="off" />
+        <p class="small-copy">在官方页面登录后自动保存，不改变当前 Codex 登录。</p>
+        <div class="dialog-actions">
+          <button id="importBtn" class="ghost-btn">保存当前登录</button>
+          <button id="loginAccountBtn" class="primary-btn">登录新账号</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="settingsDialog" class="confirm-dialog settings-dialog" aria-labelledby="settingsTitle">
+      <div class="dialog-content">
+        <div class="dialog-heading">
+          <h2 id="settingsTitle">设置</h2>
+          <button class="dialog-close" data-close-dialog="settingsDialog" aria-label="关闭设置" autofocus>×</button>
+        </div>
+        <section class="settings-section" aria-labelledby="switchSettingsTitle">
+          <h3 id="switchSettingsTitle">账号切换</h3>
+          <label class="toggle-row"><input id="restartAfterSwitch" type="checkbox" checked /><span>切换后重启 Codex</span></label>
+          <label class="toggle-row"><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /><span>额度用尽时自动切换</span></label>
+          <p id="autoSwitchHelp" class="small-copy">重启 Codex，并向原任务发送继续指令。执行前有 15 秒可取消。</p>
+          <label class="toggle-row"><input id="autoResetOnWeeklyLimit" type="checkbox" aria-describedby="autoResetHelp" /><span>自动使用重置卡</span></label>
+          <p id="autoResetHelp" class="small-copy">需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。</p>
+          <p id="autoRecoveryStatus" class="small-copy" role="status"></p>
+          <details class="local-diagnostics">
+            <summary>切换与用卡规则</summary>
+            <p class="small-copy">优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。</p>
+            <p class="small-copy">未重置且剩余不超过 2%，或已确认耗尽的账号会跳过，切换后核验实际额度。其他本地任务运行时暂缓切换。手动暂停、目标预算用完或任务完成后不自动继续；取消后不重试同一次中断。</p>
+            <p class="small-copy">用卡顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business；同类账号优先使用最早到期的卡。仅五小时额度用尽不用卡。用卡结果未确认时暂停自动用卡，避免重复消耗。</p>
+          </details>
+          <button id="restartBtn" class="ghost-btn settings-restart">重启 Codex</button>
+        </section>
+        <details class="local-diagnostics settings-section">
+          <summary>存储与诊断</summary>
+          <p class="small-copy">登录文件</p><p id="currentPath" class="path-copy"></p>
+          <p class="small-copy">账号存储</p><button id="storePath" class="path-link" title="打开账号存储目录"></button>
+          <p class="small-copy">凭证通过 <span id="credentialProtection">系统安全存储</span> 加密。切换前会备份当前登录信息。</p>
+          <p class="small-copy">登录失效时，重新登录该账号并保存即可。</p>
+          <p id="platformLabel" class="small-copy"></p>
+          <p id="diagnosticsInfo" class="small-copy" role="status">读取中</p>
+          <p id="recoveryInfo" class="small-copy" hidden></p>
+        </details>
+        <details class="local-diagnostics settings-section">
+          <summary>数据说明</summary>
+          <p id="quotaModeHint" class="small-copy">当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。</p>
+          <p class="small-copy">缓存和预估会标注来源及更新时间。到达重置时间后需更新数据，不能据此确认额度已恢复。本地用量仅统计这台电脑的日志，不等于官方账号累计。</p>
+        </details>
+        <section class="app-about settings-section" aria-label="关于">
+          <div class="about-heading"><h3>关于 CodexAuth</h3><span id="appVersion" class="about-version">版本…</span></div>
+          <div class="about-actions">
+            <a href="https://github.com/GboyCode/CodexAuth" data-app-link="github" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+            <a href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer">联系开发者 ↗</a>
+            <button id="checkUpdatesBtn" class="ghost-btn" type="button">检查更新</button>
+          </div>
+          <p id="updateStatus" class="small-copy" role="status"></p>
+        </section>
+      </div>
+    </dialog>
     <dialog id="exportScopeDialog" class="confirm-dialog" aria-labelledby="exportScopeTitle">
       <form method="dialog">
         <h3 id="exportScopeTitle">导出账号凭证</h3>

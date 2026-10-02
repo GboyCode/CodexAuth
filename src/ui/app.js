@@ -27,9 +27,27 @@ const state = {
   overviewRefreshing: false,
   overviewRefreshFailures: new Map(),
   usageScope: "current", // "current" or "all"
+  menuAccountId: null,
+  accountLoginState: "idle",
+  accountsRenderDeferred: false,
 };
 
 const els = {
+  settingsBtn: document.querySelector("#settingsBtn"),
+  settingsDialog: document.querySelector("#settingsDialog"),
+  addAccountBtn: document.querySelector("#addAccountBtn"),
+  addAccountDialog: document.querySelector("#addAccountDialog"),
+  autoRecoverySummary: document.querySelector("#autoRecoverySummary"),
+  recoveryNotice: document.querySelector("#recoveryNotice"),
+  switchEffect: document.querySelector("#switchEffect"),
+  accountLoginPanel: document.querySelector("#accountLoginPanel"),
+  accountMenu: document.querySelector("#accountMenu"),
+  transferMenu: document.querySelector("#transferMenu"),
+  accountDetailsBtn: document.querySelector("#accountDetailsBtn"),
+  renameAccountBtn: document.querySelector("#renameAccountBtn"),
+  reauthAccountBtn: document.querySelector("#reauthAccountBtn"),
+  deleteAccountBtn: document.querySelector("#deleteAccountBtn"),
+  usageWarning: document.querySelector("#usageWarning"),
   accountsTab: document.querySelector("#accountsTab"),
   usageTab: document.querySelector("#usageTab"),
   accountsPage: document.querySelector("#accountsPage"),
@@ -140,6 +158,22 @@ function snapshotTimeLabel(snapshot) {
 let toastTimer;
 function showToast(message) {
   window.clearTimeout(toastTimer);
+  els.toast.classList.remove("show");
+  document.querySelectorAll(".dialog-notice").forEach((notice) => { notice.hidden = true; });
+  const dialog = document.querySelector("dialog[open]");
+  if (dialog) {
+    let notice = dialog.querySelector(".dialog-notice");
+    if (!notice) {
+      notice = document.createElement("p");
+      notice.className = "inline-notice dialog-notice";
+      notice.setAttribute("role", "status");
+      (dialog.querySelector(".dialog-content") || dialog).append(notice);
+    }
+    notice.textContent = message;
+    notice.hidden = false;
+    toastTimer = window.setTimeout(() => { notice.hidden = true; }, 5000);
+    return;
+  }
   els.toast.textContent = message;
   els.toast.classList.add("show");
   toastTimer = window.setTimeout(() => {
@@ -244,9 +278,18 @@ function renderSettings(snapshot) {
     els.autoResetOnWeeklyLimit.checked = snapshot?.settings?.autoResetOnWeeklyLimit === true;
     els.autoResetOnWeeklyLimit.disabled = snapshot?.platform !== "win32" || snapshot?.settings?.autoSwitchOnLimit !== true;
   }
-  if (els.autoRecoveryStatus) els.autoRecoveryStatus.textContent = snapshot?.platform !== "win32"
-    ? "自动续任务目前仅支持 Windows Codex 桌面版。"
-    : snapshot?.autoRecovery?.message ?? "未开启自动切换与续任务。";
+  const supported = snapshot?.platform === "win32";
+  const enabled = snapshot?.settings?.autoSwitchOnLimit === true;
+  const recovery = snapshot?.autoRecovery;
+  const labels = { checking: "检查中", countdown: "即将切换", waiting: "等待中", switching: "切换中", resuming: "恢复中", attention: "需处理" };
+  els.autoRecoverySummary.textContent = `自动切换：${!supported ? "不支持" : !enabled ? "关闭" : labels[recovery?.state] || "开启"}`;
+  const showNotice = supported && enabled && recovery?.message && !["disabled", "watching"].includes(recovery.state);
+  els.recoveryNotice.hidden = !showNotice;
+  els.recoveryNotice.textContent = showNotice ? recovery.message : "";
+  els.autoRecoveryStatus.hidden = supported && !showNotice;
+  els.autoRecoveryStatus.textContent = !supported ? "自动切换与续任务仅支持 Windows 桌面版。" : showNotice ? recovery.message : "";
+  els.switchEffect.textContent = snapshot?.settings?.restartAfterSwitch !== false
+    ? "切换账号将重启 Codex" : "切换后需手动重启 Codex 才能生效";
 }
 
 function renderStatus(snapshot) {
@@ -256,14 +299,14 @@ function renderStatus(snapshot) {
   if (current?.exists && !current.error) {
     els.currentIdentity.textContent = identityLabel(current);
   } else if (current?.exists && current.error) {
-    els.currentIdentity.textContent = "auth.json 无法识别";
+    els.currentIdentity.textContent = "登录信息无法读取";
   } else {
-    els.currentIdentity.textContent = "未找到 auth.json";
+    els.currentIdentity.textContent = "未检测到 Codex 登录";
   }
   els.currentPath.textContent = current?.error ? `${snapshot.authPath} · ${current.error}` : snapshot.authPath;
-  els.accountCount.textContent = `${snapshot.accounts.length} 个账号`;
+  els.accountCount.textContent = String(snapshot.accounts.length);
   els.storePath.textContent = snapshot.storeRoot;
-  els.storePath.title = "打开保险箱目录";
+  els.storePath.title = "打开账号存储目录";
   const d=snapshot.diagnostics;
   if(d) {
     els.diagnosticsInfo.textContent = [
@@ -313,10 +356,18 @@ function createAccountQuotaMetric(kind, window) {
 function createAccountQuotaDetails(account) {
   const details = document.createElement("section");
   details.className = "account-quota-details";
+  details.id = `quota-details-${account.id}`;
+  const credentialStatus = document.createElement("p");
+  credentialStatus.className = "account-detail-status";
+  credentialStatus.textContent = account.needsReauth ? account.reauthReason || "需要重新登录"
+    : account.accessTokenExpired ? "登录凭证待刷新，使用时会尝试自动续期。"
+      : account.lastSyncedAt ? `最近同步 ${formatDate(account.lastSyncedAt)}` : `最近切换 ${formatDate(account.lastSwitchedAt)}`;
+  details.append(credentialStatus);
 
   if (!account.isActive) {
     const check = document.createElement("button");
     check.className = "account-action";
+    check.dataset.accountAction = "refresh";
     check.textContent = "刷新额度";
     check.addEventListener("click", async () => {
       check.disabled = true;
@@ -387,19 +438,10 @@ function accountCard(account) {
   const card = document.createElement("article");
   const expanded = state.expandedAccountId === account.id;
   card.className = expanded ? "account-card expanded" : "account-card";
+  card.dataset.accountId = account.id;
 
   const main = document.createElement("div");
   main.className = "account-main";
-  main.setAttribute("role", "button");
-  main.setAttribute("tabindex", "0");
-  main.setAttribute("aria-expanded", String(expanded));
-  main.title = expanded ? "收起额度" : "查看额度";
-  main.addEventListener("click", () => toggleAccountDetails(account.id));
-  main.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    toggleAccountDetails(account.id);
-  });
 
   const line = document.createElement("div");
   line.className = "account-name-line";
@@ -420,60 +462,83 @@ function accountCard(account) {
   const meta = document.createElement("div");
   meta.className = "account-meta";
   const identity = document.createElement("span");
-  identity.textContent = account.planType ? `${identityLabel(account)} · ${q.formatPlanType(account.planType)}` : identityLabel(account);
+  identity.textContent = [account.displayName !== identityLabel(account) ? identityLabel(account) : "", q.formatPlanType(account.planType)].filter(Boolean).join(" · ");
   identity.title = identity.textContent;
   const switched = document.createElement("span");
-  switched.textContent = account.needsReauth
-    ? account.reauthReason || "需要重新登录"
-    : account.accessTokenExpired
-    ? "访问令牌已到期，切换并使用时由 Codex 自动刷新"
-    : account.lastSyncedAt
-      ? `最近同步 ${formatDate(account.lastSyncedAt)}`
-      : `最近切换 ${formatDate(account.lastSwitchedAt)}`;
+  const quota = account.quotaSnapshot;
+  switched.textContent = account.needsReauth ? "需要重新登录"
+    : account.onlineQuotaStatus?.error ? quota ? "更新失败 · 显示缓存" : "更新失败"
+      : q.quotaFreshnessLabel(quota, { compact: true, inline: true });
+  switched.title = account.reauthReason || account.onlineQuotaStatus?.error || q.quotaFreshnessLabel(quota);
   meta.append(identity, switched);
 
   main.append(line, meta);
 
+  const quotaSummary = document.createElement("div");
+  quotaSummary.className = "account-quota-preview";
+  for (const kind of ["session", "weekly"]) {
+    const metric = document.createElement("div");
+    const label = document.createElement("span");
+    label.textContent = q.windowTitle(kind, quota?.[kind]);
+    const value = document.createElement("strong");
+    value.textContent = q.formatRemainingText(quota?.[kind]);
+    metric.title = q.formatUsedFootnote(quota?.[kind]);
+    metric.append(label, value);
+    quotaSummary.append(metric);
+  }
   const quotaToggle = document.createElement("button");
   quotaToggle.type = "button";
   quotaToggle.className = "account-expand-cue";
-  quotaToggle.textContent = expanded ? "收起额度" : "查看额度";
+  quotaToggle.dataset.accountAction = "details";
+  quotaToggle.textContent = expanded ? "收起" : "详情";
+  quotaToggle.setAttribute("aria-label", `${account.displayName}：${expanded ? "收起" : "查看"}详情`);
+  quotaToggle.setAttribute("aria-expanded", String(expanded));
+  if (expanded) quotaToggle.setAttribute("aria-controls", `quota-details-${account.id}`);
   quotaToggle.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleAccountDetails(account.id);
+    [...els.accountList.children].find((item) => item.dataset.accountId === account.id)?.querySelector(".account-expand-cue")?.focus();
   });
 
   const actions = document.createElement("div");
   actions.className = "account-actions";
 
-  const rename = document.createElement("button");
-  rename.className = "account-action";
-  rename.textContent = "重命名";
-  rename.addEventListener("click", () => renameAccount(account));
-
-  const switchBtn = document.createElement("button");
-  switchBtn.className = account.isActive ? "account-action" : "account-action primary";
-  switchBtn.textContent = account.isActive ? "已启用" : "切换";
-  switchBtn.disabled = account.isActive;
-  switchBtn.addEventListener("click", () => switchToAccount(account, switchBtn));
-
-  const reauth = document.createElement("button");
-  reauth.className = account.needsReauth ? "account-action primary" : "account-action";
-  reauth.textContent = "重新登录";
-  reauth.addEventListener("click", () => reauthAccount(account, reauth));
-
-  const del = document.createElement("button");
-  del.className = "account-action danger";
-  del.textContent = "删除";
-  del.addEventListener("click", () => confirmDelete(account));
-
-  actions.append(rename, switchBtn, reauth, del);
-  card.append(main, quotaToggle, actions);
+  actions.append(quotaToggle);
+  if (account.needsReauth || !account.isActive) {
+    const primary = document.createElement("button");
+    primary.className = "account-action primary";
+    primary.dataset.accountAction = "primary";
+    primary.textContent = account.needsReauth ? "重新登录" : "切换";
+    primary.addEventListener("click", () => account.needsReauth ? reauthAccount(account, primary) : switchToAccount(account, primary));
+    actions.append(primary);
+  }
+  const more = document.createElement("button");
+  more.className = "account-action account-more";
+  more.dataset.accountAction = "more";
+  more.textContent = "更多";
+  more.setAttribute("aria-label", `${account.displayName}：更多操作`);
+  more.setAttribute("popovertarget", "accountMenu");
+  more.addEventListener("click", () => {
+    state.menuAccountId = account.id;
+    els.accountDetailsBtn.textContent = expanded ? "收起详情" : "查看详情";
+    els.reauthAccountBtn.hidden = account.needsReauth;
+  });
+  actions.append(more);
+  card.append(main, quotaSummary, actions);
   if (expanded) card.append(createAccountQuotaDetails(account));
   return card;
 }
 
 function renderAccounts(snapshot) {
+  // Background quota events must not dismiss a menu or drop keyboard focus.
+  if (els.accountMenu.matches(":popover-open")) {
+    state.accountsRenderDeferred = true;
+    return;
+  }
+  state.accountsRenderDeferred = false;
+  const focused = document.activeElement;
+  const focusedAccount = focused?.closest(".account-card")?.dataset.accountId;
+  const focusedAction = focused?.dataset.accountAction;
   els.accountList.replaceChildren();
   if (state.expandedAccountId && !snapshot.accounts.some((account) => account.id === state.expandedAccountId)) {
     state.expandedAccountId = null;
@@ -481,13 +546,23 @@ function renderAccounts(snapshot) {
   if (!snapshot.accounts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "暂无账号。点击“登录并添加账号”，或导入当前 Codex 登录。";
+    const title = document.createElement("p");
+    title.textContent = "还没有保存的账号";
+    const add = document.createElement("button");
+    add.className = "primary-btn";
+    add.textContent = "添加账号";
+    add.addEventListener("click", () => els.addAccountDialog.showModal());
+    empty.append(title, add);
     els.accountList.append(empty);
     return;
   }
   snapshot.accounts.forEach((account) => {
     els.accountList.append(accountCard(account));
   });
+  if (focusedAccount && focusedAction) {
+    const card = [...els.accountList.children].find((item) => item.dataset.accountId === focusedAccount);
+    card?.querySelector(`[data-account-action="${focusedAction}"]`)?.focus({ preventScroll: true });
+  }
 }
 
 function renderQuotaWindow(kind, window) {
@@ -530,7 +605,8 @@ function renderQuotaPanel(dashboard) {
 
 function renderDashboard(dashboard) {
   state.dashboardLoaded = true;
-  renderQuotaPanel(dashboard);
+  // Local usage scope never clears or replaces the current account's quota.
+  if (state.usageScope !== "all") renderQuotaPanel(dashboard);
 
   const usage = dashboard?.usage;
   const tokenUsage = usage?.tokenUsage || {};
@@ -544,6 +620,8 @@ function renderDashboard(dashboard) {
   els.outputTokens.textContent = exact(tokenUsage.outputTokens);
   els.tokenBreakdown.textContent=`缓存输入 ${exact(tokenUsage.cachedInputTokens)} · 推理输出 ${exact(tokenUsage.reasoningOutputTokens)}（均为已包含的子项）`;
   const c=usage?.coverage??{};
+  els.usageWarning.hidden = !(usage?.available === false || usage?.failedFiles || c.invalidLines || c.boundaryIntervals || c.missingBaselines);
+  els.usageWarning.textContent = usage?.available === false ? "暂无可归属的本次用量" : "部分日志未计入，查看统计详情";
   els.usageCoverage.textContent=[`已扫描 ${usage?.scannedFiles??0}/${usage?.totalFiles??0} 个日志文件`,
     `重复事件去重 ${c.duplicates??0} 条`,
     usage?.failedFiles?`${usage.failedFiles} 个文件暂不可读`:null,
@@ -788,11 +866,18 @@ function readDashboard(silent) {
 }
 
 async function loadDashboard(silent = false, options = {}) {
+  const read = async () => {
+    const requests = [readDashboard(silent)];
+    if (state.usageScope === "all") requests.push(readQuota(true));
+    const results = await Promise.allSettled(requests);
+    if (results[0].status === "rejected") throw results[0].reason;
+    if (results[1]?.status === "rejected") showToast("额度刷新失败，本地用量已更新");
+  };
   if (options.busy === false) {
-    await readDashboard(silent);
+    await read();
     return;
   }
-  await withAction(els.statsRefreshBtn, "刷新中", () => readDashboard(silent));
+  await withAction(els.statsRefreshBtn, "刷新中", read);
 }
 
 let transferMode = "export";
@@ -816,9 +901,9 @@ function openCredentialTransfer(mode) {
   els.transferError.textContent = "";
   els.transferTitle.textContent = all ? "导出全部账号" : exporting ? "导出当前账号" : "导入账号凭证";
   els.transferDescription.textContent = all
-    ? "导出全部已保存账号及当前登录账号。所选位置会新建一个文件夹，每个账号对应一个加密 .codexauth 文件，共用本次迁移密码。"
+    ? "为全部已保存账号和当前登录各导出一份加密文件，共用本次迁移密码。"
     : exporting
-    ? "导出当前 Codex 登录的最新凭证为加密 .codexauth 文件。B 电脑导入时需要相同的迁移密码。"
+    ? "导出当前登录的加密凭证。在另一台电脑导入时，需要相同的迁移密码。"
     : `已选择 ${importSelection.count} 个凭证文件。输入这批文件共用的迁移密码即可批量导入；不同密码的文件请分批选择。`;
   els.transferDescription.title = exporting ? "" : importSelection.names.join("\n");
   els.transferConfirmGroup.hidden = !exporting;
@@ -862,21 +947,30 @@ async function submitCredentialTransfer(event) {
 }
 
 async function importCurrent() {
-  await withAction(els.importBtn, "导入中", async () => {
+  await withAction(els.importBtn, "保存中", async () => {
     const snapshot = await api.importCurrent(els.displayNameInput.value);
     els.displayNameInput.value = "";
     render(snapshot);
+    els.addAccountDialog.close();
     state.dashboardLoaded = false;
     if (state.activePage === "usage") await loadDashboard(true, { busy: false });
-    showToast("已导入当前 Codex 登录");
+    showToast("已保存当前登录");
   });
 }
 
 function renderAccountLogin(login = {}) {
   const busy = ["starting", "waiting", "importing"].includes(login.state);
+  const wasBusy = ["starting", "waiting", "importing"].includes(state.accountLoginState);
+  if (wasBusy && login.state === "done") showToast("登录已完成");
+  if (wasBusy && login.state === "cancelled") showToast("已取消登录");
+  state.accountLoginState = login.state || "idle";
   els.loginAccountBtn.disabled = busy;
-  els.loginAccountBtn.textContent = busy ? "等待登录完成…" : "登录并添加账号";
-  els.accountLoginStatus.textContent = login.message || "在官方页面登录，完成后自动添加；当前 Codex 登录保持不变。";
+  els.loginAccountBtn.textContent = busy ? "等待登录完成…" : "登录新账号";
+  els.importBtn.disabled = busy;
+  els.accountLoginPanel.hidden = !busy && login.state !== "error";
+  const labels = { starting: "正在打开登录页…", waiting: "请在浏览器完成登录", importing: "正在保存账号…" };
+  els.accountLoginStatus.textContent = labels[login.state] || (login.message || "").replace("登录并添加", "添加账号");
+  if (busy && els.addAccountDialog.open) els.addAccountDialog.close();
   els.openAccountLoginBtn.hidden = login.canOpen !== true;
   els.cancelAccountLoginBtn.hidden = login.canCancel !== true;
 }
@@ -900,7 +994,7 @@ async function switchToAccount(account, button) {
 }
 
 async function reauthAccount(account, button) {
-  const ok = window.confirm(`重新登录 ${account.displayName}？\n\n会加密备份当前 auth.json，然后清除当前 Codex 本地登录并重启 Codex App。`);
+  const ok = window.confirm(`重新登录 ${account.displayName}？\n\n会备份并清除当前 Codex 登录，然后重启 Codex。`);
   if (!ok) return;
   await withAction(button, "打开中", async () => {
     const snapshot = await api.reauthAccount(account.id);
@@ -935,9 +1029,13 @@ async function commitRename() {
 
 function confirmDelete(account) {
   state.pendingDelete = account;
-  els.confirmTitle.textContent = "删除保存的账号";
-  els.confirmBody.textContent = `会删除本地保存的 ${account.displayName}。如果它就是当前 Codex 登录，也会清理当前 auth.json 并重启 Codex，避免再次自动导入。`;
+  els.confirmTitle.textContent = "删除账号";
+  els.confirmBody.textContent = account.isActive
+    ? `删除 ${account.displayName} 的本地凭证，并退出当前登录、重启 Codex。再次使用需重新登录。`
+    : `删除 ${account.displayName} 的本地凭证。再次使用需重新登录。`;
+  els.confirmDialog.returnValue = "";
   els.confirmDialog.showModal();
+  els.confirmDialog.querySelector('[value="cancel"]').focus();
 }
 
 async function deletePendingAccount() {
@@ -956,7 +1054,44 @@ async function restartCodex() {
   });
 }
 
+function positionActionMenu(menu, trigger) {
+  const rect = trigger.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - menu.offsetHeight - 8))}px`;
+}
+
+function withMenuAccount(action) {
+  const account = state.snapshot?.accounts.find((item) => item.id === state.menuAccountId);
+  els.accountMenu.hidePopover();
+  if (account) action(account);
+}
+
 function wireEvents() {
+  els.settingsBtn.addEventListener("click", () => els.settingsDialog.showModal());
+  els.autoRecoverySummary.addEventListener("click", () => els.settingsDialog.showModal());
+  els.addAccountBtn.addEventListener("click", () => els.addAccountDialog.showModal());
+  document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+    button.addEventListener("click", () => document.getElementById(button.dataset.closeDialog).close());
+  });
+  for (const menu of [els.accountMenu, els.transferMenu]) {
+    let trigger;
+    menu.addEventListener("beforetoggle", (event) => {
+      if (event.newState === "open") trigger = document.activeElement;
+    });
+    menu.addEventListener("toggle", (event) => {
+      if (event.newState === "closed" && menu === els.accountMenu && state.accountsRenderDeferred && state.snapshot) renderAccounts(state.snapshot);
+      if (event.newState !== "open" || !trigger?.isConnected) return;
+      positionActionMenu(menu, trigger);
+      menu.querySelector("button:not([hidden])")?.focus();
+    });
+  }
+  els.accountDetailsBtn.addEventListener("click", () => withMenuAccount((account) => {
+    toggleAccountDetails(account.id);
+    [...els.accountList.children].find((item) => item.dataset.accountId === account.id)?.querySelector(".account-expand-cue")?.focus();
+  }));
+  els.renameAccountBtn.addEventListener("click", () => withMenuAccount(renameAccount));
+  els.reauthAccountBtn.addEventListener("click", () => withMenuAccount((account) => reauthAccount(account, els.reauthAccountBtn)));
+  els.deleteAccountBtn.addEventListener("click", () => withMenuAccount(confirmDelete));
   els.accountsTab.addEventListener("click", () => setActivePage("accounts"));
   els.usageTab.addEventListener("click", () => setActivePage("usage"));
   els.refreshBtn.addEventListener("click", () => refresh(false).catch((error) => showToast(error.message)));
@@ -967,8 +1102,12 @@ function wireEvents() {
   els.overviewPrivacyBtn.addEventListener("click", toggleOverviewPrivacy);
   els.overviewRefreshBtn.addEventListener("click", refreshAllAccountsQuota);
   renderOverviewPrivacy();
-  els.restartAfterSwitch?.addEventListener("change", () => {
-    api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked }).catch((error) => showToast(error.message));
+  els.restartAfterSwitch?.addEventListener("change", async () => {
+    els.restartAfterSwitch.disabled = true;
+    try {
+      state.snapshot = await api.updateSettings({ restartAfterSwitch: els.restartAfterSwitch.checked });
+    } catch (error) { showToast(error.message); }
+    finally { renderSettings(state.snapshot); els.restartAfterSwitch.disabled = false; }
   });
   els.autoSwitchOnLimit?.addEventListener("change", async () => {
     const enabled = els.autoSwitchOnLimit.checked;
@@ -977,7 +1116,7 @@ function wireEvents() {
       const snapshot = await api.updateSettings({ autoSwitchOnLimit: enabled });
       state.snapshot = snapshot;
       renderSettings(snapshot);
-      showToast(enabled ? "已开启额度耗尽自动切换与续任务" : "已关闭自动恢复；已开始的任务会继续运行");
+      showToast(enabled ? "已开启自动切换与续任务" : "已关闭自动切换");
     } catch (error) {
       els.autoSwitchOnLimit.checked = !enabled;
       showToast(error.message);
@@ -990,7 +1129,7 @@ function wireEvents() {
       const snapshot = await api.updateSettings({ autoResetOnWeeklyLimit: enabled });
       state.snapshot = snapshot;
       renderSettings(snapshot);
-      showToast(enabled ? "已开启周额度用卡兜底：Plus → 五小时团队 → 仅周额度团队" : "已关闭自动使用重置卡");
+      showToast(enabled ? "已开启自动使用重置卡" : "已关闭自动使用重置卡");
     } catch (error) {
       els.autoResetOnWeeklyLimit.checked = !enabled;
       showToast(error.message);
@@ -1005,6 +1144,7 @@ function wireEvents() {
     try { renderAccountLogin(await api.openAccountLogin()); } catch (error) { showToast(error.message); }
   });
   els.exportCredentialsBtn.addEventListener("click", () => {
+    els.transferMenu.hidePopover();
     els.exportScopeDialog.returnValue = "";
     els.exportScopeDialog.showModal();
   });
@@ -1012,7 +1152,7 @@ function wireEvents() {
     if (els.exportScopeDialog.returnValue === "current") openCredentialTransfer("export");
     else if (els.exportScopeDialog.returnValue === "all") openCredentialTransfer("export-all");
   });
-  els.importCredentialsBtn.addEventListener("click", () => startCredentialImport());
+  els.importCredentialsBtn.addEventListener("click", () => { els.transferMenu.hidePopover(); startCredentialImport(); });
   els.transferForm.addEventListener("submit", submitCredentialTransfer);
   els.transferCancel.addEventListener("click", () => els.transferDialog.close());
   els.transferDialog.addEventListener("cancel", (event) => { if (transferBusy) event.preventDefault(); });
@@ -1045,7 +1185,6 @@ function wireEvents() {
       readQuota(true).catch((error) => showToast(error.message));
       return;
     }
-    if (scope === "quota") return;
     refresh(true).catch((error) => showToast(error.message));
   });
 }

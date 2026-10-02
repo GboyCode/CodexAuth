@@ -56,8 +56,9 @@ function renderAccounts() {
       (account, index) => `
     <article class="account-row ${index === activeAccount ? "selected" : ""}">
       <span class="account-avatar" aria-hidden="true">${account.initials}</span>
-      <div class="account-detail"><div class="account-heading"><strong>${message("names")[index]}</strong><span class="plan-tag">${account.plan}</span></div><span class="account-email">${emailFor(account)}</span></div>
-      <div class="account-right"><button class="switch-button" type="button" data-account="${index}" ${index === activeAccount || switching ? "disabled" : ""} aria-label="${message("switch")} ${message("names")[index]}">${index === activeAccount ? message("active") : message("switch")}</button><div class="row-quotas"><span>${message("hours")} ${account.session}%</span><span class="mini-meter" aria-hidden="true"><span style="width:${account.session}%"></span></span><span>${message("week")} ${account.week}%</span></div></div>
+      <div class="account-detail"><div class="account-heading"><strong>${message("names")[index]}</strong><span class="plan-tag">${account.plan}</span>${index === activeAccount ? `<span class="demo-current-badge">${message("active")}</span>` : ""}</div><span class="account-email">${emailFor(account)}</span></div>
+      <div class="row-quotas"><span>${message("hours")}<strong>${account.session}%</strong></span><span>${message("week")}<strong>${account.week}%</strong></span></div>
+      <div class="account-right">${index === activeAccount ? "" : `<button class="switch-button" type="button" data-account="${index}" ${switching ? "disabled" : ""} aria-label="${message("switch")} ${message("names")[index]}">${message("switch")}</button>`}</div>
     </article>`,
     )
     .join("");
@@ -145,6 +146,13 @@ function setWidgetSettings(open) {
   $("#widget-settings").hidden = !open;
   $("#widget-settings-toggle").setAttribute("aria-expanded", String(open));
 }
+
+$("#demo-add").addEventListener("click", () => showToast(message("addHint")));
+$("#demo-settings").addEventListener("click", () => $("#demo-settings-dialog").showModal());
+$("#demo-auto-switch").addEventListener("change", (event) => {
+  $("#demo-auto-reset").disabled = !event.target.checked;
+  $("#demo-auto-label").textContent = message(event.target.checked ? "autoOn" : "autoOff");
+});
 
 $("#language-toggle").addEventListener("click", () => {
   const next = language === "zh" ? "en" : "zh";

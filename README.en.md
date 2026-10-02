@@ -246,17 +246,17 @@ npm run dev:hidden
 ### Import Accounts
 
 1. Install Codex desktop and open CodexAuth Switch.
-2. Click “登录并添加账号” (Sign in and add account).
+2. Click “添加账号” (Add account), then “登录新账号” (Sign in to a new account).
 3. Select the desired account on the official page and complete authentication.
 4. The encrypted account is added automatically; the active Codex login stays unchanged.
-5. Repeat to add more accounts, or use “导入当前登录” to import an existing active login.
+5. Repeat to add more accounts, or choose “保存当前登录” (Save current login) in the same dialog. Credential file import is available in the panel's More menu.
 
 If the browser selects an existing account automatically, choose the intended account on the official page. Pending sign-in can be cancelled or reopened and times out after five minutes.
 
 ### Switch Accounts
 
 1. Select a saved account in CodexAuth Switch.
-2. Click switch.
+2. Check the five-hour and weekly quota in the account row, then click Switch. Expand the row for reset times and details.
 3. Enable restart to stop and relaunch Codex automatically; otherwise close Codex App and CLI before switching, then start Codex manually.
 
 The app pins current Codex releases to file-backed credentials and fully restarts the desktop app when “restart after switch” is enabled, so the selected account takes effect after relaunch.
@@ -264,6 +264,10 @@ The app pins current Codex releases to file-backed credentials and fully restart
 ### Reauth A Saved Account
 
 Use reauth when Codex reports that a refresh token can no longer be refreshed, or when a saved account has become stale.
+
+Stale accounts show a Reauth button directly; other accounts offer it in the row's More menu. Automatic switching, reset credits and restart after switching are managed in Settings at the top of the panel.
+
+The Usage page separates current account quota from local token statistics. Current session covers local records since the active account took effect; All local includes local history. Expand the statistics explanation for scope details.
 
 The app clears the current local login and restarts Codex App. You then complete the official login inside Codex App. After Codex writes a new `auth.json`, CodexAuth Switch captures and saves it.
 
