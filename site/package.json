@@ -1,0 +1,14 @@
+{
+  "name": "codexauth-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node ../scripts/site-dev.mjs",
+    "validate": "node validate.mjs"
+  },
+  "devDependencies": {
+    "parse5": "8.0.0"
+  }
+}

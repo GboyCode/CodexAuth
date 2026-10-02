@@ -12,6 +12,8 @@ Thumbs.db
 .vscode/
 .claude/settings.local.json
 .codex/
+output/playwright/
+.playwright-cli/
 auth.json
 *.dpapi
 *.keychain

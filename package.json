@@ -30,6 +30,9 @@
   "homepage": "https://github.com/GboyCode/CodexAuth#readme",
   "main": "src/main.js",
   "scripts": {
+    "site:dev": "node scripts/site-dev.mjs",
+    "site:build": "npm --prefix site run build",
+    "site:validate": "npm --prefix site run validate",
     "glass:validate": "node scripts/validate-glass.js",
     "widget:validate": "electron scripts/validate-widget-interactions.js",
     "start": "npm run icon:app && electron .",
