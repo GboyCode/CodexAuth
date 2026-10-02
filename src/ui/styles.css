@@ -347,9 +347,7 @@ button:not(:disabled):active { transform: scale(0.98); }
 }
 
 .quota-card,
-.metric-card,
-.daily-bars,
-.recent-sessions {
+.metric-card {
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   background: var(--surface-strong);
@@ -417,26 +415,6 @@ button:not(:disabled):active { transform: scale(0.98); }
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
-}
-
-.usage-detail {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  align-items: stretch;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.daily-bars,
-.recent-sessions {
-  min-width: 0;
-  padding: 15px;
-}
-
-.daily-bars {
-  display: flex;
-  flex-direction: column;
-  align-self: stretch;
 }
 
 .usage-title {
@@ -923,8 +901,7 @@ code {
   .status-grid,
   .content-layout,
   .quota-grid,
-  .usage-grid,
-  .usage-detail {
+  .usage-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1135,76 +1112,6 @@ code {
   color: var(--muted);
   font-size: 12px;
 }
-
-/* Project stats */
-.project-list {
-  display: grid;
-  gap: 8px;
-}
-
-.project-row {
-  display: grid;
-  gap: 4px;
-  border-bottom: 1px solid var(--line-soft);
-  padding-bottom: 8px;
-}
-
-.project-row:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-
-.project-row strong {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.project-row small {
-  overflow: hidden;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Model stats */
-.model-list {
-  display: grid;
-  gap: 8px;
-}
-
-.model-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  border-bottom: 1px solid var(--line-soft);
-  padding-bottom: 8px;
-}
-
-.model-row:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-
-.model-row strong {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-row small {
-  color: var(--muted);
-}
-
-.model-row .model-tokens {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 
 .section-head-actions {
   --scope-control-height: 38px;

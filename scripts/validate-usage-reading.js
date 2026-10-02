@@ -141,7 +141,7 @@ async function validateScopeLabels() {
     if(!elements.has(key))elements.set(key,{});return elements.get(key);
   }},console});
   vm.runInContext(source.replace(/wireEvents\(\);\s*refresh\(true\)\.catch\([^\n]+\);\s*$/,""),sandbox);
-  for(const name of ["renderQuotaPanel","renderProjectStats","renderModelStats","renderAllAccountsQuota"])sandbox[name]=()=>{};
+  for(const name of ["renderQuotaPanel","renderAllAccountsQuota"])sandbox[name]=()=>{};
   sandbox.renderDashboard({scope:{since:stamp(0)},usage:{tokenUsage:{totalTokens:100}}});
   assert.match(elements.get("#localUsageScope").textContent,/最近切换后的本地用量/);
   sandbox.renderDashboard({usage:{available:false}});
@@ -183,7 +183,7 @@ async function validateOverviewRefresh() {
   first.resolve({ refreshed: true }); await pending;
   assert.deepEqual(calls, ["active", "offline", "reauth", "empty-quota"]);
   assert.equal(paints, 4, "each completed account updates the overview");
-  assert.match(status.textContent, /已刷新 2\/4 个账号，2 个未更新/);
+  assert.match(status.textContent, /已刷新 2\/4 个账号 · 2 个失败/);
   assert.equal(button.disabled, false); assert.equal(button["aria-busy"], undefined);
   assert.equal(button.textContent, "刷新全部");
   assert.match(sandbox.overviewQuotaFailure({ id: "reauth" }), /重新登录/);
@@ -191,7 +191,7 @@ async function validateOverviewRefresh() {
     "a newer successful background update clears the batch failure display");
   api.getAllAccountsQuota = async () => ({ accounts: [] });
   await sandbox.refreshAllAccountsQuota();
-  assert.equal(status.textContent, "暂无已保存账号。"); assert.equal(calls.length, 4);
+  assert.equal(status.textContent, "暂无账号"); assert.equal(calls.length, 4);
   api.getAllAccountsQuota = async () => { throw new Error("list failed"); };
   await sandbox.refreshAllAccountsQuota();
   assert.equal(status.textContent, "list failed"); assert.equal(button.disabled, false);

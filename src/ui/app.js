@@ -71,6 +71,7 @@ const els = {
   accountList: document.querySelector("#accountList"),
   restartAfterSwitch: document.querySelector("#restartAfterSwitch"),
   autoSwitchOnLimit: document.querySelector("#autoSwitchOnLimit"),
+  autoResetOnWeeklyLimit: document.querySelector("#autoResetOnWeeklyLimit"),
   autoRecoveryStatus: document.querySelector("#autoRecoveryStatus"),
   statsRefreshBtn: document.querySelector("#statsRefreshBtn"),
   scopeCurrentBtn: document.querySelector("#scopeCurrentBtn"),
@@ -91,8 +92,6 @@ const els = {
   inputTokens: document.querySelector("#inputTokens"),
   outputTokens: document.querySelector("#outputTokens"),
   sessionCount: document.querySelector("#sessionCount"),
-  projectStats: document.querySelector("#projectStats"),
-  modelStats: document.querySelector("#modelStats"),
   allAccountsGrid: document.querySelector("#allAccountsGrid"),
   overviewPrivacyBtn: document.querySelector("#overviewPrivacyBtn"),
   overviewRefreshBtn: document.querySelector("#overviewRefreshBtn"),
@@ -124,16 +123,8 @@ function formatDate(value) {
   }).format(date);
 }
 
-function compactNumber(value) {
-  const number = Number(value || 0);
-  const trim = (text) => text.replace(/\.0$/, "");
-  if (number >= 100_000_000) return `${trim((number / 100_000_000).toFixed(1))}亿`;
-  if (number >= 10_000) return `${trim((number / 10_000).toFixed(1))}万`;
-  return String(Math.round(number));
-}
-
 function usageScopeLabel(scope, quota) {
-  if (quota?.source === "account-cache") return "等待当前账号新快照";
+  if (quota?.source === "account-cache") return "当前账号缓存";
   if (scope?.since) return `当前账号自 ${formatDate(scope.since)} 后`;
   return "全部本地日志";
 }
@@ -241,13 +232,17 @@ function setUsageScope(scope) {
 }
 
 function renderSettings(snapshot) {
-  els.quotaModeHint.textContent = "当前账号：在线额度与本地日志。备用账号：每 5 分钟在线查询并按需续期；自动切换前重新核验。";
+  els.quotaModeHint.textContent = "当前账号：在线额度与本地日志。备用账号：仅手动刷新或自动切换前查询并按需续期，不定时查询。";
   if (els.restartAfterSwitch) {
     els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
   if (els.autoSwitchOnLimit) {
     els.autoSwitchOnLimit.checked = snapshot?.settings?.autoSwitchOnLimit === true;
     els.autoSwitchOnLimit.disabled = snapshot?.platform !== "win32";
+  }
+  if (els.autoResetOnWeeklyLimit) {
+    els.autoResetOnWeeklyLimit.checked = snapshot?.settings?.autoResetOnWeeklyLimit === true;
+    els.autoResetOnWeeklyLimit.disabled = snapshot?.platform !== "win32" || snapshot?.settings?.autoSwitchOnLimit !== true;
   }
   if (els.autoRecoveryStatus) els.autoRecoveryStatus.textContent = snapshot?.platform !== "win32"
     ? "自动续任务目前仅支持 Windows Codex 桌面版。"
@@ -322,7 +317,7 @@ function createAccountQuotaDetails(account) {
   if (!account.isActive) {
     const check = document.createElement("button");
     check.className = "account-action";
-    check.textContent = "刷新在线额度";
+    check.textContent = "刷新额度";
     check.addEventListener("click", async () => {
       check.disabled = true;
       check.textContent = "查询中…";
@@ -331,14 +326,15 @@ function createAccountQuotaDetails(account) {
         await refresh(true);
         showToast(result.reason);
       } catch (error) { showToast(error.message); }
-      finally { check.disabled = false; check.textContent = "刷新在线额度"; }
+      finally { check.disabled = false; check.textContent = "刷新额度"; }
     });
     details.append(check);
   }
   if (account.onlineQuotaStatus?.error) {
     const warning = document.createElement("p");
     warning.className = "account-quota-empty";
-    warning.textContent = `${account.onlineQuotaStatus.error} · ${formatDate(account.onlineQuotaStatus.checkedAt)}；下方保留上次成功快照。`;
+    warning.textContent = account.quotaSnapshot ? "更新失败 · 显示缓存" : "更新失败";
+    warning.title = account.onlineQuotaStatus.error;
     details.append(warning);
   }
 
@@ -346,10 +342,11 @@ function createAccountQuotaDetails(account) {
   const resets = document.createElement("p");
   resets.className = "account-reset-credits";
   resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits, { compact: true });
+  resets.title = q.resetCreditsLabel(snapshot?.resetCredits);
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
-    empty.textContent = "暂无上次额度快照";
+    empty.textContent = "暂无数据";
     details.append(empty, resets);
     return details;
   }
@@ -396,7 +393,7 @@ function accountCard(account) {
   main.setAttribute("role", "button");
   main.setAttribute("tabindex", "0");
   main.setAttribute("aria-expanded", String(expanded));
-  main.title = expanded ? "收起上次额度快照" : "查看上次额度快照";
+  main.title = expanded ? "收起额度" : "查看额度";
   main.addEventListener("click", () => toggleAccountDetails(account.id));
   main.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -520,15 +517,15 @@ function renderQuotaPanel(dashboard) {
   renderQuotaWindow("session", quota?.session);
   renderQuotaWindow("weekly", quota?.weekly);
   els.planType.textContent = q.formatPlanType(quota?.planType);
-  const sourceText = `${q.quotaSourceLabel(quota?.source)} · ${usageScopeLabel(dashboard?.scope, quota)} · ${quotaFreshnessLabel(
-    quota
-  )}${q.quotaEstimateStatusLabel(quota)}`;
-  els.quotaSource.textContent = quota?.error ? `${sourceText} · ${quota.error}` : sourceText;
+  const sourceText = quotaFreshnessLabel(quota);
+  els.quotaSource.textContent = quota?.error ? `${sourceText} · 更新失败` : sourceText;
+  els.quotaSource.title = [usageScopeLabel(dashboard?.scope, quota), q.quotaEstimateStatusLabel(quota).replace(/^ · /, ""), quota?.error].filter(Boolean).join("\n");
   els.creditsInfo.textContent =
     quota?.credits?.balance !== undefined && quota?.credits?.balance !== null
       ? `余额 ${quota.credits.balance}`
       : "余额 --";
-  els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits);
+  els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits, { compact: true });
+  els.resetCreditsInfo.title=q.resetCreditsLabel(quota?.resetCredits);
 }
 
 function renderDashboard(dashboard) {
@@ -560,74 +557,7 @@ function renderDashboard(dashboard) {
   } else {
     els.sessionCount.title = "";
   }
-  renderProjectStats(usage?.projects || []);
-  renderModelStats(usage?.models || []);
   renderAllAccountsQuota();
-}
-
-function renderProjectStats(projects) {
-  els.projectStats.replaceChildren();
-  const title = document.createElement("p");
-  title.className = "usage-title";
-  title.textContent = "按项目统计";
-  els.projectStats.append(title);
-
-  if (!projects || !projects.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "未找到项目数据。";
-    els.projectStats.append(empty);
-    return;
-  }
-
-  const list = document.createElement("div");
-  list.className = "project-list";
-  projects.slice(0, 8).forEach((project) => {
-    const row = document.createElement("div");
-    row.className = "project-row";
-    const name = document.createElement("strong");
-    name.textContent = project.project;
-    const sub = document.createElement("small");
-    sub.textContent = `${compactNumber(project.tokenUsage?.totalTokens)} Token · ${project.sessions} 次会话`;
-    row.append(name, sub);
-    list.append(row);
-  });
-  els.projectStats.append(list);
-}
-
-function renderModelStats(models) {
-  els.modelStats.replaceChildren();
-  const title = document.createElement("p");
-  title.className = "usage-title";
-  title.textContent = "按模型统计";
-  els.modelStats.append(title);
-
-  if (!models || !models.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "未找到模型数据。";
-    els.modelStats.append(empty);
-    return;
-  }
-
-  const list = document.createElement("div");
-  list.className = "model-list";
-  models.slice(0, 6).forEach((model) => {
-    const row = document.createElement("div");
-    row.className = "model-row";
-    const left = document.createElement("div");
-    const name = document.createElement("strong");
-    name.textContent = model.model;
-    const sessions = document.createElement("small");
-    sessions.textContent = ` · ${model.sessions} 次会话`;
-    left.append(name, sessions);
-    const right = document.createElement("div");
-    right.className = "model-tokens";
-    right.textContent = compactNumber(model.tokenUsage?.totalTokens);
-    row.append(left, right);
-    list.append(row);
-  });
-  els.modelStats.append(list);
 }
 
 function createAllAccountQuotaMeter(kind, quotaWindow) {
@@ -652,7 +582,7 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
   const foot = document.createElement("p");
   foot.className = "all-account-meter-foot";
   if (!quotaWindow) {
-    foot.textContent = "暂无快照";
+    foot.textContent = "暂无数据";
   } else {
     foot.textContent = q.formatUsedFootnote(quotaWindow);
   }
@@ -694,7 +624,7 @@ async function refreshAllAccountsQuota() {
     let completed = 0, refreshed = 0;
     for (const account of data.accounts) {
       els.overviewRefreshBtn.textContent = `刷新中 ${completed}/${total}`;
-      els.overviewRefreshStatus.textContent = "正在逐个查询在线额度，失败账号保留旧快照。";
+      els.overviewRefreshStatus.textContent = "正在刷新额度…";
       try {
         const result = await api.checkAccountQuota(account.id);
         if (result?.refreshed) refreshed++;
@@ -707,8 +637,8 @@ async function refreshAllAccountsQuota() {
       await renderAllAccountsQuota();
     }
     els.overviewRefreshStatus.textContent = total
-      ? `已刷新 ${refreshed}/${total} 个账号${refreshed < total ? `，${total - refreshed} 个未更新，保留旧快照。` : "。"}`
-      : "暂无已保存账号。";
+      ? `已刷新 ${refreshed}/${total} 个账号${refreshed < total ? ` · ${total - refreshed} 个失败` : ""}`
+      : "暂无账号";
   } catch (error) {
     els.overviewRefreshStatus.textContent = error.message || "批量刷新失败，请稍后重试。";
   } finally {
@@ -754,11 +684,14 @@ async function renderAllAccountsQuota() {
 
       const note = document.createElement("p");
       note.className = "all-account-status";
-      note.textContent = !account.quotaSnapshot
-        ? (account.isActive ? "当前账号 · 暂无额度记录" : "暂无额度记录")
-        : `${account.isActive ? "当前账号 · " : ""}${q.quotaSourceLabel(account.quotaSnapshot.source)} · ${formatDate(account.quotaSnapshot.checkedAt)}`;
       const failure = overviewQuotaFailure(account);
-      if (failure) note.textContent += ` · ${failure}${account.quotaSnapshot ? "保留旧快照。" : ""}`;
+      const quota = account.quotaSnapshot;
+      note.textContent = [
+        account.isActive ? "当前账号" : "",
+        failure ? "更新失败" : "",
+        q.quotaFreshnessLabel(failure && quota ? { ...quota, source: "account-cache" } : quota),
+      ].filter(Boolean).join(" · ");
+      note.title = failure || note.textContent;
       card.append(note,
         createAllAccountQuotaMeter("session", account.quotaSnapshot?.session),
         createAllAccountQuotaMeter("weekly", account.quotaSnapshot?.weekly)
@@ -1049,6 +982,19 @@ function wireEvents() {
       els.autoSwitchOnLimit.checked = !enabled;
       showToast(error.message);
     } finally { els.autoSwitchOnLimit.disabled = state.snapshot?.platform !== "win32"; }
+  });
+  els.autoResetOnWeeklyLimit?.addEventListener("change", async () => {
+    const enabled = els.autoResetOnWeeklyLimit.checked;
+    els.autoResetOnWeeklyLimit.disabled = true;
+    try {
+      const snapshot = await api.updateSettings({ autoResetOnWeeklyLimit: enabled });
+      state.snapshot = snapshot;
+      renderSettings(snapshot);
+      showToast(enabled ? "已开启周额度用卡兜底：Plus → 五小时团队 → 仅周额度团队" : "已关闭自动使用重置卡");
+    } catch (error) {
+      els.autoResetOnWeeklyLimit.checked = !enabled;
+      showToast(error.message);
+    } finally { renderSettings(state.snapshot); }
   });
   els.importBtn.addEventListener("click", () => importCurrent());
   els.loginAccountBtn.addEventListener("click", loginAccount);

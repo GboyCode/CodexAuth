@@ -75,6 +75,119 @@ function countdownFixture() {
 }
 
 async function run() {
+  function resetFixture(options = {}) {
+    let resets = 0;
+    const f = fixture({ ...options, checkCandidate: async (id) => {
+      const quota = f.accounts.find((item) => item.id === id).quotaSnapshot;
+      return { available: quota.weekly.usedPercent < 98, quota };
+    } });
+    for (const item of f.accounts) {
+      item.identity.planType = item.id === "b" ? "team" : "plus";
+      item.quotaSnapshot = { ...item.quotaSnapshot, planType: item.identity.planType, accountId: item.identity.userId,
+        session: null, weekly: { usedPercent: 100, windowMinutes: 10080, resetsAt: NOW / 1000 + 86400 },
+        resetCredits: { availableCount: item.id === "c" ? 0 : 1 } };
+    }
+    f.deps.resetEnabled = () => true;
+    const expiryById = {};
+    f.deps.readResetCandidate = async (id, allowed) => ({ ...await f.deps.checkCandidate(id, allowed),
+      resetCredit: { id: `credit-${id}`, expiresAt: Object.hasOwn(expiryById, id) ? expiryById[id] : NOW + 86400000 } });
+    f.deps.resetCandidate = async (id, source, allowed, beforeConsume, expectedCredit) => {
+      assert.equal(id, options.target ?? "b"); assert.equal(source, "a"); assert.equal(allowed(), true);
+      assert.equal(expectedCredit.id, `credit-${id}`, "redeem the card selected before the countdown");
+      if (!await beforeConsume()) return { available: null };
+      resets++;
+      if (options.resetFails) {
+        f.accounts.find(item => item.id === id).autoResetAttempt = { status: "pending" };
+        return { available: null, reason: "fake unconfirmed redemption" };
+      }
+      f.accounts.find(item => item.id === id).quotaSnapshot.weekly.usedPercent = 0;
+      return { available: true };
+    };
+    return { ...f, expiryById, resets: () => resets };
+  }
+  let warningLabel;
+  const resetSuccess = resetFixture({ beforeSwitch: async (details) => { warningLabel = details.targetLabel; return "elapsed"; } });
+  await resetSuccess.recovery.tick();
+  assert.equal(resetSuccess.resets(), 1);
+  assert.equal(resetSuccess.stats().activeId, "b");
+  assert.match(warningLabel, /1 张重置卡/);
+  const plusFirst = resetFixture({ target: "c" });
+  plusFirst.accounts[2].quotaSnapshot.resetCredits.availableCount = 1;
+  plusFirst.accounts[1].quotaSnapshot.session = { usedPercent: 100, windowMinutes: 300, resetsAt: NOW / 1000 + 7200 };
+  plusFirst.expiryById.c = NOW + 30 * 86400000; plusFirst.expiryById.b = NOW + 2 * 86400000;
+  await plusFirst.recovery.tick(); assert.equal(plusFirst.stats().activeId, "c", "exhausted Plus resets precede 5h Business resets");
+  const fiveHourFirst = resetFixture({ target: "d" });
+  const fiveHourTeam = clone(fiveHourFirst.accounts[1]);
+  fiveHourTeam.id = "d"; fiveHourTeam.identity.userId = "workspace-d"; fiveHourTeam.quotaSnapshot.accountId = "workspace-d";
+  fiveHourTeam.quotaSnapshot.session = { usedPercent: 10, windowMinutes: 300, resetsAt: NOW / 1000 + 7200 };
+  fiveHourFirst.accounts.push(fiveHourTeam);
+  await fiveHourFirst.recovery.tick(); assert.equal(fiveHourFirst.stats().activeId, "d", "5h Business precedes weekly-only Business despite its later ID");
+  const duplicateTeam = (f, id) => {
+    const candidate = clone(f.accounts[1]);
+    candidate.id = id; candidate.identity.userId = `workspace-${id}`; candidate.quotaSnapshot.accountId = `workspace-${id}`;
+    f.accounts.push(candidate);
+  };
+  const soonerCard = resetFixture({ target: "d" }); duplicateTeam(soonerCard, "d");
+  soonerCard.expiryById.b = NOW + 30 * 86400000; soonerCard.expiryById.d = NOW + 2 * 86400000;
+  await soonerCard.recovery.tick(); assert.equal(soonerCard.stats().activeId, "d", "choose two-day expiry before month-end across same-plan accounts");
+  const unknownExpiry = resetFixture({ target: "d" }); duplicateTeam(unknownExpiry, "d");
+  unknownExpiry.expiryById.b = null; unknownExpiry.expiryById.d = NOW + 2 * 86400000;
+  await unknownExpiry.recovery.tick(); assert.equal(unknownExpiry.stats().activeId, "d", "known nearer expiry takes precedence over null expiry");
+  const invalidExpiry = resetFixture({ target: "d" }); duplicateTeam(invalidExpiry, "d");
+  invalidExpiry.expiryById.b = NOW - 1;
+  await invalidExpiry.recovery.tick(); assert.equal(invalidExpiry.stats().activeId, "d", "expired candidate never triggers redemption");
+  const expiryLookupFails = resetFixture({ target: "d" }); duplicateTeam(expiryLookupFails, "d");
+  const readCards = expiryLookupFails.deps.readResetCandidate;
+  expiryLookupFails.deps.readResetCandidate = (id, allowed) => id === "b" ? { available: null } : readCards(id, allowed);
+  await expiryLookupFails.recovery.tick(); assert.equal(expiryLookupFails.stats().activeId, "d", "failed card lookup cannot win sorting using old data");
+  const availableDuringCardRead = resetFixture({ target: "d" }); duplicateTeam(availableDuringCardRead, "d");
+  const readRecoveredCards = availableDuringCardRead.deps.readResetCandidate;
+  availableDuringCardRead.deps.readResetCandidate = (id, allowed) => {
+    if (id === "d") availableDuringCardRead.accounts.find(item => item.id === id).quotaSnapshot.weekly.usedPercent = 0;
+    return readRecoveredCards(id, allowed);
+  };
+  await availableDuringCardRead.recovery.tick();
+  assert.equal(availableDuringCardRead.stats().activeId, "d"); assert.equal(availableDuringCardRead.resets(), 0, "newly available ordinary quota avoids spending any card");
+  const keepWeekly = resetFixture();
+  keepWeekly.accounts[2].quotaSnapshot.resetCredits.availableCount = 1;
+  keepWeekly.accounts[2].quotaSnapshot.session = { usedPercent: 100, windowMinutes: 300, resetsAt: NOW / 1000 + 7200 };
+  keepWeekly.accounts[2].quotaSnapshot.weekly.usedPercent = 30;
+  await keepWeekly.recovery.tick(); assert.equal(keepWeekly.stats().activeId, "b", "skip Plus with only 5h exhausted and preserve its weekly allowance");
+  const noExhaustedWeeks = resetFixture();
+  noExhaustedWeeks.accounts[1].quotaSnapshot.session = { usedPercent: 100, windowMinutes: 300, resetsAt: NOW / 1000 + 7200 };
+  noExhaustedWeeks.accounts[1].quotaSnapshot.weekly.usedPercent = 25;
+  await noExhaustedWeeks.recovery.tick();
+  assert.equal(noExhaustedWeeks.stats().warnings, 0); assert.equal(noExhaustedWeeks.resets(), 0);
+  const desktopReset = resetFixture();
+  delete desktopReset.accounts[1].quotaSnapshot.accountId;
+  desktopReset.accounts[1].quotaSnapshot.source = "local-desktop";
+  await desktopReset.recovery.tick(); assert.equal(desktopReset.resets(), 1, "a bound desktop snapshot without accountId can nominate a live-checked standby");
+  const preferOrdinary = resetFixture(); preferOrdinary.accounts[2].quotaSnapshot.weekly.usedPercent = 30;
+  await preferOrdinary.recovery.tick();
+  assert.equal(preferOrdinary.stats().activeId, "c"); assert.equal(preferOrdinary.resets(), 0);
+  const disabledReset = resetFixture(); disabledReset.deps.resetEnabled = () => false;
+  await disabledReset.recovery.tick(); assert.equal(disabledReset.resets(), 0); assert.equal(disabledReset.stats().warnings, 0);
+  const cancelledReset = resetFixture({ beforeSwitch: async () => "cancelled" });
+  await cancelledReset.recovery.tick(); assert.equal(cancelledReset.resets(), 0);
+  const unknownReset = resetFixture(); unknownReset.deps.checkCandidate = async () => ({ available: null });
+  await unknownReset.recovery.tick(); assert.equal(unknownReset.stats().warnings, 0);
+  const failedReset = resetFixture({ resetFails: true });
+  await failedReset.recovery.tick(); await failedReset.recovery.tick();
+  assert.equal(failedReset.resets(), 1); assert.equal(failedReset.stats().switches, 0);
+  assert.match(failedReset.recovery.getStatus().message, /暂停自动用卡/);
+  const resumeDuringReset = resetFixture();
+  const redeem = resumeDuringReset.deps.resetCandidate;
+  resumeDuringReset.deps.resetCandidate = async (...args) => {
+    resumeDuringReset.results.set("task", { ...failed(), thread: { ...failed().thread, status: { type: "idle" } }, turns: [{ id: "new-turn", status: "completed" }] });
+    return redeem(...args);
+  };
+  await resumeDuringReset.recovery.tick(); assert.equal(resumeDuringReset.resets(), 0);
+  const newWork = resetFixture(); const redeemIdle = newWork.deps.resetCandidate;
+  newWork.deps.resetCandidate = async (...args) => {
+    newWork.results.set("other", { ...failed("other"), thread: { ...failed("other").thread, status: { type: "active" } } });
+    return redeemIdle(...args);
+  };
+  await newWork.recovery.tick(); assert.equal(newWork.resets(), 0);
   const rejectedOnline = fixture({ checkCandidate: async () => ({ available: null }) });
   await rejectedOnline.recovery.tick();
   assert.equal(rejectedOnline.stats().switches, 0);

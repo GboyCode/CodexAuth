@@ -1,12 +1,12 @@
 const https = require("node:https");
 const crypto = require("node:crypto");
 const { normalizeBucket, normalizeResetCredits } = require("./local-records");
+const { canResetAccount, resetWindowKey, chooseResetCredit, RESET_CREDITS_URL, CONSUME_RESET_URL } = require("./reset-credits");
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CACHE_MS = 60000;
-const MAINTENANCE_MS = 5 * 60000;
 const RENEW_AGE_MS = 7 * 86400000;
 const SOURCE = "online-account";
 const digest = (text) => crypto.createHash("sha256").update(text).digest("hex");
@@ -21,7 +21,7 @@ class OnlineError extends Error {
 // Main process only. No redirects, configurable destinations, raw error bodies,
 // cookies or renderer network permissions. Bound both elapsed time and size.
 function requestJson(url, { method = "GET", headers = {}, body } = {}) {
-  if (![USAGE_URL, TOKEN_URL].includes(url)) return Promise.reject(new OnlineError("destination", "不支持的服务地址。"));
+  if (![USAGE_URL, TOKEN_URL, RESET_CREDITS_URL, CONSUME_RESET_URL].includes(url)) return Promise.reject(new OnlineError("destination", "不支持的服务地址。"));
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
     let timer;
@@ -145,7 +145,7 @@ function shouldRenew(auth, now) {
 
 function createOnlineAccounts(deps) {
   const now = deps.now ?? Date.now, request = deps.request ?? requestJson;
-  const flights = new Map(), pendingWrites = new Map(), attempts = new Map();
+  const flights = new Map(), pendingWrites = new Map(), attempts = new Map(), resetDetails = new Map();
   let stopping = false;
   async function commit(id) {
     const pending = pendingWrites.get(id);
@@ -203,6 +203,10 @@ function createOnlineAccounts(deps) {
       const fresh = await deps.readAccount(id);
       if (!allowed() || !fresh || fresh.active || fresh.content !== content) throw new OnlineError("changed", "账号状态已改变，请重新检查。");
       await deps.saveQuota(id, content, quota);
+      if (fresh.account.autoResetAttempt && fresh.account.autoResetAttempt.status !== "verified"
+        && fresh.account.autoResetAttempt.accountId === quota.accountId && availability(quota, now()) === true) {
+        await deps.saveResetAttempt(id, content, { ...fresh.account.autoResetAttempt, status: "verified" });
+      }
       attempts.delete(id);
       return { available: availability(quota, now()), quota };
     } catch (error) {
@@ -213,6 +217,97 @@ function createOnlineAccounts(deps) {
         await deps.saveStatus(id, context.content, { checkedAt: new Date(now()).toISOString(), error: safe.message, needsReauth: safe.reauth }).catch(() => {});
       }
       return { available: null, reason: safe.message };
+    }
+  }
+  async function readResetCreditLocked(id, { allowed = () => false, force = false } = {}) {
+    const permitted = () => !stopping && allowed() && deps.resetEnabled?.() === true;
+    if (!permitted()) return { available: null, reason: "自动使用重置卡未开启或已取消。" };
+    // Candidate selection may reuse a minute-old read. Redemption forces both
+    // quota and card details fresh after the warning; neither path spends here.
+    const checked = await checkLocked(id, { force, allowed: permitted });
+    if (checked.available === true || !permitted()) return checked;
+    const context = await deps.readAccount(id);
+    if (!context || context.active || checked.available !== false || !canResetAccount(context.account, checked.quota, now())) {
+      return { available: null, reason: "尚未确认账号周额度已耗尽且有可用重置卡，未使用卡片。" };
+    }
+    const content = context.content;
+    const fingerprint = digest(content);
+    if (checked.quota.authFingerprint !== fingerprint) return { available: null, reason: "账号凭据已改变，未查询重置卡。" };
+    try {
+      let cached = resetDetails.get(id);
+      if (force || !cached || cached.fingerprint !== fingerprint || cached.checkedAt > now() || now() - cached.checkedAt >= CACHE_MS) {
+        if (!permitted()) return { available: null, reason: "重置卡查询已取消。" };
+        const auth = JSON.parse(content);
+        const response = await request(RESET_CREDITS_URL, { headers: { Authorization: `Bearer ${auth.tokens.access_token}`,
+          "ChatGPT-Account-Id": context.account.identity.userId } });
+        if (response.status !== 200) throw responseError(response, false, now());
+        cached = { fingerprint, checkedAt: now(), data: response.data };
+      }
+      const fresh = await deps.readAccount(id);
+      if (!permitted() || !fresh || fresh.active || fresh.content !== content || !canResetAccount(fresh.account, checked.quota, now())) {
+        return { available: null, reason: "账号状态已改变，未使用重置卡。" };
+      }
+      resetDetails.set(id, cached);
+      const credit = chooseResetCredit(cached.data, now());
+      if (!credit) {
+        const reason = "账号没有可用的完整重置卡，已暂停重试五分钟。";
+        attempts.set(id, { fingerprint, retryAt: now() + 5 * CACHE_MS, reason });
+        return { available: null, reason };
+      }
+      return { ...checked, resetCredit: { id: credit.id, expiresAt: credit.expires_at === null ? null : Date.parse(credit.expires_at) } };
+    } catch {
+      const reason = "重置卡到期日查询失败，已暂停重试五分钟。";
+      attempts.set(id, { fingerprint, retryAt: now() + 5 * CACHE_MS, reason });
+      return { available: null, reason };
+    }
+  }
+  async function consumeResetLocked(id, { allowed = () => false, beforeConsume = async () => false, expectedCredit } = {}) {
+    const permitted = () => !stopping && allowed() && deps.resetEnabled?.() === true;
+    const checked = await readResetCreditLocked(id, { force: true, allowed: permitted });
+    if (checked.available === true || !checked.resetCredit || !permitted()) return checked;
+    const credit = checked.resetCredit;
+    if (expectedCredit && (credit.id !== expectedCredit.id || credit.expiresAt !== expectedCredit.expiresAt)) {
+      return { available: null, reason: "候选重置卡已变化，未改用其他卡片；稍后重新排序并倒计时。" };
+    }
+    let context = await deps.readAccount(id);
+    if (!context || context.active || digest(context.content) !== checked.quota.authFingerprint) {
+      return { available: null, reason: "账号状态已改变，未使用重置卡。" };
+    }
+    const content = context.content;
+    try {
+      // Recheck task/account state after all reads, before the irreversible POST.
+      if (!permitted() || !await beforeConsume() || !permitted()) return { available: null, reason: "任务或账号状态已改变，未使用重置卡。" };
+      context = await deps.readAccount(id);
+      if (!context || context.active || context.content !== content || !canResetAccount(context.account, checked.quota, now())
+        || (credit.expiresAt !== null && credit.expiresAt <= now())) {
+        return { available: null, reason: "账号状态已改变，未使用重置卡。" };
+      }
+      const attempt = { accountId: context.account.identity.userId, creditId: credit.id,
+        idempotencyKey: crypto.randomUUID(), windowKey: resetWindowKey(checked.quota),
+        createdAt: new Date(now()).toISOString(), status: "pending" };
+      // Persist before sending. Timeout/crash/disk failure must never cause a new
+      // request to spend the next credit. No automatic POST retries are made.
+      await deps.saveResetAttempt(id, content, attempt);
+      if (!permitted() || (credit.expiresAt !== null && credit.expiresAt <= now())) {
+        await deps.saveResetAttempt(id, content, { ...attempt, status: "not-sent" });
+        return { available: null, reason: "操作已取消，未使用重置卡。" };
+      }
+      const auth = JSON.parse(content);
+      const headers = { Authorization: `Bearer ${auth.tokens.access_token}`, "ChatGPT-Account-Id": context.account.identity.userId };
+      resetDetails.delete(id);
+      const result = await request(CONSUME_RESET_URL, { method: "POST", headers,
+        body: { credit_id: credit.id, redeem_request_id: attempt.idempotencyKey } });
+      const outcome = result.status === 200 && ["reset", "already_redeemed", "nothing_to_reset", "no_credit"].includes(result.data?.code)
+        ? result.data.code : "unconfirmed";
+      await deps.saveResetAttempt(id, content, { ...attempt, outcome });
+      // Even a successful response is not evidence that a model pool is usable.
+      const refreshed = await checkLocked(id, { force: true, allowed: permitted });
+      if (refreshed.available === true) return refreshed;
+      return { available: null, reason: "重置结果或恢复后的额度尚未确认，已停止对此账号自动用卡；请在 Codex 用量页检查。" };
+    } catch {
+      attempts.set(id, { fingerprint: digest(content), retryAt: now() + 5 * CACHE_MS,
+        reason: "重置卡检查失败，已暂停重试，请稍后检查该账号。" });
+      return { available: null, reason: "重置卡操作未能完成；若请求已发出，将保留记录并停止对此账号自动用卡，请在 Codex 用量页检查。" };
     }
   }
   function check(id, options) {
@@ -227,7 +322,7 @@ function createOnlineAccounts(deps) {
     return promise;
   }
   const flushPending = async () => { for (const id of pendingWrites.keys()) await commit(id); };
-  return { check, checkLocked, flushPending, hasPendingWork: () => flights.size > 0 || pendingWrites.size > 0,
+  return { check, checkLocked, readResetCreditLocked, consumeResetLocked, flushPending, hasPendingWork: () => flights.size > 0 || pendingWrites.size > 0,
     async shutdown() {
       stopping = true;
       await Promise.allSettled([...flights.values()]);
@@ -236,4 +331,4 @@ function createOnlineAccounts(deps) {
 }
 
 module.exports = { createOnlineAccounts, parseUsage, availability, shouldRenew, requestJson, OnlineError,
-  SOURCE, CACHE_MS, MAINTENANCE_MS, USAGE_URL, TOKEN_URL };
+  SOURCE, CACHE_MS, USAGE_URL, TOKEN_URL };

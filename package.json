@@ -57,7 +57,7 @@
     "account-login:validate": "node scripts/validate-account-login.js",
     "updates:validate": "node scripts/validate-github-updates.js && node scripts/validate-message-dialog.js",
     "auto-recovery:validate": "node scripts/validate-auto-recovery.js && node scripts/validate-goals.js && node scripts/validate-recovery-countdown.js",
-    "online-accounts:validate": "node scripts/validate-online-accounts.js",
+    "online-accounts:validate": "node scripts/validate-online-accounts.js && node scripts/validate-reset-credits.js",
     "official-estimate:validate": "node scripts/validate-official-estimate.js",
     "subscription:validate": "node scripts/validate-subscription.js"
   },

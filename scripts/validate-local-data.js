@@ -59,7 +59,7 @@ async function main(){
   assert.equal(tokenUsageTotal(normalizeTokenUsage({input_tokens:100,output_tokens:40,reasoning_output_tokens:30})),140);
   const ui=vm.createContext({window:{},Date,Intl});vm.runInContext(await fs.readFile(path.join(__dirname,"../src/ui/shared-quota.js"),"utf8"),ui);
   assert.equal(ui.window.CodexQuotaUI.formatRemainingText({usedPercent:null}),"--");assert.equal(ui.window.CodexQuotaUI.windowTitle("session",{windowMinutes:10080}),"周额度");
-  assert.match(ui.window.CodexQuotaUI.resetCreditsLabel(null),/未知/);assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({availableCount:0,checkedAt:ts(0)}),/旧快照/);
+  assert.equal(ui.window.CodexQuotaUI.resetCreditsLabel(null),"重置 --");assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({availableCount:0,checkedAt:ts(0)}),/缓存/);
   const accountsDir=path.join(root,"accounts");await fs.mkdir(accountsDir);const indexPath=path.join(root,"accounts.json");await fs.writeFile(indexPath,"\0\0");
   const id="11111111-1111-4111-8111-111111111111";await fs.writeFile(path.join(accountsDir,id+".dpapi"),"encrypted-fixture");
   const opts={indexPath,accountsDir,extension:"dpapi",decode:async()=>({identity:{subject:"fixture"}}),identify:(a)=>a.subject,makeRecord:(a)=>({identity:a.identity}),write:async(p,v)=>fs.writeFile(p,JSON.stringify(v))};

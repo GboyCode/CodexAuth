@@ -195,10 +195,11 @@ function createAccountQuotaDetails(account) {
   const resets = document.createElement("p");
   resets.className = "account-reset-credits";
   resets.textContent = q.resetCreditsLabel(snapshot?.resetCredits, { compact: true });
+  resets.title = q.resetCreditsLabel(snapshot?.resetCredits);
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
-    empty.textContent = "暂无上次额度快照";
+    empty.textContent = "暂无数据";
     details.append(empty, resets);
     return details;
   }
@@ -214,7 +215,8 @@ function createAccountQuotaDetails(account) {
   if (account.onlineQuotaStatus?.error) {
     const note = document.createElement("p");
     note.className = "account-quota-empty";
-    note.textContent = "在线查询失败，保留旧快照";
+    note.textContent = "更新失败 · 显示缓存";
+    note.title = account.onlineQuotaStatus.error;
     details.append(note);
   }
 

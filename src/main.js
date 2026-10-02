@@ -66,10 +66,8 @@ let loginQuitPending = false;
 const { createRecoveryCountdown, normalizeCountdownPosition, countdownBounds } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
 const { createDesktopQuotaReader, quotaFromDesktopUsage } = require("./quota/desktop-quota");
-const { createOnlineAccounts, SOURCE: ONLINE_ACCOUNT_SOURCE, MAINTENANCE_MS } = require("./quota/online-accounts");
+const { createOnlineAccounts, SOURCE: ONLINE_ACCOUNT_SOURCE } = require("./quota/online-accounts");
 let onlineAccounts = null;
-let onlineAccountsTimer = null;
-let onlineMaintenanceRunning = false;
 let onlineQuitReady = false;
 let autoRecovery = null;
 let autoRecoveryTimer = null;
@@ -453,6 +451,7 @@ function defaultSettings() {
     launchAtLogin: false,
     restartAfterSwitch: true,
     autoSwitchOnLimit: false,
+    autoResetOnWeeklyLimit: false,
     autoSwitchEnabledAt: null,
     widgetBounds: null,
     recoveryCountdownPosition: null,
@@ -470,6 +469,7 @@ function normalizeSettings(settings) {
     launchAtLogin: normalized.launchAtLogin === true,
     restartAfterSwitch: normalized.restartAfterSwitch !== false,
     autoSwitchOnLimit: normalized.autoSwitchOnLimit === true,
+    autoResetOnWeeklyLimit: normalized.autoResetOnWeeklyLimit === true,
     autoSwitchEnabledAt: Number.isFinite(normalized.autoSwitchEnabledAt) ? normalized.autoSwitchEnabledAt : null,
     widgetBounds: normalizeWidgetBounds(normalized.widgetBounds),
     recoveryCountdownPosition: normalizeCountdownPosition(normalized.recoveryCountdownPosition),
@@ -939,6 +939,7 @@ function getOnlineAccounts() {
   if (onlineAccounts) return onlineAccounts;
   onlineAccounts = createOnlineAccounts({
     runExclusive: runAccountOperation,
+    resetEnabled: () => runtimeSettings?.autoSwitchOnLimit === true && runtimeSettings?.autoResetOnWeeklyLimit === true,
     readAccount: async (id) => {
       const index = await readIndex();
       const account = index.accounts.find((item) => item.id === id);
@@ -981,6 +982,11 @@ function getOnlineAccounts() {
       localDataCache.invalidate();
       broadcastStateChanged({ scope: "accounts" });
     }),
+    saveResetAttempt: (id, content, attempt) => mutateIndex(async (index) => {
+      const account = index.accounts.find((item) => item.id === id);
+      if (!account || await loadAccountAuth(id) !== content || account.identity?.userId !== attempt.accountId) throw new Error("账号状态已改变。");
+      account.autoResetAttempt = attempt;
+    }),
     saveStatus: (id, content, status) => mutateIndex(async (index) => {
       const account = index.accounts.find((item) => item.id === id);
       if (!account || await loadAccountAuth(id) !== content) return { write: false };
@@ -994,25 +1000,6 @@ function getOnlineAccounts() {
     }),
   });
   return onlineAccounts;
-}
-
-async function refreshStandbyAccounts() {
-  if (onlineMaintenanceRunning || isQuitting || loginQuitPending || accountLogin?.isBusy()) return;
-  onlineMaintenanceRunning = true;
-  try {
-    const index = await readIndex();
-    for (const account of index.accounts) {
-      if (isQuitting || loginQuitPending || accountLogin?.isBusy()) break;
-      if (account.id !== index.activeAccountId && !account.needsReauth) await getOnlineAccounts().check(account.id);
-    }
-  } finally { onlineMaintenanceRunning = false; }
-}
-
-function startStandbyMaintenance() {
-  getOnlineAccounts();
-  refreshStandbyAccounts().catch(() => {});
-  onlineAccountsTimer = setInterval(() => refreshStandbyAccounts().catch(() => {}), MAINTENANCE_MS);
-  onlineAccountsTimer.unref?.();
 }
 
 function portableSnapshotRisk(previous, incoming) {
@@ -1159,7 +1146,9 @@ async function updateSettings(patch) {
     nextSettings = index.settings;
     return previous === JSON.stringify(index.settings) ? { write: false } : {};
   });
+  const resetPolicyChanged = runtimeSettings?.autoResetOnWeeklyLimit !== nextSettings?.autoResetOnWeeklyLimit;
   runtimeSettings = normalizeSettings(nextSettings ?? runtimeSettings);
+  if (resetPolicyChanged) await autoRecovery?.invalidate();
   configureAutoRecovery();
   return currentState();
 }
@@ -1187,6 +1176,18 @@ async function startAutoRecovery() {
     beforeSwitch: (details, signal) => recoveryCountdown.request(details, signal),
     runAccountOperation,
     checkCandidate: (id, allowed, force = false) => getOnlineAccounts().check(id, { allowed, force }),
+    resetEnabled: () => runtimeSettings?.autoResetOnWeeklyLimit === true,
+    readResetCandidate: (id, allowed) => runAccountOperation(() => getOnlineAccounts().readResetCreditLocked(id, { allowed })),
+    resetCandidate: (id, sourceId, allowed, beforeConsume, expectedCredit) => runAccountOperation(async () => {
+      const index = await readIndex();
+      const current = await readCurrentAuth();
+      const source = index.accounts.find((account) => account.id === sourceId);
+      if (!allowed() || !index.settings.autoSwitchOnLimit || !index.settings.autoResetOnWeeklyLimit
+        || !source || identityKey(source.identity) !== identityKey(current.identity)) {
+        return { available: null, reason: "账号或自动用卡设置已改变，未使用重置卡。" };
+      }
+      return getOnlineAccounts().consumeResetLocked(id, { allowed, beforeConsume, expectedCredit });
+    }),
     getAccounts: async () => {
       const index = await readIndex();
       const current = await readCurrentAuth();
@@ -5231,7 +5232,6 @@ if (hasSingleInstanceLock) {
     await startSessionsWatcher();
     await startSessionsPolling();
     await startAutoRecovery();
-    startStandbyMaintenance();
 
     app.on("activate", () => {
       showMainWindow();
@@ -5252,7 +5252,6 @@ app.on("before-quit", (event) => {
     event.preventDefault();
     if (!loginQuitPending) {
       loginQuitPending = true;
-      if (onlineAccountsTimer) clearInterval(onlineAccountsTimer);
       autoRecovery?.configure(false, null);
       (async () => {
         await accountLogin?.shutdown();
@@ -5263,8 +5262,6 @@ app.on("before-quit", (event) => {
         loginQuitPending = false;
         onlineAccounts?.resume();
         configureAutoRecovery();
-        onlineAccountsTimer = setInterval(() => refreshStandbyAccounts().catch(() => {}), MAINTENANCE_MS);
-        onlineAccountsTimer.unref?.();
         dialog.showErrorBox("凭据尚未保存", "新的登录凭据尚未成功保存，已暂缓退出。请检查磁盘空间与文件权限后重试，避免丢失续期结果。");
       });
     }
@@ -5284,7 +5281,6 @@ app.on("before-quit", (event) => {
   if (sessionsWatcher) sessionsWatcher.close();
   if (sessionsPollingInterval) clearInterval(sessionsPollingInterval);
   if (autoRecoveryTimer) clearInterval(autoRecoveryTimer);
-  if (onlineAccountsTimer) clearInterval(onlineAccountsTimer);
   autoRecovery?.configure(false, null);
   clearWidgetDockTimers();
   for (const timer of reauthCheckTimers.values()) clearTimeout(timer);

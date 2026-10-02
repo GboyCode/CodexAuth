@@ -107,6 +107,11 @@
                 </span>
               </span>
             </div>
+            <label class="toggle-row">
+              <input id="autoResetOnWeeklyLimit" type="checkbox" />
+              <span>周额度耗尽后自动使用重置卡</span>
+            </label>
+            <p class="small-copy">先用有额度的账号；均不可用时，仅对周额度已用完的备用账号用卡。顺序：Plus → 有五小时限制的团队 → 仅周额度的团队；同类型跨账号优先用最早到期的卡。仅五小时用完不用卡；用卡前有 15 秒可取消提醒。</p>
             <p id="autoRecoveryStatus" class="small-copy" role="status">未开启自动切换与续任务。</p>
             <div class="divider"></div>
             <details class="local-diagnostics">
@@ -157,7 +162,7 @@
           <div class="quota-mode-panel">
             <div>
               <strong>额度读取模式</strong>
-              <p id="quotaModeHint">当前账号读取在线额度与本地日志；备用账号在线查询并按需续期。</p>
+              <p id="quotaModeHint">当前账号读取在线额度与本地日志；备用账号仅手动刷新或自动切换前查询并按需续期，不定时查询。</p>
             </div>
           </div>
 
@@ -185,7 +190,7 @@
               </div>
               <p id="quotaSource" class="muted">--</p>
               <p id="creditsInfo" class="muted">--</p>
-              <p id="resetCreditsInfo" class="muted">重置次数：未知 · 尚无本地记录</p>
+              <p id="resetCreditsInfo" class="muted">重置 --</p>
             </article>
           </div>
 
@@ -213,11 +218,6 @@
           <p class="usage-note">
             本次本地仅统计最近切换后的日志；全部本地包含不同账号，均不等于官方账号累计。官方个人面板按服务器统计截止日期显示，可能不含今天的用量。缓存输入和推理输出已包含在各自总数中。
           </p>
-
-          <div class="usage-detail" style="margin-top: 12px">
-            <div class="daily-bars" id="projectStats"></div>
-            <div class="recent-sessions" id="modelStats"></div>
-          </div>
 
           <section class="all-accounts-section" id="allAccountsSection">
             <div class="all-accounts-heading">

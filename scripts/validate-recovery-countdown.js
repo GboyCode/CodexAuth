@@ -46,6 +46,15 @@ function fixture(store) {
 }
 
 (async () => {
+  const elements = new Map(["#seconds", "main", "#cancelBtn", "#title"].map((id) => [id, { addEventListener() {} }]));
+  let render;
+  const renderer = vm.createContext({ document: { querySelector: (id) => elements.get(id), addEventListener() {} },
+    window: { codexAuth: { onRecoveryCountdown: (fn) => { render = fn; }, readyRecoveryCountdown: async () => null } } });
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, "../src/ui/recovery-countdown.js"), "utf8"), renderer);
+  render({ seconds: 15, targetLabel: "Team", taskCount: 1, usesReset: true });
+  assert.equal(elements.get("#title").textContent, "将使用 1 张重置卡", "credit spending must be visible in the warning");
+  render({ seconds: 15, targetLabel: "Plus", taskCount: 1, usesReset: false });
+  assert.equal(elements.get("#title").textContent, "自动切换账号");
   assert.equal(normalizeCountdownPosition({ x: "12", y: 30 }), null);
   assert.equal(normalizeCountdownPosition({ x: Infinity, y: 30 }), null);
   assert.deepEqual(normalizeCountdownPosition({ x: -500.2, y: 30.6, width: 300 }), { x: -500, y: 31 });

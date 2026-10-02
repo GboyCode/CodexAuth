@@ -40,10 +40,10 @@
   }
 
   function relativeReset(value) {
-    if (!value) return "重置时间不可用";
+    if (!value) return "重置时间未知";
     const date = new Date(Number(value) * 1000);
-    if (Number.isNaN(date.getTime())) return "重置时间不可用";
-    if (date.getTime() <= Date.now()) return "已到重置时间";
+    if (Number.isNaN(date.getTime())) return "重置时间未知";
+    if (date.getTime() <= Date.now()) return "待更新";
     const now = new Date();
     const tomorrow = new Date(now);
     tomorrow.setDate(now.getDate() + 1);
@@ -64,7 +64,7 @@
     if (!value) return "";
     const date = new Date(Number(value) * 1000);
     if (Number.isNaN(date.getTime())) return "";
-    if (date.getTime() <= Date.now()) return "已重置";
+    if (date.getTime() <= Date.now()) return "待更新";
     const now = new Date();
     const tomorrow = new Date(now);
     tomorrow.setDate(now.getDate() + 1);
@@ -112,7 +112,7 @@
       "learned-fallback": "学习 + 保守估算",
       "learned-low-sample": "学习 + 低样本",
       calibrated: "历史校准",
-      "official-calibrated": "在线快照校准",
+      "official-calibrated": "在线数据校准",
       "low-sample": "低样本校准",
       fallback: "保守估算",
     };
@@ -124,72 +124,56 @@
 
   function quotaEstimateStatusLabel(quota, options = {}) {
     if (!quota?.estimate) return "";
-    const compact = options.compact === true;
     if (quota.estimate.available) {
+      if (options.compact === true) return " · 预估";
       const confidence = quotaConfidenceLabel(quota);
-      if (compact) return confidence ? ` · 已预估（${confidence}）` : " · 已预估";
-      return confidence ? ` · 已按本地增量预估（${confidence}）` : " · 已按本地增量预估";
+      return confidence ? ` · 预估（${confidence}）` : " · 预估";
     }
-    return compact
-      ? ` · 预估等待：${quota.estimate.reason || "本地新记录"}`
-      : ` · 预估等待：${quota.estimate.reason || "本地新记录"}`;
-  }
-
-  function compactAgeLabel(seconds) {
-    if (seconds < 60) return `${seconds}秒前`;
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return `${minutes}分钟前`;
-    const hours = Math.round(minutes / 60);
-    if (hours < 24) return `${hours}小时前`;
-    return `${Math.round(hours / 24)}天前`;
+    return options.compact === true ? "" : ` · 待预估：${quota.estimate.reason || "暂无新数据"}`;
   }
 
   function compactQuotaFreshnessStatus(quota, seconds) {
-    if (quota?.estimate?.available && quota.estimate.confidence === "official-calibrated") return "在线校准预估";
-    if (["online-account", "local-desktop"].includes(quota?.source)) return seconds < 60 ? "在线快照" : "在线旧快照";
-    if (quota?.estimate?.available) return "本地校准预估";
-    return seconds < 60 ? "本地快照" : "本地旧快照";
+    if (quota?.estimate?.available) return "预估";
+    if (["online-account", "local-desktop"].includes(quota?.source)) return seconds < 60 ? "在线" : "缓存";
+    return quota?.source === "local-error" ? "限额记录" : "缓存";
   }
 
   function quotaSourceLabel(source) {
-    if (source === "online-account" || source === "local-desktop") return "在线快照";
-    if (["official", "local", "account-cache"].includes(source)) return "本地快照";
-    if (source === "local-error") return "本地限额记录";
-    return "不可用";
+    if (source === "online-account" || source === "local-desktop") return "在线";
+    if (["official", "local", "account-cache"].includes(source)) return "缓存";
+    if (source === "local-error") return "限额记录";
+    return "暂无数据";
   }
 
   function quotaFreshnessLabel(quota, options = {}) {
-    if (!quota?.checkedAt) return "快照时间未知";
+    if (!quota?.checkedAt) return "暂无数据";
     const date = new Date(quota.checkedAt);
     const diffMs = Date.now() - date.getTime();
-    if (!Number.isFinite(diffMs)) return "快照时间未知";
+    if (!Number.isFinite(diffMs)) return "更新时间未知";
     const seconds = Math.max(0, Math.round(diffMs / 1000));
-    if (options.compact === true) {
+    if (options.compact === true && options.inline) {
       const time = new Intl.DateTimeFormat("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
       }).format(date);
-      if (options.inline) return `${compactQuotaFreshnessStatus(quota, seconds)} ${time}`;
-      return `${compactAgeLabel(seconds)}·快照${time} ${compactQuotaFreshnessStatus(quota, seconds)}`;
+      return `${compactQuotaFreshnessStatus(quota, seconds)} ${time}`;
     }
     const time = new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit",
     }).format(date);
-    const estimate = quotaEstimateStatusLabel(quota, options);
-    if (seconds < 10) return `快照 ${time} · 刚写入${estimate}`;
-    if (seconds < 60) return `快照 ${time} · ${seconds} 秒前${estimate}`;
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 5) return `快照 ${time} · ${minutes} 分钟前${estimate}`;
-    return `快照 ${time} · 等待 Codex 写入${estimate}`;
+    return `${compactQuotaFreshnessStatus(quota, seconds)} · ${time}`;
   }
 
   function formatSnapshotTime(value) {
-    if (!value) return "暂无快照时间";
+    if (!value) return "更新时间未知";
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "快照时间未知";
-    return `快照 ${new Intl.DateTimeFormat("zh-CN", {
+    if (Number.isNaN(date.getTime())) return "更新时间未知";
+    return `更新 ${new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
     }).format(date)}`;
@@ -203,40 +187,40 @@
   }
 
   function formatUsedFootnote(window, options = {}) {
-    if (clampPercent(window?.usedPercent) === null) return "已用比例未知 · " + relativeReset(window?.resetsAt);
+    if (clampPercent(window?.usedPercent) === null) return window?.resetsAt ? relativeReset(window.resetsAt) : "暂无数据";
     const used = displayUsedPercent(window);
     const prefix = isEstimatedWindow(window) ? "≈已用" : "已用";
     if (options.compact === true) {
       const reset = compactReset(window?.resetsAt);
       return reset ? `${prefix}${Math.round(used)}% · ${reset}` : `${prefix}${Math.round(used)}%`;
     }
-    return `${prefix} ${Math.round(used)}%${estimateRemainingLabel(window)} · ${relativeReset(window?.resetsAt)}`;
+    return `${prefix} ${Math.round(used)}% · ${relativeReset(window?.resetsAt)}`;
   }
 
   function resetCreditsLabel(reset, options = {}) {
-    if (!reset || !Number.isInteger(reset.availableCount)) return options.inline ? "重置 未知" : "重置次数：未知 · 尚无本地记录";
+    if (!reset || !Number.isInteger(reset.availableCount)) return "重置 --";
     const stamp=Date.parse(reset.checkedAt);
     const stale=!Number.isFinite(stamp)||Date.now()-stamp>5*60*1000;
     const expiry=(reset.credits??[]).filter((c)=>c.status==="available"&&Number.isFinite(c.expiresAt)).map((c)=>c.expiresAt);
     const hasExpired=expiry.some((n)=>n*1000<=Date.now());
-    const origin=["online-account","local-desktop"].includes(reset.source)?"在线快照":reset.source==="local-browser-cache"?"本地缓存":"本地快照";
-    const status=hasExpired?`${origin} · 含已到期记录，待更新`:stale?`${origin.replace("快照","旧快照").replace("缓存","旧缓存")}，待更新`:origin;
-    const countLabel = options.inline ? `重置 ${reset.availableCount}` : `重置次数：${reset.availableCount}`;
-    return `${countLabel} · ${status}${options.compact?"":` · ${formatSnapshotTime(reset.checkedAt)}`}`;
+    const cached=hasExpired||stale||!["online-account","local-desktop"].includes(reset.source);
+    const label=`重置 ${reset.availableCount} 次${cached?" · 缓存":""}`;
+    if (options.compact) return label;
+    return `${label} · ${formatSnapshotTime(reset.checkedAt)}${hasExpired?" · 含过期记录":""}`;
   }
 
   function subscriptionDisplay(subscription, now = Date.now()) {
     const until = typeof subscription?.activeUntil === "string" ? Date.parse(subscription.activeUntil) : NaN;
-    if (!Number.isFinite(until)) return { label: "到期 未知", title: "账号快照未提供订阅到期日。" };
+    if (!Number.isFinite(until)) return { label: "到期 未知", title: "暂无到期日期" };
     const date = new Date(until);
     const fullDate = new Intl.DateTimeFormat("zh-CN", {
       year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
     }).format(date);
     const checkedAt = Date.parse(subscription.checkedAt);
-    let title = `订阅有效期至：${fullDate}\n本地账号快照`;
-    if (Number.isFinite(checkedAt)) title += ` · 核验于 ${new Date(checkedAt).toLocaleDateString("zh-CN")}`;
-    title += "。此日期不代表自动扣费日。";
-    if (until <= now) return { label: "到期 待更新", title: `${title}\n该快照日期已过，当前到期日待更新。` };
+    let title = `到期 ${fullDate}`;
+    if (Number.isFinite(checkedAt)) title += `\n更新 ${new Date(checkedAt).toLocaleDateString("zh-CN")}`;
+    title += "\n不代表自动扣费日。";
+    if (until <= now) return { label: "到期 待更新", title: `${title}\n日期已过，待更新。` };
     return {
       label: `到期 ${new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date)}`,
       title,

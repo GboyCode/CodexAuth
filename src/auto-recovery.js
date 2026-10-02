@@ -1,5 +1,6 @@
 const { normalizePlanType } = require("./quota/token-math");
 const { sameGoal } = require("./codex-goals");
+const { canResetAccount } = require("./quota/reset-credits");
 
 const CONTINUE_PROMPT = "刚才任务因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号。请基于本任务已有上下文和当前文件状态，继续完成我上一条请求中尚未完成的工作。先确认已完成的步骤，避免重复执行；保留原有模型、权限与审批要求。";
 const GOAL_CONTINUE_PROMPT = "刚才本任务的目标因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号并恢复原目标。请读取当前目标状态，基于已有上下文和文件进度继续原目标，遵守原预算、模型、权限与审批要求；避免重复已完成的步骤。";
@@ -196,12 +197,38 @@ function createAutoRecovery(deps) {
     setStatus(state, message);
   }
   async function checkedCandidate(accounts, activeId, allowed) {
+    const checked = new Map(accounts.map((account) => [account.id, account]));
     for (const { account } of rankAccounts(accounts, activeId, journal.excluded, now())) {
       if (!allowed()) return null;
       setStatus("checking", "正在查询备用账号的在线额度，确认后才会切换。" );
       const result = await deps.checkCandidate?.(account.id, allowed);
       if (!allowed()) return null;
+      if (result?.quota) checked.set(account.id, { ...account, quotaSnapshot: result.quota });
       if (result?.available === true) return account;
+    }
+    if (deps.resetEnabled?.()) {
+      if ([...checked.values()].some((account) => account.autoResetAttempt && !["verified", "not-sent"].includes(account.autoResetAttempt.status))) {
+        setStatus("attention", "上次用卡结果尚未确认，已暂停自动用卡；请在 Codex 用量页检查并刷新该账号额度。" );
+        return null;
+      }
+      const backups = [...checked.values()].filter((account) => account.id !== activeId && canResetAccount(account, account.quotaSnapshot, now()))
+        .sort((a, b) => accountPriority(a) - accountPriority(b) || a.id.localeCompare(b.id));
+      const resetCandidates = [];
+      for (const account of backups) {
+        if (!allowed() || !deps.resetEnabled()) return null;
+        const result = await deps.readResetCandidate?.(account.id, allowed);
+        if (!allowed()) return null;
+        if (result?.available === true) return account;
+        const credit = result?.resetCredit;
+        if (result?.available === false && canResetAccount(account, result.quota, now())
+          && typeof credit?.id === "string" && credit.id && (credit.expiresAt === null || Number.isFinite(credit.expiresAt))) {
+          resetCandidates.push({ ...account, quotaSnapshot: result.quota, needsReset: true, resetCredit: credit });
+        }
+      }
+      const eligible = resetCandidates.filter((account) => account.resetCredit.expiresAt === null || account.resetCredit.expiresAt > now());
+      eligible.sort((a, b) => accountPriority(a) - accountPriority(b)
+        || (a.resetCredit.expiresAt ?? Infinity) - (b.resetCredit.expiresAt ?? Infinity) || a.id.localeCompare(b.id));
+      if (eligible.length) return eligible[0];
     }
     setStatus("waiting", "备用账号在线额度不足、未知或查询失败，稍后重试。" );
     return null;
@@ -213,8 +240,9 @@ function createAutoRecovery(deps) {
     setStatus("countdown", "自动切换前倒计时 15 秒，可在浮窗弹窗中取消本次。" );
     let decision;
     try {
-      decision = await deps.beforeSwitch({ targetLabel: target.displayName || target.identity?.email || "候选账号",
-        taskCount: jobs.length }, abort.signal);
+      decision = await deps.beforeSwitch({ targetLabel: (target.displayName || target.identity?.email || "候选账号")
+        + (target.needsReset ? "（将使用 1 张重置卡）" : ""),
+        taskCount: jobs.length, usesReset: target.needsReset === true }, abort.signal);
     } finally {
       if (warningAbort === abort) warningAbort = null;
     }
@@ -232,14 +260,17 @@ function createAutoRecovery(deps) {
       await dismissJobs(jobs, "cancelled", "账号已被手动切换，已取消本次自动恢复。");
       return null;
     }
-    if (!rankAccounts(freshAccounts.accounts, sourceId, journal.excluded, now()).some((item) => item.account.id === target.id)) {
+    const stillEligible = target.needsReset
+      ? deps.resetEnabled?.() && canResetAccount(freshAccounts.accounts.find((account) => account.id === target.id), undefined, now())
+      : rankAccounts(freshAccounts.accounts, sourceId, journal.excluded, now()).some((item) => item.account.id === target.id);
+    if (!stillEligible) {
       setStatus("waiting", "候选账号状态已改变，稍后重新选择账号并倒计时。");
       return null;
     }
     // Query before the final idle/task checks: work may start while HTTP waits.
-    const quota = await deps.checkCandidate?.(target.id, allowed, true);
+    const quota = target.needsReset ? null : await deps.checkCandidate?.(target.id, allowed, true);
     if (!allowed()) return null;
-    if (quota?.available !== true) {
+    if (!target.needsReset && quota?.available !== true) {
       setStatus("waiting", "候选账号在线额度不足或尚未确认，保留当前账号并稍后重试。" );
       return null;
     }
@@ -254,6 +285,31 @@ function createAutoRecovery(deps) {
     if (!freshJobs.length) {
       await dismissJobs(jobs, "cancelled", "原任务状态已改变，已取消本次自动切换。");
       return null;
+    }
+    if (target.needsReset) {
+      const stillNeeded = async () => {
+        if (!allowed() || !deps.resetEnabled?.()) return false;
+        const current = await deps.getAccounts();
+        if (!allowed() || current.activeAccountId !== sourceId || !await desktopIsIdle(anchor, allowed)) return false;
+        let matching = false;
+        for (const job of freshJobs) {
+          const result = await deps.bridge.readThread(job.threadId);
+          if (!allowed()) return false;
+          if (matchesJob(result, job, cutoff)) matching = true;
+          else job.phase = "skipped";
+        }
+        return matching;
+      };
+      setStatus("checking", "正在核验并使用一张重置卡，随后重新确认额度。" );
+      const reset = await deps.resetCandidate?.(target.id, sourceId, allowed, stillNeeded, target.resetCredit);
+      if (!allowed()) return null;
+      if (reset?.available !== true) {
+        setStatus("attention", reset?.reason || "重置后的额度未确认，未切换账号，也不会连续使用下一张卡。" );
+        return null;
+      }
+      if (!await stillNeeded()) return null;
+      delete journal.excluded[target.id];
+      return freshJobs.filter((job) => job.phase !== "skipped");
     }
     return freshJobs;
   }
