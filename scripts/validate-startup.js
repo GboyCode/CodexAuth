@@ -38,6 +38,30 @@ async function scenario(target, fail = false) {
   assert.equal(context.normalizeSettings({ autoResetBusiness: true }).autoResetOnWeeklyLimit, false,
     "legacy Team-only opt-in must not silently authorize Plus resets");
   assert.equal(context.normalizeSettings({ autoResetOnWeeklyLimit: true }).autoResetOnWeeklyLimit, true);
+  assert.equal(context.normalizeSettings({}).language, "zh-CN", "existing installations keep Chinese");
+  assert.equal(context.normalizeSettings({ language: "en" }).language, "en");
+  assert.equal(context.normalizeSettings({ language: "unsupported" }).language, "zh-CN");
+  if (!fail) {
+    const originals = { mutateIndex: context.mutateIndex, currentState: context.currentState, configureAutoRecovery: context.configureAutoRecovery };
+    let saved = JSON.stringify({ settings: context.defaultSettings(), accounts: [] });
+    context.mutateIndex = async task => { const index = JSON.parse(saved); await task(index); saved = JSON.stringify(index); };
+    context.currentState = async () => JSON.parse(saved);
+    context.configureAutoRecovery = () => {};
+    const updated = await context.updateSettings({ language: "en" });
+    assert.equal(updated.settings.language, "en");
+    assert.equal(context.normalizeSettings(JSON.parse(saved).settings).language, "en", "language survives the existing store serialization");
+    assert.equal(updated.settings.restartAfterSwitch, true, "language saves preserve other settings");
+    electron.Menu.buildFromTemplate = items => items;
+    context.fixtureTray = { setContextMenu: items => { context.fixtureMenu = items; } };
+    vm.runInContext("tray = fixtureTray", context);
+    await context.rebuildTrayMenu();
+    assert.ok(context.fixtureMenu.some(item => item.label?.trim() === "Open main window"), "tray uses the saved language");
+    vm.runInContext("tray = null", context);
+    await context.updateSettings({ language: "zh-CN" });
+    assert.equal(JSON.parse(saved).settings.language, "zh-CN");
+    Object.assign(context, originals);
+    vm.runInContext("runtimeSettings = null", context);
+  }
   for (const name of ["ensureStoreDirs", "cleanupLoginSessions", "recoverStoreIfNeeded", "ensureCodexFileCredentialStore", "migratePlaintextBackups",
     "cleanupStoreArtifacts", "cleanupMismatchedQuotaSnapshots", "startAuthWatcher", "startLocalLogWatcher", "startSessionsWatcher", "startSessionsPolling", "startAutoRecovery"])
     context[name] = async () => {};

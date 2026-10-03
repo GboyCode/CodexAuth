@@ -37,7 +37,7 @@ const parsed = sandbox.extractIdentity({ tokens: { access_token: token(payload({
   id_token: token(payload()) } });
 assert.equal(parsed.subscription.activeUntil, snapshot.activeUntil, "saved-account identity must carry the matching ID-token subscription");
 
-const ui = { window: {} };
+const ui = { window: { CodexI18n: require("../src/ui/i18n") } };
 vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../src/ui/shared-quota.js"), "utf8"), ui);
 const display = ui.window.CodexQuotaUI.subscriptionDisplay;
 assert.match(display(snapshot, Date.parse("2026-10-01T00:00:00Z")).label, /^到期 \d{2}\/\d{2}$/);

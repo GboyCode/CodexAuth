@@ -49,12 +49,19 @@ function fixture(store) {
   const elements = new Map(["#seconds", "main", "#cancelBtn", "#title"].map((id) => [id, { addEventListener() {} }]));
   let render;
   const renderer = vm.createContext({ document: { querySelector: (id) => elements.get(id), addEventListener() {} },
-    window: { codexAuth: { onRecoveryCountdown: (fn) => { render = fn; }, readyRecoveryCountdown: async () => null } } });
+    window: { CodexI18n: require("../src/ui/i18n"), codexAuth: {
+      getState: async () => ({ settings: { language: "zh-CN" } }), onStateChanged() {},
+      onRecoveryCountdown: (fn) => { render = fn; }, readyRecoveryCountdown: async () => null } } });
   vm.runInContext(fs.readFileSync(path.resolve(__dirname, "../src/ui/recovery-countdown.js"), "utf8"), renderer);
   render({ seconds: 15, targetLabel: "Team", taskCount: 1, usesReset: true });
   assert.equal(elements.get("#title").textContent, "将使用 1 张重置卡", "credit spending must be visible in the warning");
   render({ seconds: 15, targetLabel: "Plus", taskCount: 1, usesReset: false });
   assert.equal(elements.get("#title").textContent, "自动切换账号");
+  renderer.window.CodexI18n.setLanguage("en");
+  render({ seconds: 15, targetLabel: "工作账号", taskCount: 2, usesReset: true });
+  assert.equal(elements.get("#title").textContent, "Use 1 reset card");
+  assert.equal(elements.get("main").title, "Switch to 工作账号, restart Codex and resume 2 tasks");
+  renderer.window.CodexI18n.setLanguage("zh-CN");
   assert.equal(normalizeCountdownPosition({ x: "12", y: 30 }), null);
   assert.equal(normalizeCountdownPosition({ x: Infinity, y: 30 }), null);
   assert.deepEqual(normalizeCountdownPosition({ x: -500.2, y: 30.6, width: 300 }), { x: -500, y: 31 });

@@ -1,3 +1,4 @@
+const t = (...args) => window.CodexI18n.t(...args);
 const api = window.codexAuth;
 const q = window.CodexQuotaUI;
 const REFRESH_MS = 5000;
@@ -46,8 +47,8 @@ let accountOrderDrag = null;
 let suppressAccountClickUntil = 0;
 
 function identityLabel(accountLike) {
-  if (!accountLike) return "未检测到登录";
-  return accountLike.email || accountLike.userId || accountLike.subject || "未知账号";
+  if (!accountLike) return t("未检测到登录");
+  return accountLike.email || accountLike.userId || accountLike.subject || t("未知账号");
 }
 
 function renderQuotaFreshness(quota) {
@@ -56,6 +57,7 @@ function renderQuotaFreshness(quota) {
 }
 
 function showToast(message) {
+  message = t(message);
   window.clearTimeout(toastTimer);
   els.toast.textContent = message;
   els.toast.classList.add("show");
@@ -112,7 +114,7 @@ function applyPinState(pinned) {
   }
   els.pinBtn.classList.toggle("active", pinned);
   els.pinBtn.setAttribute("aria-pressed", String(pinned));
-  const label = pinned ? "取消钉住：恢复拖动" : "钉住：置顶并锁定位置";
+  const label = pinned ? t("取消钉住：恢复拖动") : t("钉住：置顶并锁定位置");
   els.pinBtn.title = label;
   els.pinBtn.setAttribute("aria-label", label);
 }
@@ -130,7 +132,7 @@ function resetRestartConfirm() {
   restartArmed = false;
   window.clearTimeout(restartConfirmTimer);
   restartConfirmTimer = null;
-  els.restartBtn.textContent = "重启 Codex";
+  els.restartBtn.textContent = t("重启 Codex");
   els.restartBtn.classList.remove("confirming");
   els.restartBtn.disabled = false;
 }
@@ -148,7 +150,7 @@ function renderWindow(kind, quotaWindow) {
     percentEl.textContent = "--";
     meterEl.parentElement?.classList.remove("estimated");
     meterEl.style.width = "0%";
-    resetEl.textContent = "暂无数据";
+    resetEl.textContent = t("暂无数据");
     return;
   }
   const remainingPercent =
@@ -181,7 +183,7 @@ function createAccountQuotaMetric(kind, quotaWindow) {
   meter.append(fill);
 
   const foot = document.createElement("p");
-  foot.textContent = quotaWindow ? q.formatUsedFootnote(quotaWindow, { compact: true }) : "暂无数据";
+  foot.textContent = quotaWindow ? q.formatUsedFootnote(quotaWindow, { compact: true }) : t("暂无数据");
 
   metric.append(line, meter, foot);
   return metric;
@@ -199,7 +201,7 @@ function createAccountQuotaDetails(account) {
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
-    empty.textContent = "暂无数据";
+    empty.textContent = t("暂无数据");
     details.append(empty, resets);
     return details;
   }
@@ -215,7 +217,7 @@ function createAccountQuotaDetails(account) {
   if (account.onlineQuotaStatus?.error) {
     const note = document.createElement("p");
     note.className = "account-quota-empty";
-    note.textContent = "更新失败 · 显示缓存";
+    note.textContent = t("更新失败 · 显示缓存");
     note.title = account.onlineQuotaStatus.error;
     details.append(note);
   }
@@ -334,7 +336,7 @@ async function saveDraggedAccountOrder() {
   try {
     const snapshot = await api.reorderAccounts(accountIds);
     render(snapshot, await api.getQuota());
-    showToast("账号顺序已保存");
+    showToast(t("账号顺序已保存"));
   } catch (error) {
     await refresh(true);
     showToast(error instanceof Error ? error.message : String(error));
@@ -355,7 +357,7 @@ function renderAccounts(snapshot) {
     els.accountList.replaceChildren();
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = "暂无已保存账号";
+    empty.textContent = t("暂无已保存账号");
     els.accountList.append(empty);
     queueAccountListOverflowUpdate();
     return;
@@ -367,7 +369,7 @@ function renderAccounts(snapshot) {
       row = document.createElement("div");
       row.className = "account-row";
       row.dataset.accountId = account.id;
-      row.title = "点击查看额度";
+      row.title = t("点击查看额度");
       row.setAttribute("role", "button");
       row.setAttribute("tabindex", "0");
       row.setAttribute("aria-expanded", "false");
@@ -411,7 +413,7 @@ function renderAccounts(snapshot) {
       const handle = document.createElement("span");
       handle.className = "account-drag-handle";
       handle.draggable = true;
-      handle.title = "拖动调整账号顺序";
+      handle.title = t("拖动调整账号顺序");
       handle.setAttribute("aria-hidden", "true");
       handle.textContent = "⠿";
 
@@ -444,21 +446,21 @@ function renderAccounts(snapshot) {
 
     row.querySelector("strong").textContent = account.displayName;
     row.querySelector("small").textContent = account.needsReauth
-      ? "需要重新登录"
+      ? t("需要重新登录")
       : account.accessTokenExpired
-        ? "切换后自动刷新"
+        ? t("切换后自动刷新")
         : account.isActive
-          ? account.planType ? `当前账号 · ${q.formatPlanType(account.planType)}` : "当前账号"
+          ? account.planType ? t("当前账号 · {0}", q.formatPlanType(account.planType)) : t("当前账号")
           : account.planType ? `${identityLabel(account)} · ${q.formatPlanType(account.planType)}` : identityLabel(account);
     const button = row.querySelector('[data-action="switch"]');
     if (!button.hasAttribute("aria-busy")) {
-      button.textContent = account.isActive ? "已启用" : "切换";
+      button.textContent = account.isActive ? t("已启用") : t("切换");
       button.className = account.isActive ? "" : "primary";
       button.disabled = account.isActive;
     }
     const reauth = row.querySelector('[data-action="reauth"]');
     if (!reauth.hasAttribute("aria-busy")) {
-      reauth.textContent = account.needsReauth ? "登录" : "重登";
+      reauth.textContent = account.needsReauth ? t("登录") : t("重登");
       reauth.className = account.needsReauth ? "primary" : "";
       reauth.disabled = false;
     }
@@ -472,7 +474,13 @@ function renderAccounts(snapshot) {
 }
 
 function render(snapshot, dashboard) {
-  els.currentIdentity.textContent = snapshot.current?.exists ? identityLabel(snapshot.current) : "未检测到登录";
+  if (window.CodexI18n.setLanguage(snapshot?.settings?.language)) {
+    const label = document.body.classList.contains("pinned") ? t("取消钉住：恢复拖动") : t("钉住：置顶并锁定位置");
+    els.pinBtn.title = label;
+    els.pinBtn.setAttribute("aria-label", label);
+    if (restartArmed) els.restartBtn.textContent = t("确认重启");
+  }
+  els.currentIdentity.textContent = snapshot.current?.exists ? identityLabel(snapshot.current) : t("未检测到登录");
   const quota = dashboard?.quota;
   renderWindow("session", quota?.session);
   renderWindow("weekly", quota?.weekly);
@@ -495,7 +503,7 @@ async function refresh(silent = true) {
   try {
     const [snapshot, dashboard] = await Promise.all([api.getState(), api.getQuota()]);
     render(snapshot, dashboard);
-    if (!silent) showToast("已刷新本地数据");
+    if (!silent) showToast(t("已刷新本地数据"));
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error));
   } finally {
@@ -511,13 +519,13 @@ async function switchAccount(accountId, button) {
   destroyAccountPopover();
   const previous = button.textContent;
   button.setAttribute("aria-busy", "true");
-  button.textContent = "切换中";
+  button.textContent = t("切换中");
   button.disabled = true;
   try {
     await api.switchAccount(accountId, { restartCodex: restartAfterSwitch });
     button.removeAttribute("aria-busy");
     await refresh(true);
-    showToast(restartAfterSwitch ? "已切换并重启 Codex" : "已切换账号");
+    showToast(restartAfterSwitch ? t("已切换并重启 Codex") : t("已切换账号"));
   } catch (error) {
     button.textContent = previous;
     button.disabled = false;
@@ -531,13 +539,13 @@ async function reauthAccount(accountId, button) {
   destroyAccountPopover();
   const previous = button.textContent;
   button.setAttribute("aria-busy", "true");
-  button.textContent = "打开中";
+  button.textContent = t("打开中");
   button.disabled = true;
   try {
     await api.reauthAccount(accountId);
     button.removeAttribute("aria-busy");
     await refresh(true);
-    showToast("已打开 Codex 官方登录流程");
+    showToast(t("已打开 Codex 官方登录流程"));
   } catch (error) {
     button.textContent = previous;
     button.disabled = false;
@@ -558,7 +566,7 @@ function wireEvents() {
     try {
       const result = await api.setWidgetTopmost?.(nextPinned);
       applyPinState(result?.pinned === true);
-      showToast(result?.pinned ? "浮窗已钉住，位置已锁定" : "浮窗已取消钉住，可拖动");
+      showToast(result?.pinned ? t("浮窗已钉住，位置已锁定") : t("浮窗已取消钉住，可拖动"));
     } catch (error) {
       applyPinState(!nextPinned);
       showToast(error instanceof Error ? error.message : String(error));
@@ -607,18 +615,18 @@ function wireEvents() {
   els.restartBtn.addEventListener("click", async () => {
     if (!restartArmed) {
       restartArmed = true;
-      els.restartBtn.textContent = "确认重启";
+      els.restartBtn.textContent = t("确认重启");
       els.restartBtn.classList.add("confirming");
       window.clearTimeout(restartConfirmTimer);
       restartConfirmTimer = window.setTimeout(resetRestartConfirm, 5000);
-      showToast("再次点击确认重启 Codex");
+      showToast(t("再次点击确认重启 Codex"));
       return;
     }
     window.clearTimeout(restartConfirmTimer);
     els.restartBtn.disabled = true;
     try {
       await api.restartCodex();
-      showToast("已发送重启命令");
+      showToast(t("已发送重启命令"));
     } finally {
       resetRestartConfirm();
     }
@@ -629,7 +637,7 @@ function wireEvents() {
     event.stopPropagation();
     try {
       const result = await api.collapseWidgetDock?.();
-      if (!result?.ok) showToast("请先把浮窗贴近屏幕边缘");
+      if (!result?.ok) showToast(t("请先把浮窗贴近屏幕边缘"));
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error));
     }

@@ -58,6 +58,8 @@ const { recoverAccountIndex } = require("./account-recovery");
 const { encryptPortableCredentials, decryptPortableCredentials, validatePassword, MAX_BUNDLE_BYTES } = require("./portable-credentials");
 const { createUpdateChecker } = require("./github-updates");
 const { createMessageDialogs } = require("./message-dialog");
+const { translate, normalizeLanguage } = require("./ui/i18n");
+const t = (source, ...values) => translate(runtimeSettings?.language, source, ...values);
 const { createAutoRecovery, POLL_MS } = require("./auto-recovery");
 const { createGoalBridge } = require("./codex-goals");
 const { createAccountLogin, cleanupLoginHomes } = require("./account-login");
@@ -72,6 +74,7 @@ let onlineQuitReady = false;
 let autoRecovery = null;
 let autoRecoveryTimer = null;
 let recoveryCountdown = null;
+let recoveryCountdownWindow = null;
 let updateChecker = null;
 let updateDialogPending = false;
 let messageDialogs = null;
@@ -447,6 +450,7 @@ async function ensureCodexFileCredentialStore() {
 
 function defaultSettings() {
   return {
+    language: "zh-CN",
     quotaMode: QUOTA_MODE_LOCAL,
     launchAtLogin: false,
     restartAfterSwitch: true,
@@ -466,6 +470,7 @@ function normalizeSettings(settings) {
   };
   return {
     ...normalized,
+    language: normalizeLanguage(normalized.language),
     launchAtLogin: normalized.launchAtLogin === true,
     restartAfterSwitch: normalized.restartAfterSwitch !== false,
     autoSwitchOnLimit: normalized.autoSwitchOnLimit === true,
@@ -1327,8 +1332,8 @@ async function importCurrentAccountLocked(displayName) {
 async function exportCurrentCredentials(password) {
   validatePassword(password);
   const selected = await dialog.showSaveDialog(mainWindow, {
-    title: "导出当前账号凭证", defaultPath: `CodexAuth-account-${new Date().toISOString().slice(0, 10)}.codexauth`,
-    filters: [{ name: "CodexAuth 加密迁移文件", extensions: ["codexauth"] }],
+    title: t("导出当前账号凭证"), defaultPath: `CodexAuth-account-${new Date().toISOString().slice(0, 10)}.codexauth`,
+    filters: [{ name: t("CodexAuth 加密迁移文件"), extensions: ["codexauth"] }],
   });
   if (selected.canceled || !selected.filePath) return { canceled: true };
   const exportPath = selected.filePath.toLowerCase().endsWith(".codexauth") ? selected.filePath : `${selected.filePath}.codexauth`;
@@ -1346,7 +1351,7 @@ async function exportCurrentCredentials(password) {
 async function exportAllCredentials(password) {
   validatePassword(password);
   const selected = await dialog.showOpenDialog(mainWindow, {
-    title: "导出全部账号凭证", properties: ["openDirectory", "createDirectory"],
+    title: t("导出全部账号凭证"), properties: ["openDirectory", "createDirectory"],
   });
   if (selected.canceled || !selected.filePaths?.[0]) return { canceled: true };
   return runAccountOperation(async () => {
@@ -1422,8 +1427,8 @@ async function readPortableFile(filename) {
 async function selectPortableCredentials() {
   pendingCredentialImport = null;
   const selected = await dialog.showOpenDialog(mainWindow, {
-    title: "选择账号凭证（可多选）", properties: ["openFile", "multiSelections"],
-    filters: [{ name: "CodexAuth 加密凭证", extensions: ["codexauth"] }],
+    title: t("选择账号凭证（可多选）"), properties: ["openFile", "multiSelections"],
+    filters: [{ name: t("CodexAuth 加密凭证"), extensions: ["codexauth"] }],
   });
   if (selected.canceled || !selected.filePaths?.length) return { canceled: true };
   const paths = [...new Set(selected.filePaths)];
@@ -2262,7 +2267,7 @@ function toggleWidgetWindow() {
 
 function broadcastStateChanged(payload = { scope: "accounts" }) {
   const message = payload && typeof payload === "object" ? payload : { scope: "accounts" };
-  for (const win of [mainWindow, widgetWindow]) {
+  for (const win of [mainWindow, widgetWindow, recoveryCountdownWindow]) {
     if (win && !win.isDestroyed()) {
       win.webContents.send("state:changed", message);
     }
@@ -2279,7 +2284,7 @@ async function rebuildTrayMenu() {
     snapshot = null;
   }
   const accounts = snapshot?.accounts ?? [];
-  const currentLabel = snapshot?.current?.exists ? identityLabel(snapshot.current) : "未检测到登录";
+  const currentLabel = snapshot?.current?.exists ? identityLabel(snapshot.current) : t("未检测到登录");
   const launchAtLogin = snapshot?.settings?.launchAtLogin === true;
   const widgetVisible = widgetWindow && !widgetWindow.isDestroyed() && widgetWindow.isVisible();
   const accountItems = accounts.length
@@ -2293,24 +2298,24 @@ async function rebuildTrayMenu() {
           },
         })
       )
-    : [trayMenuItem("暂无已保存账号", { enabled: false })];
+    : [trayMenuItem(t("暂无已保存账号"), { enabled: false })];
 
   tray.setContextMenu(
     Menu.buildFromTemplate([
       trayMenuItem(APP_NAME, { enabled: false }),
-      trayMenuItem(`当前：${currentLabel}`, { enabled: false }),
+      trayMenuItem(t("当前：{0}", currentLabel), { enabled: false }),
       { type: "separator" },
-      trayMenuItem("打开主窗口", { click: () => showMainWindow() }),
-      trayMenuItem(widgetVisible ? "隐藏浮窗" : "显示浮窗", {
+      trayMenuItem(t("打开主窗口"), { click: () => showMainWindow() }),
+      trayMenuItem(widgetVisible ? t("隐藏浮窗") : t("显示浮窗"), {
         click: () => {
           toggleWidgetWindow();
           rebuildTrayMenu().catch(() => {});
         },
       }),
       { type: "separator" },
-      trayMenuItem("切换账号并重启", { submenu: accountItems }),
-      trayMenuItem("重启 Codex App", { click: () => restartCodexAppQueued().catch(() => {}) }),
-      trayMenuItem("开机自启动", {
+      trayMenuItem(t("切换账号并重启"), { submenu: accountItems }),
+      trayMenuItem(t("重启 Codex App"), { click: () => restartCodexAppQueued().catch(() => {}) }),
+      trayMenuItem(t("开机自启动"), {
         active: launchAtLogin,
         click: async () => {
           await updateSettings({ launchAtLogin: !launchAtLogin });
@@ -2318,7 +2323,7 @@ async function rebuildTrayMenu() {
         },
       }),
       { type: "separator" },
-      trayMenuItem("退出", {
+      trayMenuItem(t("退出"), {
         click: () => {
           isQuitting = true;
           app.quit();
@@ -4505,12 +4510,13 @@ function createRecoveryCountdownWindow() {
   const area = screen.getDisplayMatching(saved ? { ...saved, width: 320, height: 112 } : anchor).workArea;
   const win = new BrowserWindow({
     ...countdownBounds(anchor, area, saved),
-    title: "CodexAuth 自动切换确认", icon: appIconPath(), show: false,
+    title: t("CodexAuth 自动切换确认"), icon: appIconPath(), show: false,
     frame: false, movable: true, resizable: false, maximizable: false, minimizable: false,
     alwaysOnTop: true, skipTaskbar: true, transparent: true, backgroundColor: "#00000000",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
       nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
   });
+  recoveryCountdownWindow = win;
   let position = null, saveTimer = null;
   const savePosition = () => {
     saveTimer = null;
@@ -4530,6 +4536,7 @@ function createRecoveryCountdownWindow() {
   // Capture coordinates while the window is alive, then flush even when the
   // countdown destroys it immediately after a drag or cancellation.
   win.on("closed", () => {
+    if (recoveryCountdownWindow === win) recoveryCountdownWindow = null;
     if (saveTimer) { clearTimeout(saveTimer); savePosition(); }
   });
   hardenWindowNavigation(win);
@@ -5053,7 +5060,7 @@ function handleWidgetPointerLeave() {
 }
 
 async function openAppLink(link) {
-  const urls = { github: "https://github.com/GboyCode/CodexAuth", developer: "https://ryanlin.me/assets/contact/wechat-qr.png" };
+  const urls = { website: "https://codexauth.toagi.cc", github: "https://github.com/GboyCode/CodexAuth", developer: "https://ryanlin.me/assets/contact/wechat-qr.png" };
   if (typeof link !== "string" || !Object.hasOwn(urls, link)) throw new Error("不支持的项目链接。");
   await shell.openExternal(urls[link]);
   return { ok: true };
@@ -5062,7 +5069,9 @@ async function openAppLink(link) {
 function showAppMessageBox(parent, options) {
   messageDialogs ??= createMessageDialogs({ BrowserWindow, ipcMain, screen,
     hardenWindow: hardenWindowNavigation, icon: appIconPath() });
-  return messageDialogs.show(parent, { ...options, compact: parent === widgetWindow });
+  return messageDialogs.show(parent, { ...options, language: normalizeLanguage(runtimeSettings?.language),
+    title: t(options.title), message: t(options.message), detail: t(options.detail),
+    buttons: (options.buttons ?? ["知道了"]).map((label) => t(label)), compact: parent === widgetWindow });
 }
 
 async function checkForUpdates(event) {
@@ -5075,18 +5084,18 @@ async function checkForUpdates(event) {
     const result = await updateChecker.check();
     const newer = result.comparison > 0;
     const canDownload = newer && result.installer;
-    const buttons = canDownload ? ["下载更新", "更新说明", "稍后"] : newer ? ["查看发布页", "关闭"] : ["知道了"];
-    const detail = [`当前 v${result.currentVersion}${result.comparison < 0 ? ` · 正式版 v${result.latestVersion}` : ""}`];
-    if (newer && !canDownload) detail.push("暂无适用于本机的安装包。");
-    const choice = await show({ type: "info", title: "CodexAuth 更新",
-      message: newer ? `发现新版本 v${result.latestVersion}` : result.comparison === 0 ? "已是最新版本" : "暂无更新",
+    const buttons = canDownload ? [t("下载更新"), t("更新说明"), t("稍后")] : newer ? [t("查看发布页"), t("关闭")] : [t("知道了")];
+    const detail = [t("当前 v{0}{1}", result.currentVersion, result.comparison < 0 ? t(" · 正式版 v{0}", result.latestVersion) : "")];
+    if (newer && !canDownload) detail.push(t("暂无适用于本机的安装包。"));
+    const choice = await show({ type: "info", title: t("CodexAuth 更新"),
+      message: newer ? t("发现新版本 v{0}", result.latestVersion) : result.comparison === 0 ? t("已是最新版本") : t("暂无更新"),
       detail: detail.join("\n"), buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
     if (canDownload && choice.response === 0) await shell.openExternal(result.installer.url);
     else if (newer && choice.response === (canDownload ? 1 : 0)) await shell.openExternal(result.releaseUrl);
     return { ok: true, latestVersion: result.latestVersion, comparison: result.comparison };
   } catch (error) {
-    await show({ type: "warning", title: "CodexAuth 更新", message: "暂时无法检查更新",
-      detail: error.message, buttons: ["关闭"], noLink: true });
+    await show({ type: "warning", title: t("CodexAuth 更新"), message: t("暂时无法检查更新"),
+      detail: error.message, buttons: [t("关闭")], noLink: true });
     return { ok: false };
   } finally { updateDialogPending = false; }
 }

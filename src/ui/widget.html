@@ -15,27 +15,27 @@
   </head>
   <body>
     <main class="widget">
-      <button id="dockCollapseBtn" class="dock-collapse-btn" title="收起浮窗" aria-label="收起浮窗" hidden>
-        <span class="dock-collapse-text">收起</span>
+      <button id="dockCollapseBtn" class="dock-collapse-btn" title="收起浮窗" data-i18n-title="收起浮窗" aria-label="收起浮窗" data-i18n-aria-label="收起浮窗" hidden>
+        <span class="dock-collapse-text" data-i18n="收起">收起</span>
         <strong id="dockCollapseIcon" aria-hidden="true">&gt;</strong>
       </button>
       <header class="widget-head">
         <div class="brand">
           <img class="mark" src="./assets/codex-monochrome.svg" alt="" draggable="false" />
           <div>
-            <p class="brand-version">CodexAuth <button id="checkUpdatesBtn" class="version-btn" type="button" title="从 GitHub 检查更新"><span id="appVersion">版本…</span></button></p>
-            <strong id="currentIdentity">读取中</strong>
+            <p class="brand-version">CodexAuth <button id="checkUpdatesBtn" class="version-btn" type="button" title="从 GitHub 检查更新" data-i18n-title="从 GitHub 检查更新"><span id="appVersion" data-i18n="版本…">版本…</span></button></p>
+            <strong id="currentIdentity" data-i18n="读取中">读取中</strong>
           </div>
         </div>
         <div class="head-actions">
-          <button id="pinBtn" title="钉住：置顶并锁定位置" aria-label="钉住：置顶并锁定位置" aria-pressed="false">
+          <button id="pinBtn" title="钉住：置顶并锁定位置" data-i18n-title="钉住：置顶并锁定位置" aria-label="钉住：置顶并锁定位置" data-i18n-aria-label="钉住：置顶并锁定位置" aria-pressed="false">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 17v4" />
               <path d="M8 4h8" />
               <path d="m9 4 1 7-3 3v3h10v-3l-3-3 1-7" />
             </svg>
           </button>
-          <button id="settingsBtn" title="浮窗设置" aria-label="浮窗设置" aria-expanded="false">
+          <button id="settingsBtn" title="浮窗设置" data-i18n-title="浮窗设置" aria-label="浮窗设置" data-i18n-aria-label="浮窗设置" aria-expanded="false">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4 7h10" />
               <path d="M18 7h2" />
@@ -45,7 +45,7 @@
               <path d="M6 15v4" />
             </svg>
           </button>
-          <button id="hideBtn" title="关闭浮窗" aria-label="关闭浮窗">
+          <button id="hideBtn" title="关闭浮窗" data-i18n-title="关闭浮窗" aria-label="关闭浮窗" data-i18n-aria-label="关闭浮窗">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="m7 7 10 10" />
               <path d="m17 7-10 10" />
@@ -56,7 +56,7 @@
 
       <div id="settingsPanel" class="settings-panel" hidden>
         <label class="setting-row" for="opacityRange">
-          <span>背景不透明度</span>
+          <span data-i18n="背景不透明度">背景不透明度</span>
           <strong id="opacityValue">98%</strong>
         </label>
         <input id="opacityRange" type="range" min="0" max="100" value="98" />
@@ -64,33 +64,33 @@
 
       <section class="quota-card">
         <div class="quota-line">
-          <span id="sessionWindowTitle">5 小时额度</span>
+          <span id="sessionWindowTitle" data-i18n="5 小时额度">5 小时额度</span>
           <strong id="sessionPercent">--</strong>
         </div>
         <div class="meter"><span id="sessionMeter"></span></div>
         <p id="sessionReset">--</p>
 
         <div class="quota-line weekly">
-          <span>每周额度</span>
+          <span data-i18n="每周额度">每周额度</span>
           <strong id="weeklyPercent">--</strong>
         </div>
         <div class="meter"><span id="weeklyMeter"></span></div>
         <p id="weeklyReset">--</p>
         <div class="quota-footer">
           <span id="quotaFreshness">--</span>
-          <span id="resetCreditsInfo">重置 --</span>
+          <span id="resetCreditsInfo" data-i18n="重置 --">重置 --</span>
         </div>
       </section>
 
       <section class="quick-actions">
-        <button id="mainBtn" class="primary-action">主窗口</button>
-        <button id="restartBtn">重启 Codex</button>
+        <button id="mainBtn" class="primary-action" data-i18n="主窗口">主窗口</button>
+        <button id="restartBtn" data-i18n="重启 Codex">重启 Codex</button>
       </section>
 
       <section class="accounts">
         <div class="section-title">
-          <span>快速切换</span>
-          <button id="refreshBtn">刷新</button>
+          <span data-i18n="快速切换">快速切换</span>
+          <button id="refreshBtn" data-i18n="刷新">刷新</button>
         </div>
         <div id="accountList" class="account-list"></div>
       </section>
@@ -104,6 +104,8 @@
     <div class="resize-handle resize-sw" data-resize-edge="sw" aria-hidden="true"></div>
     <div class="resize-handle resize-nw" data-resize-edge="nw" aria-hidden="true"></div>
     <div id="toast" class="toast"></div>
+    <script src="./locales/en.js"></script>
+    <script src="./i18n.js"></script>
     <script src="./shared-quota.js"></script>
     <script src="./widget.js"></script>
     <script src="./updates.js"></script>

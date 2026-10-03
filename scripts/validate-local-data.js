@@ -57,7 +57,7 @@ async function main(){
   assert.equal(unknown.session.estimatedUsedPercent,undefined,"model/tier calibration must stay isolated");
   assert.equal(codexRateCard("gpt-6-astra"),null);
   assert.equal(tokenUsageTotal(normalizeTokenUsage({input_tokens:100,output_tokens:40,reasoning_output_tokens:30})),140);
-  const ui=vm.createContext({window:{},Date,Intl});vm.runInContext(await fs.readFile(path.join(__dirname,"../src/ui/shared-quota.js"),"utf8"),ui);
+  const ui=vm.createContext({window:{CodexI18n:require("../src/ui/i18n")},Date,Intl});vm.runInContext(await fs.readFile(path.join(__dirname,"../src/ui/shared-quota.js"),"utf8"),ui);
   assert.equal(ui.window.CodexQuotaUI.formatRemainingText({usedPercent:null}),"--");assert.equal(ui.window.CodexQuotaUI.windowTitle("session",{windowMinutes:10080}),"周额度");
   assert.equal(ui.window.CodexQuotaUI.resetCreditsLabel(null),"重置 --");assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({availableCount:0,checkedAt:ts(0)}),/缓存/);
   const accountsDir=path.join(root,"accounts");await fs.mkdir(accountsDir);const indexPath=path.join(root,"accounts.json");await fs.writeFile(indexPath,"\0\0");

@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="./glass.css" />
   </head>
   <body>
-    <header class="window-titlebar" aria-label="应用标题栏">
+    <header class="window-titlebar" aria-label="应用标题栏" data-i18n-aria-label="应用标题栏">
       <img src="./assets/codex-monochrome.svg" alt="" />
       <span>CodexAuth Switch</span>
     </header>
@@ -25,42 +25,42 @@
           <h1>CodexAuth</h1>
         </div>
         <div class="top-actions">
-          <div class="page-tabs" role="tablist" aria-label="页面">
-            <button id="accountsTab" class="page-tab active" type="button" role="tab" aria-selected="true">
+          <div class="page-tabs" role="tablist" aria-label="页面" data-i18n-aria-label="页面">
+            <button id="accountsTab" class="page-tab active" type="button" role="tab" aria-selected="true" data-i18n="账号">
               账号
             </button>
-            <button id="usageTab" class="page-tab" type="button" role="tab" aria-selected="false">
+            <button id="usageTab" class="page-tab" type="button" role="tab" aria-selected="false" data-i18n="用量">
               用量
             </button>
           </div>
-          <button id="refreshBtn" class="icon-btn" title="刷新" aria-label="刷新">↻</button>
-          <button id="widgetBtn" class="ghost-btn">浮窗</button>
-          <button id="settingsBtn" class="ghost-btn" aria-haspopup="dialog">设置</button>
+          <button id="refreshBtn" class="icon-btn" title="刷新" data-i18n-title="刷新" aria-label="刷新" data-i18n-aria-label="刷新">↻</button>
+          <button id="widgetBtn" class="ghost-btn" data-i18n="浮窗">浮窗</button>
+          <button id="settingsBtn" class="ghost-btn" aria-haspopup="dialog" data-i18n="设置">设置</button>
         </div>
       </section>
 
       <section id="accountsPage" class="page active">
         <section class="current-account-bar">
           <div class="current-account-identity">
-            <p class="label">当前登录</p>
-            <h2 id="currentIdentity">读取中</h2>
+            <p class="label" data-i18n="当前登录">当前登录</p>
+            <h2 id="currentIdentity" data-i18n="读取中">读取中</h2>
           </div>
-          <button id="autoRecoverySummary" class="status-link" aria-haspopup="dialog">自动切换：关闭</button>
+          <button id="autoRecoverySummary" class="status-link" aria-haspopup="dialog" data-i18n="自动切换：关闭">自动切换：关闭</button>
         </section>
         <p id="recoveryNotice" class="inline-notice" role="status" hidden></p>
         <section class="account-toolbar">
-          <h2>已保存账号 <span id="accountCount" class="count-label">0</span></h2>
+          <h2><span data-i18n="已保存账号">已保存账号</span> <span id="accountCount" class="count-label">0</span></h2>
           <div class="toolbar-actions">
-            <button id="addAccountBtn" class="primary-btn" aria-haspopup="dialog">添加账号</button>
-            <button class="ghost-btn" popovertarget="transferMenu">更多</button>
+            <button id="addAccountBtn" class="primary-btn" aria-haspopup="dialog" data-i18n="添加账号">添加账号</button>
+            <button class="ghost-btn" popovertarget="transferMenu" data-i18n="更多">更多</button>
           </div>
         </section>
         <section id="accountLoginPanel" class="account-login-status" aria-live="polite" hidden>
           <span id="accountLoginStatus"></span>
-          <button id="openAccountLoginBtn" class="ghost-btn" type="button" hidden>重新打开登录页</button>
-          <button id="cancelAccountLoginBtn" class="ghost-btn" type="button" hidden>取消登录</button>
+          <button id="openAccountLoginBtn" class="ghost-btn" type="button" hidden data-i18n="重新打开登录页">重新打开登录页</button>
+          <button id="cancelAccountLoginBtn" class="ghost-btn" type="button" hidden data-i18n="取消登录">取消登录</button>
         </section>
-        <p id="switchEffect" class="action-hint">切换账号将重启 Codex</p>
+        <p id="switchEffect" class="action-hint" data-i18n="切换账号将重启 Codex">切换账号将重启 Codex</p>
         <div class="account-list" id="accountList"></div>
       </section>
 
@@ -68,17 +68,17 @@
         <section class="dashboard-panel">
           <div class="section-head">
             <div>
-              <h2>当前账号额度</h2>
+              <h2 data-i18n="当前账号额度">当前账号额度</h2>
             </div>
             <div class="section-head-actions">
-              <button id="statsRefreshBtn" class="ghost-btn">刷新</button>
+              <button id="statsRefreshBtn" class="ghost-btn" data-i18n="刷新">刷新</button>
             </div>
           </div>
 
           <div class="quota-grid">
             <article class="quota-card">
               <div class="quota-title">
-                <span id="sessionWindowTitle">5 小时额度</span>
+                <span id="sessionWindowTitle" data-i18n="5 小时额度">5 小时额度</span>
                 <strong id="sessionPercent">--</strong>
               </div>
               <div class="meter"><span id="sessionMeter"></span></div>
@@ -86,7 +86,7 @@
             </article>
             <article class="quota-card">
               <div class="quota-title">
-                <span id="weeklyWindowTitle">周额度</span>
+                <span id="weeklyWindowTitle" data-i18n="周额度">周额度</span>
                 <strong id="weeklyPercent">--</strong>
               </div>
               <div class="meter"><span id="weeklyMeter"></span></div>
@@ -94,61 +94,61 @@
             </article>
             <article class="quota-card">
               <div class="quota-title">
-                <span>套餐</span>
+                <span data-i18n="套餐">套餐</span>
                 <strong id="planType">--</strong>
               </div>
               <p id="quotaSource" class="muted">--</p>
               <p id="creditsInfo" class="muted">--</p>
-              <p id="resetCreditsInfo" class="muted">重置 --</p>
+              <p id="resetCreditsInfo" class="muted" data-i18n="重置 --">重置 --</p>
             </article>
           </div>
 
           <section class="local-usage-section" aria-labelledby="localUsageTitle">
           <div class="section-head">
-            <h2 id="localUsageTitle">本地用量</h2>
+            <h2 id="localUsageTitle" data-i18n="本地用量">本地用量</h2>
             <div class="section-head-actions">
-              <div class="scope-tabs" role="tablist" aria-label="本地用量范围">
-                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true">本次使用</button>
-                <button id="scopeAllBtn" class="scope-tab" type="button" role="tab" aria-selected="false">本机全部</button>
+              <div class="scope-tabs" role="tablist" aria-label="本地用量范围" data-i18n-aria-label="本地用量范围">
+                <button id="scopeCurrentBtn" class="scope-tab active" type="button" role="tab" aria-selected="true" data-i18n="本次使用">本次使用</button>
+                <button id="scopeAllBtn" class="scope-tab" type="button" role="tab" aria-selected="false" data-i18n="本机全部">本机全部</button>
               </div>
             </div>
           </div>
-          <p id="localUsageScope" class="usage-note">最近切换后的本地用量</p>
+          <p id="localUsageScope" class="usage-note" data-i18n="最近切换后的本地用量">最近切换后的本地用量</p>
           <div class="usage-grid">
             <article class="metric-card">
-              <span>本地总用量</span>
+              <span data-i18n="本地总用量">本地总用量</span>
               <strong id="totalTokens">--</strong>
             </article>
             <article class="metric-card">
-              <span>输入用量</span>
+              <span data-i18n="输入用量">输入用量</span>
               <strong id="inputTokens">--</strong>
             </article>
             <article class="metric-card">
-              <span>输出用量</span>
+              <span data-i18n="输出用量">输出用量</span>
               <strong id="outputTokens">--</strong>
             </article>
             <article class="metric-card">
-              <span>会话数</span>
+              <span data-i18n="会话数">会话数</span>
               <strong id="sessionCount">--</strong>
             </article>
           </div>
           <p id="usageWarning" class="inline-notice" role="status" hidden></p>
           <details class="local-diagnostics usage-details">
-            <summary>统计详情</summary>
+            <summary data-i18n="统计详情">统计详情</summary>
             <p id="tokenBreakdown" class="usage-note"></p>
             <p id="usageCoverage" class="usage-note"></p>
-            <p class="usage-note">本地日志统计不等于官方账号累计。缓存输入和推理输出已包含在各自总数中。</p>
+            <p class="usage-note" data-i18n="本地日志统计不等于官方账号累计。缓存输入和推理输出已包含在各自总数中。">本地日志统计不等于官方账号累计。缓存输入和推理输出已包含在各自总数中。</p>
           </details>
           </section>
 
           <section class="all-accounts-section" id="allAccountsSection">
             <div class="all-accounts-heading">
-              <p class="usage-title">全部账号额度总览</p>
-              <button id="overviewPrivacyBtn" class="privacy-toggle" type="button" aria-label="隐藏邮箱" aria-pressed="false" title="隐藏邮箱">
+              <p class="usage-title" data-i18n="全部账号额度总览">全部账号额度总览</p>
+              <button id="overviewPrivacyBtn" class="privacy-toggle" type="button" aria-label="隐藏邮箱" data-i18n-aria-label="隐藏邮箱" aria-pressed="false" title="隐藏邮箱" data-i18n-title="隐藏邮箱">
                 <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
                 <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a20 20 0 0 1-3.1 4M6.2 6.2A21 21 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.1-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
               </button>
-              <button id="overviewRefreshBtn" class="ghost-btn overview-refresh" type="button">刷新全部</button>
+              <button id="overviewRefreshBtn" class="ghost-btn overview-refresh" type="button" data-i18n="刷新全部">刷新全部</button>
             </div>
             <p id="overviewRefreshStatus" class="overview-refresh-status" role="status" hidden></p>
             <div class="all-accounts-grid" id="allAccountsGrid"></div>
@@ -158,74 +158,88 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <div id="transferMenu" class="action-menu" popover aria-label="账号迁移">
-      <button id="importCredentialsBtn" type="button">导入凭证文件</button>
-      <button id="exportCredentialsBtn" type="button">导出账号凭证</button>
+    <div id="transferMenu" class="action-menu" popover aria-label="账号迁移" data-i18n-aria-label="账号迁移">
+      <button id="importCredentialsBtn" type="button" data-i18n="导入凭证文件">导入凭证文件</button>
+      <button id="exportCredentialsBtn" type="button" data-i18n="导出账号凭证">导出账号凭证</button>
     </div>
-    <div id="accountMenu" class="action-menu" popover aria-label="账号操作">
-      <button id="accountDetailsBtn" type="button">查看详情</button>
-      <button id="renameAccountBtn" type="button">重命名</button>
-      <button id="reauthAccountBtn" type="button">重新登录</button>
-      <button id="deleteAccountBtn" class="menu-danger" type="button">删除账号</button>
+    <div id="accountMenu" class="action-menu" popover aria-label="账号操作" data-i18n-aria-label="账号操作">
+      <button id="accountDetailsBtn" type="button" data-i18n="查看详情">查看详情</button>
+      <button id="renameAccountBtn" type="button" data-i18n="重命名">重命名</button>
+      <button id="reauthAccountBtn" type="button" data-i18n="重新登录">重新登录</button>
+      <button id="deleteAccountBtn" class="menu-danger" type="button" data-i18n="删除账号">删除账号</button>
     </div>
     <dialog id="addAccountDialog" class="confirm-dialog" aria-labelledby="addAccountTitle">
       <div class="dialog-content">
         <div class="dialog-heading">
-          <h2 id="addAccountTitle">添加账号</h2>
-          <button class="dialog-close" data-close-dialog="addAccountDialog" aria-label="关闭添加账号">×</button>
+          <h2 id="addAccountTitle" data-i18n="添加账号">添加账号</h2>
+          <button class="dialog-close" data-close-dialog="addAccountDialog" aria-label="关闭添加账号" data-i18n-aria-label="关闭添加账号">×</button>
         </div>
-        <label for="displayNameInput">备注（选填）</label>
-        <input id="displayNameInput" class="name-input dialog-input" placeholder="例如：工作账号" autocomplete="off" />
-        <p class="small-copy">在官方页面登录后自动保存，不改变当前 Codex 登录。</p>
+        <label for="displayNameInput" data-i18n="备注（选填）">备注（选填）</label>
+        <input id="displayNameInput" class="name-input dialog-input" placeholder="例如：工作账号" data-i18n-placeholder="例如：工作账号" autocomplete="off" />
+        <p class="small-copy" data-i18n="在官方页面登录后自动保存，不改变当前 Codex 登录。">在官方页面登录后自动保存，不改变当前 Codex 登录。</p>
         <div class="dialog-actions">
-          <button id="importBtn" class="ghost-btn">保存当前登录</button>
-          <button id="loginAccountBtn" class="primary-btn">登录新账号</button>
+          <button id="importBtn" class="ghost-btn" data-i18n="保存当前登录">保存当前登录</button>
+          <button id="loginAccountBtn" class="primary-btn" data-i18n="登录新账号">登录新账号</button>
         </div>
       </div>
     </dialog>
     <dialog id="settingsDialog" class="confirm-dialog settings-dialog" aria-labelledby="settingsTitle">
+      <div class="dialog-heading">
+        <h2 id="settingsTitle" data-i18n="设置">设置</h2>
+        <button class="dialog-close" data-close-dialog="settingsDialog" aria-label="关闭设置" data-i18n-aria-label="关闭设置" autofocus>×</button>
+      </div>
       <div class="dialog-content">
-        <div class="dialog-heading">
-          <h2 id="settingsTitle">设置</h2>
-          <button class="dialog-close" data-close-dialog="settingsDialog" aria-label="关闭设置" autofocus>×</button>
-        </div>
+        <section class="settings-section language-setting">
+          <span id="languageLabel" data-i18n="语言">语言</span>
+          <div id="languageOptions" class="scope-tabs language-options" role="radiogroup" aria-labelledby="languageLabel">
+            <label class="scope-tab language-option active">
+              <input type="radio" name="language" value="zh-CN" checked />
+              <span lang="zh-CN">简体中文</span>
+            </label>
+            <label class="scope-tab language-option">
+              <input type="radio" name="language" value="en" />
+              <span lang="en">English</span>
+            </label>
+          </div>
+        </section>
         <section class="settings-section" aria-labelledby="switchSettingsTitle">
-          <h3 id="switchSettingsTitle">账号切换</h3>
-          <label class="toggle-row"><input id="restartAfterSwitch" type="checkbox" checked /><span>切换后重启 Codex</span></label>
-          <label class="toggle-row"><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /><span>额度用尽时自动切换</span></label>
-          <p id="autoSwitchHelp" class="small-copy">重启 Codex，并向原任务发送继续指令。执行前有 15 秒可取消。</p>
-          <label class="toggle-row"><input id="autoResetOnWeeklyLimit" type="checkbox" aria-describedby="autoResetHelp" /><span>自动使用重置卡</span></label>
-          <p id="autoResetHelp" class="small-copy">需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。</p>
+          <h3 id="switchSettingsTitle" data-i18n="账号切换">账号切换</h3>
+          <label class="toggle-row"><input id="restartAfterSwitch" type="checkbox" checked /><span data-i18n="切换后重启 Codex">切换后重启 Codex</span></label>
+          <label class="toggle-row"><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /><span data-i18n="额度用尽时自动切换">额度用尽时自动切换</span></label>
+          <p id="autoSwitchHelp" class="small-copy" data-i18n="重启 Codex，并向原任务发送继续指令。执行前有 15 秒可取消。">重启 Codex，并向原任务发送继续指令。执行前有 15 秒可取消。</p>
+          <label class="toggle-row"><input id="autoResetOnWeeklyLimit" type="checkbox" aria-describedby="autoResetHelp" /><span data-i18n="自动使用重置卡">自动使用重置卡</span></label>
+          <p id="autoResetHelp" class="small-copy" data-i18n="需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。">需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。</p>
           <p id="autoRecoveryStatus" class="small-copy" role="status"></p>
           <details class="local-diagnostics">
-            <summary>切换与用卡规则</summary>
-            <p class="small-copy">优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。</p>
-            <p class="small-copy">未重置且剩余不超过 2%，或已确认耗尽的账号会跳过，切换后核验实际额度。其他本地任务运行时暂缓切换。手动暂停、目标预算用完或任务完成后不自动继续；取消后不重试同一次中断。</p>
-            <p class="small-copy">用卡顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business；同类账号优先使用最早到期的卡。仅五小时额度用尽不用卡。用卡结果未确认时暂停自动用卡，避免重复消耗。</p>
+            <summary data-i18n="切换与用卡规则">切换与用卡规则</summary>
+            <p class="small-copy" data-i18n="优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。">优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。</p>
+            <p class="small-copy" data-i18n="未重置且剩余不超过 2%，或已确认耗尽的账号会跳过，切换后核验实际额度。其他本地任务运行时暂缓切换。手动暂停、目标预算用完或任务完成后不自动继续；取消后不重试同一次中断。">未重置且剩余不超过 2%，或已确认耗尽的账号会跳过，切换后核验实际额度。其他本地任务运行时暂缓切换。手动暂停、目标预算用完或任务完成后不自动继续；取消后不重试同一次中断。</p>
+            <p class="small-copy" data-i18n="用卡顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business；同类账号优先使用最早到期的卡。仅五小时额度用尽不用卡。用卡结果未确认时暂停自动用卡，避免重复消耗。">用卡顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business；同类账号优先使用最早到期的卡。仅五小时额度用尽不用卡。用卡结果未确认时暂停自动用卡，避免重复消耗。</p>
           </details>
-          <button id="restartBtn" class="ghost-btn settings-restart">重启 Codex</button>
+          <button id="restartBtn" class="ghost-btn settings-restart" data-i18n="重启 Codex">重启 Codex</button>
         </section>
         <details class="local-diagnostics settings-section">
-          <summary>存储与诊断</summary>
-          <p class="small-copy">登录文件</p><p id="currentPath" class="path-copy"></p>
-          <p class="small-copy">账号存储</p><button id="storePath" class="path-link" title="打开账号存储目录"></button>
-          <p class="small-copy">凭证通过 <span id="credentialProtection">系统安全存储</span> 加密。切换前会备份当前登录信息。</p>
-          <p class="small-copy">登录失效时，重新登录该账号并保存即可。</p>
+          <summary data-i18n="存储与诊断">存储与诊断</summary>
+          <p class="small-copy" data-i18n="登录文件">登录文件</p><p id="currentPath" class="path-copy"></p>
+          <p class="small-copy" data-i18n="账号存储">账号存储</p><button id="storePath" class="path-link" title="打开账号存储目录" data-i18n-title="打开账号存储目录"></button>
+          <p class="small-copy"><span data-i18n="凭证通过">凭证通过</span> <span id="credentialProtection" data-i18n="系统安全存储">系统安全存储</span> <span data-i18n="加密。切换前会备份当前登录信息。">加密。切换前会备份当前登录信息。</span></p>
+          <p class="small-copy" data-i18n="登录失效时，重新登录该账号并保存即可。">登录失效时，重新登录该账号并保存即可。</p>
           <p id="platformLabel" class="small-copy"></p>
-          <p id="diagnosticsInfo" class="small-copy" role="status">读取中</p>
+          <p id="diagnosticsInfo" class="small-copy" role="status" data-i18n="读取中">读取中</p>
           <p id="recoveryInfo" class="small-copy" hidden></p>
         </details>
         <details class="local-diagnostics settings-section">
-          <summary>数据说明</summary>
-          <p id="quotaModeHint" class="small-copy">当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。</p>
-          <p class="small-copy">缓存和预估会标注来源及更新时间。到达重置时间后需更新数据，不能据此确认额度已恢复。本地用量仅统计这台电脑的日志，不等于官方账号累计。</p>
+          <summary data-i18n="数据说明">数据说明</summary>
+          <p id="quotaModeHint" class="small-copy" data-i18n="当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。">当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。</p>
+          <p class="small-copy" data-i18n="缓存和预估会标注来源及更新时间。到达重置时间后需更新数据，不能据此确认额度已恢复。本地用量仅统计这台电脑的日志，不等于官方账号累计。">缓存和预估会标注来源及更新时间。到达重置时间后需更新数据，不能据此确认额度已恢复。本地用量仅统计这台电脑的日志，不等于官方账号累计。</p>
         </details>
-        <section class="app-about settings-section" aria-label="关于">
-          <div class="about-heading"><h3>关于 CodexAuth</h3><span id="appVersion" class="about-version">版本…</span></div>
+        <section class="app-about settings-section" aria-label="关于" data-i18n-aria-label="关于">
+          <div class="about-heading"><h3 data-i18n="关于 CodexAuth">关于 CodexAuth</h3><span id="appVersion" class="about-version" data-i18n="版本…">版本…</span></div>
           <div class="about-actions">
+            <a href="https://codexauth.toagi.cc" data-app-link="website" target="_blank" rel="noopener noreferrer" data-i18n="官网 ↗">官网 ↗</a>
             <a href="https://github.com/GboyCode/CodexAuth" data-app-link="github" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-            <a href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer">联系开发者 ↗</a>
-            <button id="checkUpdatesBtn" class="ghost-btn" type="button">检查更新</button>
+            <a href="https://ryanlin.me/assets/contact/wechat-qr.png" data-app-link="developer" target="_blank" rel="noopener noreferrer" data-i18n="开发者 ↗">开发者 ↗</a>
+            <button id="checkUpdatesBtn" class="ghost-btn" type="button" data-i18n="检查更新">检查更新</button>
           </div>
           <p id="updateStatus" class="small-copy" role="status"></p>
         </section>
@@ -233,53 +247,55 @@
     </dialog>
     <dialog id="exportScopeDialog" class="confirm-dialog" aria-labelledby="exportScopeTitle">
       <form method="dialog">
-        <h3 id="exportScopeTitle">导出账号凭证</h3>
-        <p>请选择要导出的账号。</p>
+        <h3 id="exportScopeTitle" data-i18n="导出账号凭证">导出账号凭证</h3>
+        <p data-i18n="请选择要导出的账号。">请选择要导出的账号。</p>
         <div class="dialog-actions">
-          <button value="cancel" class="ghost-btn">取消</button>
-          <button value="current" class="ghost-btn">导出当前</button>
-          <button value="all" class="primary-btn">导出全部</button>
+          <button value="cancel" class="ghost-btn" data-i18n="取消">取消</button>
+          <button value="current" class="ghost-btn" data-i18n="导出当前">导出当前</button>
+          <button value="all" class="primary-btn" data-i18n="导出全部">导出全部</button>
         </div>
       </form>
     </dialog>
     <dialog id="transferDialog" class="confirm-dialog" aria-labelledby="transferTitle">
       <form id="transferForm">
-        <h3 id="transferTitle">导出当前账号</h3>
+        <h3 id="transferTitle" data-i18n="导出当前账号">导出当前账号</h3>
         <p id="transferDescription"></p>
-        <label for="transferPassword">迁移密码（至少 10 个字符）</label>
+        <label for="transferPassword" data-i18n="迁移密码（至少 10 个字符）">迁移密码（至少 10 个字符）</label>
         <input id="transferPassword" class="name-input dialog-input" type="password" minlength="10" maxlength="1024" required autocomplete="off" />
         <div id="transferConfirmGroup">
-          <label for="transferConfirm">再次输入密码</label>
+          <label for="transferConfirm" data-i18n="再次输入密码">再次输入密码</label>
           <input id="transferConfirm" class="name-input dialog-input" type="password" minlength="10" maxlength="1024" autocomplete="off" />
         </div>
-        <p class="small-copy">凭证有效时可直接使用；过期、撤销或触发验证时仍需官方登录。请妥善保管迁移文件和密码。</p>
+        <p class="small-copy" data-i18n="凭证有效时可直接使用；过期、撤销或触发验证时仍需官方登录。请妥善保管迁移文件和密码。">凭证有效时可直接使用；过期、撤销或触发验证时仍需官方登录。请妥善保管迁移文件和密码。</p>
         <p id="transferError" class="transfer-error" role="alert"></p>
         <div class="dialog-actions">
-          <button id="transferCancel" type="button" class="ghost-btn">取消</button>
-          <button id="transferSubmit" type="submit" class="primary-btn">选择保存位置</button>
+          <button id="transferCancel" type="button" class="ghost-btn" data-i18n="取消">取消</button>
+          <button id="transferSubmit" type="submit" class="primary-btn" data-i18n="选择保存位置">选择保存位置</button>
         </div>
       </form>
     </dialog>
     <dialog id="renameDialog" class="confirm-dialog rename-dialog">
       <form method="dialog">
-        <h3>重命名账号</h3>
+        <h3 data-i18n="重命名账号">重命名账号</h3>
         <input id="renameInput" class="name-input dialog-input" autocomplete="off" />
         <div class="dialog-actions">
-          <button value="cancel" class="ghost-btn">取消</button>
-          <button id="renameOk" value="ok" class="primary-btn">保存</button>
+          <button value="cancel" class="ghost-btn" data-i18n="取消">取消</button>
+          <button id="renameOk" value="ok" class="primary-btn" data-i18n="保存">保存</button>
         </div>
       </form>
     </dialog>
     <dialog id="confirmDialog" class="confirm-dialog">
       <form method="dialog">
-        <h3 id="confirmTitle">确认操作</h3>
+        <h3 id="confirmTitle" data-i18n="确认操作">确认操作</h3>
         <p id="confirmBody"></p>
         <div class="dialog-actions">
-          <button value="cancel" class="ghost-btn">取消</button>
-          <button id="confirmOk" value="ok" class="danger-btn">删除</button>
+          <button value="cancel" class="ghost-btn" data-i18n="取消">取消</button>
+          <button id="confirmOk" value="ok" class="danger-btn" data-i18n="删除">删除</button>
         </div>
       </form>
     </dialog>
+    <script src="./locales/en.js"></script>
+    <script src="./i18n.js"></script>
     <script src="./shared-quota.js"></script>
     <script src="./app.js"></script>
     <script src="./updates.js"></script>

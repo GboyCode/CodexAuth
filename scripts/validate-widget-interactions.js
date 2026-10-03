@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 const { app, BrowserWindow, ipcMain } = require("electron");
+app.on("window-all-closed", () => {});
 
 // Load the real widget with fake accounts and APIs; never load the application main process.
 function installFixture() {
@@ -269,6 +270,21 @@ async function run() {
     await fs.writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
     console.log("Widget interactions passed: no logo image/file drag, native pin movement lock, resize/dock guards, rotated icon, unpin/failure recovery, compact height for 2/7 accounts, screen-height overflow, native click across refresh, pointer motion, live popup updates, dismissal, keyboard, handle-only reorder, cancel, in-flight refresh and action isolation.");
     console.log(`Preview: ${screenshot}`);
+    await evaluate(`widgetFixture.snapshot.settings = { language: "en" }; widgetFixture.notify({scope: "accounts"});
+      new Promise(resolve => setTimeout(resolve, 60))`);
+    assert.equal(await evaluate("document.documentElement.lang"), "en", "widget follows saved language changes");
+    assert.equal(await evaluate("document.querySelector('#mainBtn').textContent"), "Main window");
+    assert.equal(await evaluate("document.querySelector('#refreshBtn').textContent"), "Refresh");
+    assert.equal(await evaluate("document.querySelector('#sessionReset').textContent"), "No data");
+    assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false, "English widget does not overflow");
+    await evaluate("destroyAccountPopover()");
+    const englishPreview = path.resolve(__dirname, "../output/playwright/widget-en.png");
+    await fs.mkdir(path.dirname(englishPreview), {recursive: true});
+    await fs.writeFile(englishPreview, (await win.webContents.capturePage()).toPNG());
+    await evaluate(`widgetFixture.snapshot.settings.language = "zh-CN"; widgetFixture.notify({scope: "accounts"});
+      new Promise(resolve => setTimeout(resolve, 60))`);
+    assert.equal(await evaluate("document.querySelector('#mainBtn').textContent"), "主窗口");
+    console.log("Widget language validation passed: live settings sync, English layout and switching back to Chinese.");
   } finally {
     ipcMain.removeHandler("widget-test:set-pinned");
     win.destroy();

@@ -35,7 +35,7 @@ async function main() {
     const reset = await readBrowserResetCache(root, identity);
     assert.equal(reset.availableCount, 2); assert.equal(reset.source, "local-browser-cache");
     assert.equal(reset.checkedAt, new Date(date).toISOString());
-    const ui = vm.createContext({ window: {}, Date, Intl });
+    const ui = vm.createContext({ window: { CodexI18n: require("../src/ui/i18n") }, Date, Intl });
     vm.runInContext(await fs.readFile(path.join(__dirname, "../src/ui/shared-quota.js"), "utf8"), ui);
     assert.match(ui.window.CodexQuotaUI.resetCreditsLabel(reset), /重置 2 次 · 缓存/);
     assert.match(ui.window.CodexQuotaUI.resetCreditsLabel({ ...reset, checkedAt: "2020-01-01T00:00:00Z" }), /缓存/);

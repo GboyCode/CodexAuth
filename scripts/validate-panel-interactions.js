@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
+app.on("window-all-closed", () => {});
 
 // Render the production UI against isolated fixtures, never the app main process or real credentials.
 function installFixture(appVersion) {
@@ -21,7 +22,7 @@ function installFixture(appVersion) {
   const fixture = window.panelFixture = {
     snapshot: { platform: "win32", platformName: "Windows", current: { exists: true, email: "work@example.com" }, accounts,
       authPath: "C:/example/.codex/auth.json", storeRoot: "C:/example/accounts", accountLogin: { state: "idle" },
-      settings: { restartAfterSwitch: true, autoSwitchOnLimit: false, autoResetOnWeeklyLimit: false }, autoRecovery: { state: "disabled" } },
+      settings: { language: localStorage.getItem("fixture.language") || "zh-CN", restartAfterSwitch: true, autoSwitchOnLimit: false, autoResetOnWeeklyLimit: false }, autoRecovery: { state: "disabled" } },
     quota, usage, calls: [], allTotalTokens: 9999,
   };
   const copy = (value) => structuredClone(value);
@@ -39,6 +40,7 @@ function installFixture(appVersion) {
     updateSettings: async (patch) => {
       if (fixture.failSettings) throw new Error("设置保存失败");
       Object.assign(fixture.snapshot.settings, patch);
+      if (patch.language) localStorage.setItem("fixture.language", patch.language);
       return copy(fixture.snapshot);
     },
     updateAccount: async (id, patch) => { Object.assign(fixture.snapshot.accounts.find(a => a.id === id), patch); return copy(fixture.snapshot); },
@@ -69,7 +71,10 @@ async function run() {
     webPreferences: { preload, contextIsolation: false, sandbox: false, offscreen: true, backgroundThrottling: false } });
   const errors = [];
   win.webContents.on("console-message", (_event, level, message) => { if (level === 3) errors.push(message); });
-  const evaluate = code => win.webContents.executeJavaScript(code);
+  const evaluate = code => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Renderer timed out: ${code.slice(0, 160)}`)), 10000);
+    win.webContents.executeJavaScript(code).then(resolve, reject).finally(() => clearTimeout(timeout));
+  });
   const settle = () => evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   const click = async selector => {
     await evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) throw new Error('Missing control'); element.focus(); element.click(); })()`);
@@ -182,6 +187,69 @@ async function run() {
     assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "剩余 80%", "local scope preserves account quota");
     assert.match(await evaluate("document.querySelector('#localUsageScope').textContent"), /包含不同账号/);
     await capture('usage');
+    await click('#settingsBtn');
+    await click('input[name="language"][value="en"]');
+    assert.equal(await evaluate("panelFixture.snapshot.settings.language"), "en");
+    assert.equal(await evaluate("document.documentElement.lang"), "en");
+    assert.equal(await evaluate("document.querySelector('#settingsTitle').textContent"), "Settings");
+    assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "Remaining 80%", "language switch preserves known quota");
+    assert.equal(await evaluate("document.querySelector('#totalTokens').textContent"), "9,999", "language switch preserves local usage");
+    assert.equal(await evaluate("document.querySelector('#appVersion').textContent"), `v${require('../package.json').version}`);
+    assert.equal(await evaluate("document.querySelector('[data-account-id=backup] .account-name').textContent"), "备用工作账号", "user-provided names are not translated");
+    assert.match(await evaluate("document.querySelector('#autoRecoverySummary').textContent"), /^Auto-switch:/);
+    assert.deepEqual(await evaluate(`(() => {
+      const dialog = document.querySelector('#settingsDialog');
+      const content = dialog.querySelector('.dialog-content');
+      const heading = dialog.querySelector('.dialog-heading');
+      const close = dialog.querySelector('[data-close-dialog]');
+      const headingTop = heading.getBoundingClientRect().top;
+      const closeTop = close.getBoundingClientRect().top;
+      content.scrollTop = content.scrollHeight;
+      const closeBounds = close.getBoundingClientRect();
+      const result = { hidden: getComputedStyle(content).scrollbarWidth === 'none', scrollable: content.scrollTop > 0,
+        titleFixed: heading.getBoundingClientRect().top === headingTop,
+        closeFixed: closeBounds.top === closeTop,
+        closeClickable: close.contains(document.elementFromPoint(closeBounds.x + closeBounds.width / 2, closeBounds.y + closeBounds.height / 2)),
+        aboutVisible: dialog.querySelector('.about-actions').getBoundingClientRect().bottom <= content.getBoundingClientRect().bottom };
+      return result;
+    })()`), { hidden: true, scrollable: true, titleFixed: true, closeFixed: true, closeClickable: true, aboutVisible: true },
+      "scrolling settings keeps the header and close button fixed while reaching About");
+    await capture('settings-en-scrolled');
+    await click('[data-close-dialog="settingsDialog"]');
+    assert.equal(await evaluate("document.querySelector('#settingsDialog').open"), false, "close works after scrolling to the bottom");
+    await click('#settingsBtn');
+    await evaluate("document.querySelector('#settingsDialog .dialog-content').scrollTop = 0");
+    await evaluate("document.querySelector('input[name=language]:checked').focus()");
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Left' });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Left' });
+    await settle();
+    assert.equal(await evaluate("document.documentElement.lang"), "zh-CN", "language options support keyboard selection");
+    await click('input[name="language"][value="en"]');
+    assert.equal(await evaluate("document.querySelector('.language-option.active input').value"), "en");
+    await capture('settings-en');
+    await evaluate("panelFixture.failSettings = true"); await click('input[name="language"][value="zh-CN"]');
+    assert.equal(await evaluate("document.querySelector('input[name=language]:checked').value"), "en", "failed save restores the language selector");
+    assert.equal(await evaluate("document.documentElement.lang"), "en", "failed save keeps the current language");
+    assert.equal(await evaluate("document.querySelector('#settingsDialog .dialog-notice').textContent"), "Unable to save settings");
+    await evaluate("panelFixture.failSettings = false");
+    await click('[data-close-dialog="settingsDialog"]');
+    await capture('usage-en');
+    await click('#accountsTab');
+    for (const width of [860, 1040]) {
+      win.setContentSize(width, 720); await settle();
+      assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false, `English overflow at ${width}`);
+      assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.account-card')).filter(card => {
+        const quota = card.querySelector('.account-quota-preview').getBoundingClientRect();
+        const actions = card.querySelector('.account-actions').getBoundingClientRect();
+        return quota.right > actions.left || actions.right > card.getBoundingClientRect().right;
+      }).map(card => card.dataset.accountId)`), [], `English account columns overlap at ${width}`);
+      await capture(`accounts-en-${width}`);
+    }
+    await click('#settingsBtn');
+    await click('input[name="language"][value="zh-CN"]');
+    assert.equal(await evaluate("document.querySelector('#settingsTitle').textContent"), "设置");
+    await click('[data-close-dialog="settingsDialog"]');
+    await click('#usageTab');
     await evaluate("panelFixture.failQuota = true; panelFixture.allTotalTokens = 5432"); await click('#statsRefreshBtn');
     assert.equal(await evaluate("document.querySelector('#totalTokens').textContent"), "5,432", "quota failure must not block local usage");
     assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "剩余 80%", "quota failure preserves last known quota");
@@ -194,14 +262,25 @@ async function run() {
     await click('.empty-state button');
     assert.equal(await evaluate("document.querySelector('#addAccountDialog').open"), true);
     await click('[data-close-dialog="addAccountDialog"]');
+    await click('#settingsBtn');
+    await click('input[name="language"][value="en"]');
+    await new Promise(resolve => { win.webContents.once("did-finish-load", resolve); win.reload(); }); await settle();
+    assert.equal(await evaluate("document.documentElement.lang"), "en", "saved language is restored on a new renderer");
+    assert.equal(await evaluate("document.querySelector('input[name=language]:checked').value"), "en");
+    assert.equal(await evaluate("document.querySelector('#settingsBtn').textContent"), "Settings");
     assert.deepEqual(errors, [], "renderer errors");
     console.log("Panel validation passed: 860/900/1040 layouts, long names, quota summaries, unknown data, menus, focus, add/import/export, delete cancellation, settings rollback/dependencies, platform limits, recovery notices and independent usage scope. Mock APIs only.");
     console.log(`Screenshots: ${output}`);
+  } catch (error) {
+    console.error(error);
+    throw error;
   } finally {
     win.destroy();
     // Only remove the uniquely created fixture profile within the OS temp directory.
     assert.ok(path.resolve(root).startsWith(path.join(path.resolve(os.tmpdir()), "codexauth-panel-test-")));
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    // Chromium can hold its profile until app exit; cleanup must not hide results.
+    await Promise.race([fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 1500))]);
   }
 }
 run().then(() => app.quit()).catch(error => { console.error(error); app.exit(1); });

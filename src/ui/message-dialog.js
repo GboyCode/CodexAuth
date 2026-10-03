@@ -2,6 +2,7 @@
   const api = window.codexMessage;
   const data = await api.ready();
   if (!data) return;
+  window.CodexI18n.setLanguage(data.language);
   document.body.classList.toggle("compact", data.compact);
   document.title = data.title;
   document.querySelector("#title").textContent = data.title;

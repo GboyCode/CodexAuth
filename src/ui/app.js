@@ -1,3 +1,4 @@
+const t = (...args) => window.CodexI18n.t(...args);
 const api = window.codexAuth;
 document.documentElement.classList.toggle("custom-titlebar", api.platform === "win32");
 const q = window.CodexQuotaUI;
@@ -35,6 +36,7 @@ const state = {
 const els = {
   settingsBtn: document.querySelector("#settingsBtn"),
   settingsDialog: document.querySelector("#settingsDialog"),
+  languageInputs: [document.querySelector('input[name="language"][value="zh-CN"]'), document.querySelector('input[name="language"][value="en"]')],
   addAccountBtn: document.querySelector("#addAccountBtn"),
   addAccountDialog: document.querySelector("#addAccountDialog"),
   autoRecoverySummary: document.querySelector("#autoRecoverySummary"),
@@ -125,15 +127,15 @@ const els = {
 };
 
 function identityLabel(accountLike) {
-  if (!accountLike) return "未检测到登录";
-  return accountLike.email || accountLike.userId || accountLike.subject || "未知账号";
+  if (!accountLike) return t("未检测到登录");
+  return accountLike.email || accountLike.userId || accountLike.subject || t("未知账号");
 }
 
 function formatDate(value) {
-  if (!value) return "从未切换";
+  if (!value) return t("从未切换");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(window.CodexI18n.locale(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -142,9 +144,9 @@ function formatDate(value) {
 }
 
 function usageScopeLabel(scope, quota) {
-  if (quota?.source === "account-cache") return "当前账号缓存";
-  if (scope?.since) return `当前账号自 ${formatDate(scope.since)} 后`;
-  return "全部本地日志";
+  if (quota?.source === "account-cache") return t("当前账号缓存");
+  if (scope?.since) return t("当前账号自 {0} 后", formatDate(scope.since));
+  return t("全部本地日志");
 }
 
 function quotaFreshnessLabel(quota) {
@@ -157,6 +159,7 @@ function snapshotTimeLabel(snapshot) {
 
 let toastTimer;
 function showToast(message) {
+  message = t(message);
   window.clearTimeout(toastTimer);
   els.toast.classList.remove("show");
   document.querySelectorAll(".dialog-notice").forEach((notice) => { notice.hidden = true; });
@@ -266,7 +269,12 @@ function setUsageScope(scope) {
 }
 
 function renderSettings(snapshot) {
-  els.quotaModeHint.textContent = "当前账号：在线额度与本地日志。备用账号：仅手动刷新或自动切换前查询并按需续期，不定时查询。";
+  const language = window.CodexI18n.normalizeLanguage(snapshot?.settings?.language);
+  els.languageInputs.forEach((input) => {
+    input.checked = input.value === language;
+    input.closest(".language-option").classList.toggle("active", input.checked);
+  });
+  els.quotaModeHint.textContent = t("当前账号：在线额度与本地日志。备用账号：仅手动刷新或自动切换前查询并按需续期，不定时查询。");
   if (els.restartAfterSwitch) {
     els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
@@ -281,42 +289,43 @@ function renderSettings(snapshot) {
   const supported = snapshot?.platform === "win32";
   const enabled = snapshot?.settings?.autoSwitchOnLimit === true;
   const recovery = snapshot?.autoRecovery;
-  const labels = { checking: "检查中", countdown: "即将切换", waiting: "等待中", switching: "切换中", resuming: "恢复中", attention: "需处理" };
-  els.autoRecoverySummary.textContent = `自动切换：${!supported ? "不支持" : !enabled ? "关闭" : labels[recovery?.state] || "开启"}`;
+  const labels = { checking: t("检查中"), countdown: t("即将切换"), waiting: t("等待中"), switching: t("切换中"), resuming: t("恢复中"), attention: t("需处理") };
+  els.autoRecoverySummary.textContent = supported && !enabled ? t("自动切换：关闭")
+    : t("自动切换：{0}", !supported ? t("不支持") : labels[recovery?.state] || t("开启"));
   const showNotice = supported && enabled && recovery?.message && !["disabled", "watching"].includes(recovery.state);
   els.recoveryNotice.hidden = !showNotice;
-  els.recoveryNotice.textContent = showNotice ? recovery.message : "";
+  els.recoveryNotice.textContent = showNotice ? t(recovery.message) : "";
   els.autoRecoveryStatus.hidden = supported && !showNotice;
-  els.autoRecoveryStatus.textContent = !supported ? "自动切换与续任务仅支持 Windows 桌面版。" : showNotice ? recovery.message : "";
+  els.autoRecoveryStatus.textContent = !supported ? t("自动切换与续任务仅支持 Windows 桌面版。") : showNotice ? t(recovery.message) : "";
   els.switchEffect.textContent = snapshot?.settings?.restartAfterSwitch !== false
-    ? "切换账号将重启 Codex" : "切换后需手动重启 Codex 才能生效";
+    ? t("切换账号将重启 Codex") : t("切换后需手动重启 Codex 才能生效");
 }
 
 function renderStatus(snapshot) {
   const current = snapshot.current;
-  els.platformLabel.textContent = `${snapshot.platformName || "本机"} 本地`;
-  els.credentialProtection.textContent = snapshot.credentialProtection || "操作系统当前用户安全存储";
+  els.platformLabel.textContent = t("{0} 本地", snapshot.platformName || t("本机"));
+  els.credentialProtection.textContent = snapshot.credentialProtection || t("操作系统当前用户安全存储");
   if (current?.exists && !current.error) {
     els.currentIdentity.textContent = identityLabel(current);
   } else if (current?.exists && current.error) {
-    els.currentIdentity.textContent = "登录信息无法读取";
+    els.currentIdentity.textContent = t("登录信息无法读取");
   } else {
-    els.currentIdentity.textContent = "未检测到 Codex 登录";
+    els.currentIdentity.textContent = t("未检测到 Codex 登录");
   }
   els.currentPath.textContent = current?.error ? `${snapshot.authPath} · ${current.error}` : snapshot.authPath;
   els.accountCount.textContent = String(snapshot.accounts.length);
   els.storePath.textContent = snapshot.storeRoot;
-  els.storePath.title = "打开账号存储目录";
+  els.storePath.title = t("打开账号存储目录");
   const d=snapshot.diagnostics;
   if(d) {
     els.diagnosticsInfo.textContent = [
-      `CodexAuth ${d.version} · Codex ${d.codexVersion ?? "版本未知"}`,
-      `文件凭据：${d.fileCredentials?"正常":"需检查"} · 账号同步：${d.authSynchronized?"一致":"待同步"}`,
-      `${d.sessionFiles} 个本地日志 · ${d.logDatabase} ${d.dbReadable?"可读":"暂不可读"}`,
-      `日志更新：${d.latestLogAt?formatDate(d.latestLogAt):"未知"} · 用量统计来自本机`,
+      `CodexAuth ${d.version} · Codex ${d.codexVersion ?? t("版本未知")}`,
+      t("文件凭据：{0} · 账号同步：{1}", d.fileCredentials?t("正常"):t("需检查"), d.authSynchronized?t("一致"):t("待同步")),
+      t("{0} 个本地日志 · {1} {2}", d.sessionFiles, d.logDatabase, d.dbReadable?t("可读"):t("暂不可读")),
+      t("日志更新：{0} · 用量统计来自本机", d.latestLogAt?formatDate(d.latestLogAt):t("未知")),
     ].join("\n");
     els.recoveryInfo.hidden=!d.recovery;
-    if(d.recovery)els.recoveryInfo.textContent=`已从加密快照恢复 ${d.recovery.recovered} 个账号，${d.recovery.skipped} 个未恢复。原文件保留于 ${d.recovery.path}`;
+    if(d.recovery)els.recoveryInfo.textContent=t("已从加密快照恢复 {0} 个账号，{1} 个未恢复。原文件保留于 {2}", d.recovery.recovered, d.recovery.skipped, d.recovery.path);
   }
 }
 
@@ -344,7 +353,7 @@ function createAccountQuotaMetric(kind, window) {
   const foot = document.createElement("p");
   foot.className = "account-quota-foot";
   if (!window) {
-    foot.textContent = "暂无数据";
+    foot.textContent = t("暂无数据");
   } else {
     foot.textContent = q.formatUsedFootnote(window);
   }
@@ -359,32 +368,32 @@ function createAccountQuotaDetails(account) {
   details.id = `quota-details-${account.id}`;
   const credentialStatus = document.createElement("p");
   credentialStatus.className = "account-detail-status";
-  credentialStatus.textContent = account.needsReauth ? account.reauthReason || "需要重新登录"
-    : account.accessTokenExpired ? "登录凭证待刷新，使用时会尝试自动续期。"
-      : account.lastSyncedAt ? `最近同步 ${formatDate(account.lastSyncedAt)}` : `最近切换 ${formatDate(account.lastSwitchedAt)}`;
+  credentialStatus.textContent = account.needsReauth ? t(account.reauthReason || "需要重新登录")
+    : account.accessTokenExpired ? t("登录凭证待刷新，使用时会尝试自动续期。")
+      : account.lastSyncedAt ? t("最近同步 {0}", formatDate(account.lastSyncedAt)) : t("最近切换 {0}", formatDate(account.lastSwitchedAt));
   details.append(credentialStatus);
 
   if (!account.isActive) {
     const check = document.createElement("button");
     check.className = "account-action";
     check.dataset.accountAction = "refresh";
-    check.textContent = "刷新额度";
+    check.textContent = t("刷新额度");
     check.addEventListener("click", async () => {
       check.disabled = true;
-      check.textContent = "查询中…";
+      check.textContent = t("查询中…");
       try {
         const result = await api.checkAccountQuota(account.id);
         await refresh(true);
         showToast(result.reason);
       } catch (error) { showToast(error.message); }
-      finally { check.disabled = false; check.textContent = "刷新额度"; }
+      finally { check.disabled = false; check.textContent = t("刷新额度"); }
     });
     details.append(check);
   }
   if (account.onlineQuotaStatus?.error) {
     const warning = document.createElement("p");
     warning.className = "account-quota-empty";
-    warning.textContent = account.quotaSnapshot ? "更新失败 · 显示缓存" : "更新失败";
+    warning.textContent = account.quotaSnapshot ? t("更新失败 · 显示缓存") : t("更新失败");
     warning.title = account.onlineQuotaStatus.error;
     details.append(warning);
   }
@@ -397,7 +406,7 @@ function createAccountQuotaDetails(account) {
   if (!snapshot) {
     const empty = document.createElement("p");
     empty.className = "account-quota-empty";
-    empty.textContent = "暂无数据";
+    empty.textContent = t("暂无数据");
     details.append(empty, resets);
     return details;
   }
@@ -455,7 +464,7 @@ function accountCard(account) {
   if (account.isActive) {
     const pill = document.createElement("span");
     pill.className = "active-pill";
-    pill.textContent = "当前";
+    pill.textContent = t("当前");
     line.append(pill);
   }
 
@@ -466,8 +475,8 @@ function accountCard(account) {
   identity.title = identity.textContent;
   const switched = document.createElement("span");
   const quota = account.quotaSnapshot;
-  switched.textContent = account.needsReauth ? "需要重新登录"
-    : account.onlineQuotaStatus?.error ? quota ? "更新失败 · 显示缓存" : "更新失败"
+  switched.textContent = account.needsReauth ? t("需要重新登录")
+    : account.onlineQuotaStatus?.error ? quota ? t("更新失败 · 显示缓存") : t("更新失败")
       : q.quotaFreshnessLabel(quota, { compact: true, inline: true });
   switched.title = account.reauthReason || account.onlineQuotaStatus?.error || q.quotaFreshnessLabel(quota);
   meta.append(identity, switched);
@@ -490,8 +499,8 @@ function accountCard(account) {
   quotaToggle.type = "button";
   quotaToggle.className = "account-expand-cue";
   quotaToggle.dataset.accountAction = "details";
-  quotaToggle.textContent = expanded ? "收起" : "详情";
-  quotaToggle.setAttribute("aria-label", `${account.displayName}：${expanded ? "收起" : "查看"}详情`);
+  quotaToggle.textContent = expanded ? t("收起") : t("详情");
+  quotaToggle.setAttribute("aria-label", t("{0}：{1}详情", account.displayName, expanded ? t("收起") : t("查看")));
   quotaToggle.setAttribute("aria-expanded", String(expanded));
   if (expanded) quotaToggle.setAttribute("aria-controls", `quota-details-${account.id}`);
   quotaToggle.addEventListener("click", (event) => {
@@ -508,19 +517,19 @@ function accountCard(account) {
     const primary = document.createElement("button");
     primary.className = "account-action primary";
     primary.dataset.accountAction = "primary";
-    primary.textContent = account.needsReauth ? "重新登录" : "切换";
+    primary.textContent = account.needsReauth ? t("重新登录") : t("切换");
     primary.addEventListener("click", () => account.needsReauth ? reauthAccount(account, primary) : switchToAccount(account, primary));
     actions.append(primary);
   }
   const more = document.createElement("button");
   more.className = "account-action account-more";
   more.dataset.accountAction = "more";
-  more.textContent = "更多";
-  more.setAttribute("aria-label", `${account.displayName}：更多操作`);
+  more.textContent = t("更多");
+  more.setAttribute("aria-label", t("{0}：更多操作", account.displayName));
   more.setAttribute("popovertarget", "accountMenu");
   more.addEventListener("click", () => {
     state.menuAccountId = account.id;
-    els.accountDetailsBtn.textContent = expanded ? "收起详情" : "查看详情";
+    els.accountDetailsBtn.textContent = expanded ? t("收起详情") : t("查看详情");
     els.reauthAccountBtn.hidden = account.needsReauth;
   });
   actions.append(more);
@@ -547,10 +556,10 @@ function renderAccounts(snapshot) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     const title = document.createElement("p");
-    title.textContent = "还没有保存的账号";
+    title.textContent = t("还没有保存的账号");
     const add = document.createElement("button");
     add.className = "primary-btn";
-    add.textContent = "添加账号";
+    add.textContent = t("添加账号");
     add.addEventListener("click", () => els.addAccountDialog.showModal());
     empty.append(title, add);
     els.accountList.append(empty);
@@ -577,7 +586,7 @@ function renderQuotaWindow(kind, window) {
     percentEl.textContent = "--";
     meterEl.parentElement?.classList.remove("estimated");
     meterEl.style.width = "0%";
-    resetEl.textContent = "暂无数据";
+    resetEl.textContent = t("暂无数据");
     return;
   }
   const remainingPercent = q.displayRemainingPercent(window) ?? 0;
@@ -588,50 +597,52 @@ function renderQuotaWindow(kind, window) {
 }
 
 function renderQuotaPanel(dashboard) {
+  state.quotaDashboard = dashboard;
   const quota = dashboard?.quota;
   renderQuotaWindow("session", quota?.session);
   renderQuotaWindow("weekly", quota?.weekly);
   els.planType.textContent = q.formatPlanType(quota?.planType);
   const sourceText = quotaFreshnessLabel(quota);
-  els.quotaSource.textContent = quota?.error ? `${sourceText} · 更新失败` : sourceText;
+  els.quotaSource.textContent = quota?.error ? t("{0} · 更新失败", sourceText) : sourceText;
   els.quotaSource.title = [usageScopeLabel(dashboard?.scope, quota), q.quotaEstimateStatusLabel(quota).replace(/^ · /, ""), quota?.error].filter(Boolean).join("\n");
   els.creditsInfo.textContent =
     quota?.credits?.balance !== undefined && quota?.credits?.balance !== null
-      ? `余额 ${quota.credits.balance}`
-      : "余额 --";
+      ? t("余额 {0}", quota.credits.balance)
+      : t("余额 --");
   els.resetCreditsInfo.textContent=q.resetCreditsLabel(quota?.resetCredits, { compact: true });
   els.resetCreditsInfo.title=q.resetCreditsLabel(quota?.resetCredits);
 }
 
 function renderDashboard(dashboard) {
+  state.lastDashboard = dashboard;
   state.dashboardLoaded = true;
   // Local usage scope never clears or replaces the current account's quota.
   if (state.usageScope !== "all") renderQuotaPanel(dashboard);
 
   const usage = dashboard?.usage;
   const tokenUsage = usage?.tokenUsage || {};
-  const exact=(n)=>usage?.available === false ? "--" : new Intl.NumberFormat("zh-CN").format(Number(n??0));
+  const exact=(n)=>usage?.available === false ? "--" : new Intl.NumberFormat(window.CodexI18n.locale()).format(Number(n??0));
   els.localUsageScope.textContent = state.usageScope === "all"
-    ? "本机全部日志用量（包含不同账号）"
-    : usage?.available === false ? "尚无可归属的本次本地用量"
-      : `最近切换后的本地用量 · 自 ${formatDate(dashboard?.scope?.since)} 起`;
+    ? t("本机全部日志用量（包含不同账号）")
+    : usage?.available === false ? t("尚无可归属的本次本地用量")
+      : t("最近切换后的本地用量 · 自 {0} 起", formatDate(dashboard?.scope?.since));
   els.totalTokens.textContent = exact(tokenUsage.totalTokens);
   els.inputTokens.textContent = exact(tokenUsage.inputTokens);
   els.outputTokens.textContent = exact(tokenUsage.outputTokens);
-  els.tokenBreakdown.textContent=`缓存输入 ${exact(tokenUsage.cachedInputTokens)} · 推理输出 ${exact(tokenUsage.reasoningOutputTokens)}（均为已包含的子项）`;
+  els.tokenBreakdown.textContent=t("缓存输入 {0} · 推理输出 {1}（均为已包含的子项）", exact(tokenUsage.cachedInputTokens), exact(tokenUsage.reasoningOutputTokens));
   const c=usage?.coverage??{};
   els.usageWarning.hidden = !(usage?.available === false || usage?.failedFiles || c.invalidLines || c.boundaryIntervals || c.missingBaselines);
-  els.usageWarning.textContent = usage?.available === false ? "暂无可归属的本次用量" : "部分日志未计入，查看统计详情";
-  els.usageCoverage.textContent=[`已扫描 ${usage?.scannedFiles??0}/${usage?.totalFiles??0} 个日志文件`,
-    `重复事件去重 ${c.duplicates??0} 条`,
-    usage?.failedFiles?`${usage.failedFiles} 个文件暂不可读`:null,
-    c.invalidLines?`${c.invalidLines} 行损坏或尚未写完`:null,
-    c.counterResets?`${c.counterResets} 次计数回退已重新设定基准`:null,
-    (c.boundaryIntervals||c.missingBaselines)?`存在缺失基准的区间，未推算用量`:null,
+  els.usageWarning.textContent = usage?.available === false ? t("暂无可归属的本次用量") : t("部分日志未计入，查看统计详情");
+  els.usageCoverage.textContent=[t("已扫描 {0}/{1} 个日志文件", usage?.scannedFiles??0, usage?.totalFiles??0),
+    t("重复事件去重 {0} 条", c.duplicates??0),
+    usage?.failedFiles?t("{0} 个文件暂不可读", usage.failedFiles):null,
+    c.invalidLines?t("{0} 行损坏或尚未写完", c.invalidLines):null,
+    c.counterResets?t("{0} 次计数回退已重新设定基准", c.counterResets):null,
+    (c.boundaryIntervals||c.missingBaselines)?t("存在缺失基准的区间，未推算用量"):null,
   ].filter(Boolean).join(" · ");
   els.sessionCount.textContent = usage?.available === false ? "--" : String(usage?.sessionsAnalyzed ?? 0);
   if (usage?.totalFiles && usage.totalFiles > usage.scannedFiles) {
-    els.sessionCount.title = `已读取当前统计范围内 ${usage.scannedFiles} 个会话文件，本机共 ${usage.totalFiles} 个`;
+    els.sessionCount.title = t("已读取当前统计范围内 {0} 个会话文件，本机共 {1} 个", usage.scannedFiles, usage.totalFiles);
   } else {
     els.sessionCount.title = "";
   }
@@ -660,7 +671,7 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
   const foot = document.createElement("p");
   foot.className = "all-account-meter-foot";
   if (!quotaWindow) {
-    foot.textContent = "暂无数据";
+    foot.textContent = t("暂无数据");
   } else {
     foot.textContent = q.formatUsedFootnote(quotaWindow);
   }
@@ -670,12 +681,12 @@ function createAllAccountQuotaMeter(kind, quotaWindow) {
 }
 
 function renderOverviewPrivacy() {
-  const label = state.overviewEmailsHidden ? "显示邮箱" : "隐藏邮箱";
+  const label = state.overviewEmailsHidden ? t("显示邮箱") : t("隐藏邮箱");
   els.overviewPrivacyBtn.title = label;
   els.overviewPrivacyBtn.setAttribute("aria-label", label);
   els.overviewPrivacyBtn.setAttribute("aria-pressed", String(state.overviewEmailsHidden));
   state.overviewNames.forEach(({ element, label }, index) => {
-    element.textContent = state.overviewEmailsHidden ? `账号 ${index + 1}` : label;
+    element.textContent = state.overviewEmailsHidden ? t("账号 {0}", index + 1) : label;
   });
 }
 
@@ -692,38 +703,38 @@ async function refreshAllAccountsQuota() {
   state.overviewRefreshFailures.clear();
   els.overviewRefreshBtn.disabled = true;
   els.overviewRefreshBtn.setAttribute("aria-busy", "true");
-  els.overviewRefreshBtn.textContent = "读取账号…";
+  els.overviewRefreshBtn.textContent = t("读取账号…");
   els.overviewRefreshStatus.hidden = false;
-  els.overviewRefreshStatus.textContent = "正在读取账号列表…";
+  els.overviewRefreshStatus.textContent = t("正在读取账号列表…");
   try {
     const data = await api.getAllAccountsQuota();
-    if (!Array.isArray(data?.accounts)) throw new Error("账号列表暂时不可用，请稍后重试。");
+    if (!Array.isArray(data?.accounts)) throw new Error(t("账号列表暂时不可用，请稍后重试。"));
     const total = data.accounts.length;
     let completed = 0, refreshed = 0;
     for (const account of data.accounts) {
-      els.overviewRefreshBtn.textContent = `刷新中 ${completed}/${total}`;
-      els.overviewRefreshStatus.textContent = "正在刷新额度…";
+      els.overviewRefreshBtn.textContent = t("刷新中 {0}/{1}", completed, total);
+      els.overviewRefreshStatus.textContent = t("正在刷新额度…");
       try {
         const result = await api.checkAccountQuota(account.id);
         if (result?.refreshed) refreshed++;
-        else state.overviewRefreshFailures.set(account.id, { at: Date.now(), reason: result?.reason || "在线查询未成功。" });
+        else state.overviewRefreshFailures.set(account.id, { at: Date.now(), reason: result?.reason || t("在线查询未成功。") });
       } catch {
-        state.overviewRefreshFailures.set(account.id, { at: Date.now(), reason: "在线查询失败，请稍后重试。" });
+        state.overviewRefreshFailures.set(account.id, { at: Date.now(), reason: t("在线查询失败，请稍后重试。") });
       }
       completed++;
-      els.overviewRefreshBtn.textContent = `刷新中 ${completed}/${total}`;
+      els.overviewRefreshBtn.textContent = t("刷新中 {0}/{1}", completed, total);
       await renderAllAccountsQuota();
     }
     els.overviewRefreshStatus.textContent = total
-      ? `已刷新 ${refreshed}/${total} 个账号${refreshed < total ? ` · ${total - refreshed} 个失败` : ""}`
-      : "暂无账号";
+      ? t("已刷新 {0}/{1} 个账号{2}", refreshed, total, refreshed < total ? t(" · {0} 个失败", total - refreshed) : "")
+      : t("暂无账号");
   } catch (error) {
-    els.overviewRefreshStatus.textContent = error.message || "批量刷新失败，请稍后重试。";
+    els.overviewRefreshStatus.textContent = error.message || t("批量刷新失败，请稍后重试。");
   } finally {
     state.overviewRefreshing = false;
     els.overviewRefreshBtn.disabled = false;
     els.overviewRefreshBtn.removeAttribute("aria-busy");
-    els.overviewRefreshBtn.textContent = "刷新全部";
+    els.overviewRefreshBtn.textContent = t("刷新全部");
   }
 }
 
@@ -733,7 +744,7 @@ function overviewQuotaFailure(account) {
   if (failed && (!Number.isFinite(snapshotAt) || snapshotAt <= failed.at)) return failed.reason;
   const status = account.onlineQuotaStatus;
   return status?.error && (!Number.isFinite(snapshotAt) || Date.parse(status.checkedAt) >= snapshotAt)
-    ? "在线查询失败。" : null;
+    ? t("在线查询失败。") : null;
 }
 
 async function renderAllAccountsQuota() {
@@ -752,7 +763,7 @@ async function renderAllAccountsQuota() {
       head.className = "all-account-head";
       const name = document.createElement("strong");
       state.overviewNames.push({ element: name, label: account.displayName });
-      name.textContent = state.overviewEmailsHidden ? `账号 ${state.overviewNames.length}` : account.displayName;
+      name.textContent = state.overviewEmailsHidden ? t("账号 {0}", state.overviewNames.length) : account.displayName;
       const badge = document.createElement("span");
       badge.className = "plan-badge";
       badge.textContent = q.formatPlanType(account.planType);
@@ -765,8 +776,8 @@ async function renderAllAccountsQuota() {
       const failure = overviewQuotaFailure(account);
       const quota = account.quotaSnapshot;
       note.textContent = [
-        account.isActive ? "当前账号" : "",
-        failure ? "更新失败" : "",
+        account.isActive ? t("当前账号") : "",
+        failure ? t("更新失败") : "",
         q.quotaFreshnessLabel(failure && quota ? { ...quota, source: "account-cache" } : quota),
       ].filter(Boolean).join(" · ");
       note.title = failure || note.textContent;
@@ -793,18 +804,25 @@ async function renderAllAccountsQuota() {
   } catch (error) {
     const empty = document.createElement("p");
     empty.className = "all-account-no-data";
-    empty.textContent = "全部账号额度暂时不可用";
+    empty.textContent = t("全部账号额度暂时不可用");
     els.allAccountsGrid.append(empty);
     if (error instanceof Error) console.warn(error.message);
   }
 }
 
 function render(snapshot) {
+  const languageChanged = window.CodexI18n.setLanguage(snapshot?.settings?.language);
   renderAccountLogin(snapshot.accountLogin);
   state.snapshot = snapshot;
   renderSettings(snapshot);
   renderStatus(snapshot);
   renderAccounts(snapshot);
+  if (languageChanged) {
+    const quotaDashboard = state.quotaDashboard;
+    if (state.lastDashboard) renderDashboard(state.lastDashboard);
+    if (quotaDashboard) renderQuotaPanel(quotaDashboard);
+    renderOverviewPrivacy();
+  }
 }
 
 async function refresh(silent = false) {
@@ -815,7 +833,7 @@ async function refresh(silent = false) {
   } else {
     state.dashboardLoaded = false;
   }
-  if (!silent) showToast("已刷新");
+  if (!silent) showToast(t("已刷新"));
 }
 
 async function readQuota(silent = true) {
@@ -827,7 +845,7 @@ async function readQuota(silent = true) {
   try {
     const quotaDashboard = await api.getQuota();
     renderQuotaPanel(quotaDashboard);
-    if (!silent) showToast("额度已刷新");
+    if (!silent) showToast(t("额度已刷新"));
   } finally {
     state.quotaLoading = false;
     if (state.quotaRefreshQueued) {
@@ -855,7 +873,7 @@ function readDashboard(silent) {
       // A slow response must not overwrite a newly selected statistics scope.
       if (scope !== state.usageScope) continue;
       renderDashboard(dashboard);
-      if (!silent) showToast("已刷新");
+      if (!silent) showToast(t("已刷新"));
       break;
     }
   }).finally(() => {
@@ -871,13 +889,13 @@ async function loadDashboard(silent = false, options = {}) {
     if (state.usageScope === "all") requests.push(readQuota(true));
     const results = await Promise.allSettled(requests);
     if (results[0].status === "rejected") throw results[0].reason;
-    if (results[1]?.status === "rejected") showToast("额度刷新失败，本地用量已更新");
+    if (results[1]?.status === "rejected") showToast(t("额度刷新失败，本地用量已更新"));
   };
   if (options.busy === false) {
     await read();
     return;
   }
-  await withAction(els.statsRefreshBtn, "刷新中", read);
+  await withAction(els.statsRefreshBtn, t("刷新中"), read);
 }
 
 let transferMode = "export";
@@ -885,7 +903,7 @@ let transferBusy = false;
 let importSelection = null;
 
 async function startCredentialImport() {
-  await withAction(els.importCredentialsBtn, "选择文件中", async () => {
+  await withAction(els.importCredentialsBtn, t("选择文件中"), async () => {
     const selection = await api.selectPortable();
     if (selection.canceled) return;
     importSelection = selection;
@@ -899,16 +917,16 @@ function openCredentialTransfer(mode) {
   const all = mode === "export-all";
   els.transferForm.reset();
   els.transferError.textContent = "";
-  els.transferTitle.textContent = all ? "导出全部账号" : exporting ? "导出当前账号" : "导入账号凭证";
+  els.transferTitle.textContent = all ? t("导出全部账号") : exporting ? t("导出当前账号") : t("导入账号凭证");
   els.transferDescription.textContent = all
-    ? "为全部已保存账号和当前登录各导出一份加密文件，共用本次迁移密码。"
+    ? t("为全部已保存账号和当前登录各导出一份加密文件，共用本次迁移密码。")
     : exporting
-    ? "导出当前登录的加密凭证。在另一台电脑导入时，需要相同的迁移密码。"
-    : `已选择 ${importSelection.count} 个凭证文件。输入这批文件共用的迁移密码即可批量导入；不同密码的文件请分批选择。`;
+    ? t("导出当前登录的加密凭证。在另一台电脑导入时，需要相同的迁移密码。")
+    : t("已选择 {0} 个凭证文件。输入这批文件共用的迁移密码即可批量导入；不同密码的文件请分批选择。", importSelection.count);
   els.transferDescription.title = exporting ? "" : importSelection.names.join("\n");
   els.transferConfirmGroup.hidden = !exporting;
   els.transferConfirm.required = exporting;
-  els.transferSubmit.textContent = all ? "选择保存文件夹" : exporting ? "选择保存位置" : "导入所选账号";
+  els.transferSubmit.textContent = all ? t("选择保存文件夹") : exporting ? t("选择保存位置") : t("导入所选账号");
   els.transferDialog.showModal();
   els.transferPassword.focus();
 }
@@ -918,7 +936,7 @@ async function submitCredentialTransfer(event) {
   if (transferBusy || !els.transferForm.reportValidity()) return;
   const exporting = transferMode === "export" || transferMode === "export-all";
   if (exporting && els.transferPassword.value !== els.transferConfirm.value) {
-    els.transferError.textContent = "两次输入的迁移密码不一致。";
+    els.transferError.textContent = t("两次输入的迁移密码不一致。");
     return;
   }
   transferBusy = true;
@@ -933,9 +951,9 @@ async function submitCredentialTransfer(event) {
     if (!result.canceled) {
       if (result.snapshot) { render(result.snapshot); state.dashboardLoaded = false; }
       els.transferDialog.close();
-      showToast(transferMode === "export-all" ? `已导出 ${result.count} 个账号的加密凭证`
-        : exporting ? "加密凭证已导出，可在另一台电脑导入"
-        : `已导入 ${result.importedCount} 个账号${result.skippedCount ? `，${result.skippedCount} 个当前账号保留本机凭证` : ""}，在列表点击“切换”即可使用`);
+      showToast(transferMode === "export-all" ? t("已导出 {0} 个账号的加密凭证", result.count)
+        : exporting ? t("加密凭证已导出，可在另一台电脑导入")
+        : t("已导入 {0} 个账号{1}，在列表点击“切换”即可使用", result.importedCount, result.skippedCount ? t("，{0} 个当前账号保留本机凭证", result.skippedCount) : ""));
     }
   } catch (error) { els.transferError.textContent = error.message; }
   finally {
@@ -947,29 +965,29 @@ async function submitCredentialTransfer(event) {
 }
 
 async function importCurrent() {
-  await withAction(els.importBtn, "保存中", async () => {
+  await withAction(els.importBtn, t("保存中"), async () => {
     const snapshot = await api.importCurrent(els.displayNameInput.value);
     els.displayNameInput.value = "";
     render(snapshot);
     els.addAccountDialog.close();
     state.dashboardLoaded = false;
     if (state.activePage === "usage") await loadDashboard(true, { busy: false });
-    showToast("已保存当前登录");
+    showToast(t("已保存当前登录"));
   });
 }
 
 function renderAccountLogin(login = {}) {
   const busy = ["starting", "waiting", "importing"].includes(login.state);
   const wasBusy = ["starting", "waiting", "importing"].includes(state.accountLoginState);
-  if (wasBusy && login.state === "done") showToast("登录已完成");
-  if (wasBusy && login.state === "cancelled") showToast("已取消登录");
+  if (wasBusy && login.state === "done") showToast(t("登录已完成"));
+  if (wasBusy && login.state === "cancelled") showToast(t("已取消登录"));
   state.accountLoginState = login.state || "idle";
   els.loginAccountBtn.disabled = busy;
-  els.loginAccountBtn.textContent = busy ? "等待登录完成…" : "登录新账号";
+  els.loginAccountBtn.textContent = busy ? t("等待登录完成…") : t("登录新账号");
   els.importBtn.disabled = busy;
   els.accountLoginPanel.hidden = !busy && login.state !== "error";
-  const labels = { starting: "正在打开登录页…", waiting: "请在浏览器完成登录", importing: "正在保存账号…" };
-  els.accountLoginStatus.textContent = labels[login.state] || (login.message || "").replace("登录并添加", "添加账号");
+  const labels = { starting: t("正在打开登录页…"), waiting: t("请在浏览器完成登录"), importing: t("正在保存账号…") };
+  els.accountLoginStatus.textContent = labels[login.state] || t((login.message || "").replace("登录并添加", "添加账号"));
   if (busy && els.addAccountDialog.open) els.addAccountDialog.close();
   els.openAccountLoginBtn.hidden = login.canOpen !== true;
   els.cancelAccountLoginBtn.hidden = login.canCancel !== true;
@@ -982,25 +1000,25 @@ async function loginAccount() {
 }
 
 async function switchToAccount(account, button) {
-  await withAction(button, "切换中", async () => {
+  await withAction(button, t("切换中"), async () => {
     const snapshot = await api.switchAccount(account.id, {
       restartCodex: els.restartAfterSwitch.checked,
     });
     render(snapshot);
     state.dashboardLoaded = false;
     if (state.activePage === "usage") await loadDashboard(true, { busy: false });
-    showToast(els.restartAfterSwitch.checked ? "已切换并重启 Codex App" : "已切换账号");
+    showToast(els.restartAfterSwitch.checked ? t("已切换并重启 Codex App") : t("已切换账号"));
   });
 }
 
 async function reauthAccount(account, button) {
-  const ok = window.confirm(`重新登录 ${account.displayName}？\n\n会备份并清除当前 Codex 登录，然后重启 Codex。`);
+  const ok = window.confirm(t("重新登录 {0}？\n\n会备份并清除当前 Codex 登录，然后重启 Codex。", account.displayName));
   if (!ok) return;
-  await withAction(button, "打开中", async () => {
+  await withAction(button, t("打开中"), async () => {
     const snapshot = await api.reauthAccount(account.id);
     render(snapshot);
     state.dashboardLoaded = false;
-    showToast("已打开 Codex 官方登录流程");
+    showToast(t("已打开 Codex 官方登录流程"));
   });
 }
 
@@ -1020,19 +1038,19 @@ async function commitRename() {
   if (!account) return;
   const nextName = els.renameInput.value.trim();
   if (!nextName || nextName === account.displayName) return;
-  await withAction(els.renameOk, "保存中", async () => {
+  await withAction(els.renameOk, t("保存中"), async () => {
     const snapshot = await api.updateAccount(account.id, { displayName: nextName });
     render(snapshot);
-    showToast("已重命名");
+    showToast(t("已重命名"));
   });
 }
 
 function confirmDelete(account) {
   state.pendingDelete = account;
-  els.confirmTitle.textContent = "删除账号";
+  els.confirmTitle.textContent = t("删除账号");
   els.confirmBody.textContent = account.isActive
-    ? `删除 ${account.displayName} 的本地凭证，并退出当前登录、重启 Codex。再次使用需重新登录。`
-    : `删除 ${account.displayName} 的本地凭证。再次使用需重新登录。`;
+    ? t("删除 {0} 的本地凭证，并退出当前登录、重启 Codex。再次使用需重新登录。", account.displayName)
+    : t("删除 {0} 的本地凭证。再次使用需重新登录。", account.displayName);
   els.confirmDialog.returnValue = "";
   els.confirmDialog.showModal();
   els.confirmDialog.querySelector('[value="cancel"]').focus();
@@ -1044,13 +1062,13 @@ async function deletePendingAccount() {
   state.pendingDelete = null;
   const snapshot = await api.deleteAccount(account.id);
   render(snapshot);
-  showToast("已删除本地账号");
+  showToast(t("已删除本地账号"));
 }
 
 async function restartCodex() {
-  await withAction(els.restartBtn, "重启中", async () => {
+  await withAction(els.restartBtn, t("重启中"), async () => {
     await api.restartCodex();
-    showToast("已发送重启命令");
+    showToast(t("已发送重启命令"));
   });
 }
 
@@ -1067,6 +1085,20 @@ function withMenuAccount(action) {
 }
 
 function wireEvents() {
+  els.languageInputs.forEach((input) => input.addEventListener("change", async () => {
+    if (!input.checked) return;
+    const hadFocus = document.activeElement === input;
+    els.languageInputs.forEach((option) => { option.disabled = true; });
+    try {
+      render(await api.updateSettings({ language: input.value }));
+    } catch (error) {
+      showToast(error.message);
+      renderSettings(state.snapshot);
+    } finally {
+      els.languageInputs.forEach((option) => { option.disabled = false; });
+      if (hadFocus && document.activeElement === document.body) input.focus({ preventScroll: true });
+    }
+  }));
   els.settingsBtn.addEventListener("click", () => els.settingsDialog.showModal());
   els.autoRecoverySummary.addEventListener("click", () => els.settingsDialog.showModal());
   els.addAccountBtn.addEventListener("click", () => els.addAccountDialog.showModal());
@@ -1116,7 +1148,7 @@ function wireEvents() {
       const snapshot = await api.updateSettings({ autoSwitchOnLimit: enabled });
       state.snapshot = snapshot;
       renderSettings(snapshot);
-      showToast(enabled ? "已开启自动切换与续任务" : "已关闭自动切换");
+      showToast(enabled ? t("已开启自动切换与续任务") : t("已关闭自动切换"));
     } catch (error) {
       els.autoSwitchOnLimit.checked = !enabled;
       showToast(error.message);
@@ -1129,7 +1161,7 @@ function wireEvents() {
       const snapshot = await api.updateSettings({ autoResetOnWeeklyLimit: enabled });
       state.snapshot = snapshot;
       renderSettings(snapshot);
-      showToast(enabled ? "已开启自动使用重置卡" : "已关闭自动使用重置卡");
+      showToast(enabled ? t("已开启自动使用重置卡") : t("已关闭自动使用重置卡"));
     } catch (error) {
       els.autoResetOnWeeklyLimit.checked = !enabled;
       showToast(error.message);

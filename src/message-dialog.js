@@ -10,6 +10,7 @@ function messageOptions(options) {
     buttons, defaultId, cancelId: valid(options.cancelId) ? options.cancelId : buttons.length - 1,
     primaryId: valid(options.primaryId) ? options.primaryId : defaultId,
     compact: options.compact === true,
+    language: options.language === "en" ? "en" : "zh-CN",
   };
 }
 

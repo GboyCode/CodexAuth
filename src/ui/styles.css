@@ -1327,9 +1327,21 @@ code {
 .dialog-heading h2 { margin: 0; font-size: 20px; }
 .dialog-close { flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px; background: var(--soft); color: var(--ink); font-size: 22px; }
 .dialog-content > .small-copy { margin: 12px 0 0; }
-.settings-dialog { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 64px); overflow-y: auto; scrollbar-width: thin; }
+.settings-dialog { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 64px); overflow: hidden; }
+.settings-dialog[open] { display: flex; flex-direction: column; }
+.settings-dialog > .dialog-heading { flex-shrink: 0; margin: 0; padding: 22px 22px 20px; }
+.settings-dialog > .dialog-content { min-height: 0; padding: 0 22px 22px; overflow-y: auto; scrollbar-width: none; }
+.settings-dialog > .dialog-content::-webkit-scrollbar { display: none; }
 .settings-section + .settings-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
 .settings-section h3 { font-size: 14px; margin: 0 0 12px; }
+.language-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.language-setting > span { font-weight: 600; font-size: 14px; }
+.language-options { flex-shrink: 0; height: 36px; border-radius: 11px; }
+.language-option { position: relative; margin: 0; min-width: 84px; border-radius: 7px; cursor: pointer; }
+.language-option input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.language-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.language-option:has(input:disabled) { cursor: wait; opacity: .6; }
+html[lang="en"] .account-card { grid-template-columns: minmax(0, 1fr) 240px 240px; }
 .settings-section .small-copy { margin: 8px 0; font-size: 12px; }
 .settings-section .toggle-row + .small-copy { margin-left: 42px; }
 .settings-section .toggle-row:has(:disabled) { color: var(--muted); }
@@ -1354,7 +1366,7 @@ code {
   .account-quota-preview { gap: 12px; }
 }
 @media (max-width: 640px) {
-  .account-card { grid-template-columns: minmax(0, 1fr) auto; }
+  .account-card, html[lang="en"] .account-card { grid-template-columns: minmax(0, 1fr) auto; }
   .account-quota-preview { grid-column: 1 / -1; grid-row: 2; }
   .account-actions { grid-column: 2; grid-row: 1; }
   .current-account-bar { padding: 14px; gap: 10px; }
