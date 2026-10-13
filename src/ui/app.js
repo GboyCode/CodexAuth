@@ -1004,6 +1004,7 @@ async function switchToAccount(account, button) {
     const snapshot = await api.switchAccount(account.id, {
       restartCodex: els.restartAfterSwitch.checked,
     });
+    if (snapshot?.canceled) return;
     render(snapshot);
     state.dashboardLoaded = false;
     if (state.activePage === "usage") await loadDashboard(true, { busy: false });

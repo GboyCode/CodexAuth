@@ -1,5 +1,15 @@
 (function (root) {
   const messages = {
+    "仍有 Codex 进程运行（PID：{0}）。请先结束这些进程，再重试切换。": "Codex processes are still running (PID: {0}). Close them before switching accounts.",
+    "无法检查 Codex 进程，请稍后重试。": "Unable to check Codex processes. Please try again.",
+    "未能结束冲突进程，或进程已变化。请重新检查后再切换。": "The conflicting processes could not be stopped or have changed. Check them again before switching.",
+    "无法关闭 Codex，请手动退出后重试。": "Unable to close Codex. Quit it manually and try again.",
+    "路径不可读取，请手动关闭": "Path unavailable. Close this process manually.",
+    "Codex 进程冲突": "Codex process conflict",
+    "后台进程阻止了账号切换": "Background processes are blocking the switch",
+    "结束这些进程会中断它们正在执行的任务。取消将保留当前账号和 Codex 窗口。": "Stopping these processes will interrupt their running tasks. Cancel to keep your current account and Codex window.",
+    "结束进程并切换": "Stop and switch",
+    "无法切换账号": "Unable to switch accounts",
     "未检测到登录": "Not signed in",
     "未知账号": "Unknown account",
     "从未切换": "Never switched",

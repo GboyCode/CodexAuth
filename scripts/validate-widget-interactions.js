@@ -256,6 +256,15 @@ async function run() {
       await new Promise(resolve => setTimeout(resolve, 0));
       check(widgetFixture.switches.length === 1 && widgetFixture.logins.length === 1 && !document.querySelector('.account-quota-popover'),
         'action buttons must call only their own actions');
+      document.querySelector('#toast').classList.remove('show');
+      const canceledButton = rows()[0].querySelector('button');
+      const previousLabel = canceledButton.textContent;
+      canceledButton.click();
+      widgetFixture.finishSwitch({ canceled: true });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      check(!canceledButton.disabled && !canceledButton.hasAttribute('aria-busy') && canceledButton.textContent === previousLabel,
+        'cancel must restore the switch button');
+      check(!document.querySelector('#toast').classList.contains('show'), 'cancel must not show a success toast');
       rows()[0].click();
       widgetFixture.snapshot.accounts.shift();
       await refresh(true);

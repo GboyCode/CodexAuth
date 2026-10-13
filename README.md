@@ -12,9 +12,9 @@ CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多�
 
 > 这是非官方项目，与 OpenAI 无官方关联。
 
-**最新版本：[v0.1.75](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.75)** · [更新说明](docs/releases/v0.1.75.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
+**最新版本：[v0.1.76](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.76)** · [更新说明](docs/releases/v0.1.76.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
 
-v0.1.75 修复新版 Codex 额度耗尽报错未触发自动切换的问题，兼容新旧报错格式。本次正式版也包含中英文切换、账号面板精简与可选的周额度重置卡恢复功能。
+v0.1.76 修复 Windows 切换账号遇到残留后台进程时，Codex 先关闭且报错乱码的问题。切换前显示冲突进程，可取消或确认结束后继续；自动切换仅提示冲突。
 
 ## 适合谁
 
@@ -127,7 +127,7 @@ Windows 使用 `DataProtectionScope.CurrentUser`；macOS 使用当前用户的 K
 切换账号时，应用会执行以下步骤：
 
 1. 解密并校验目标快照与账号身份。
-2. 启用重启时先停止 Codex 桌面和所属 app-server；否则要求用户先关闭客户端。独立 CLI 仍运行时停止切换。
+2. 启用重启时先检查冲突，再停止 Codex 桌面和所属 app-server；否则要求用户先关闭客户端。Windows 手动切换发现独立 CLI 或后台守护进程时，显示进程名称、PID 和路径，可取消或确认结束这些进程后继续。自动切换遇到冲突只提示，不结束独立进程。
 3. 读取旧账号最后写回的 `auth.json`，保存并加密备份；备份失败不覆盖。
 4. 再次检查客户端退出和目标身份，写入临时文件后原子替换 `auth.json`。
 5. 回读核验目标身份，更新本地账号记录，并按设置启动 Codex。
@@ -135,6 +135,8 @@ Windows 使用 `DataProtectionScope.CurrentUser`；macOS 使用当前用户的 K
 使用临时文件加原子替换，是为了避免 Codex App 读到写入一半的 `auth.json`。
 
 Windows 会结束属于 Codex 安装目录的桌面进程组并重新启动应用；macOS 会识别当前 `ChatGPT` / 旧版 `Codex` 应用进程，等待退出后通过 Launch Services 重新启动。
+
+Windows 冲突确认默认选择取消，取消时保留当前账号和 Codex 窗口。结束冲突进程会中断其中的任务；程序会再次核对路径和启动时间，无法核验或无法结束时显示明确提示并停止切换。
 
 ### 重新登录流程
 

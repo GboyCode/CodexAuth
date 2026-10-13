@@ -12,9 +12,9 @@ One-line positioning: **CodexAuth Switch is a local-first Codex App multi-accoun
 
 > This is an unofficial project and is not affiliated with OpenAI.
 
-**Latest: [v0.1.75](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.75)** · [Release notes](docs/releases/v0.1.75.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
+**Latest: [v0.1.76](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.76)** · [Release notes](docs/releases/v0.1.76.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
 
-v0.1.75 fixes automatic account switching when newer Codex usage-limit errors omit the error code, supporting both old and new message formats. This release also includes Chinese/English language switching, a simplified account panel, and optional reset-credit recovery after weekly quota exhaustion.
+v0.1.76 fixes Windows account switching closing Codex before reporting conflicting background processes, along with garbled error text. Conflicts are listed before shutdown, with options to cancel or end the processes and continue. Automatic switching only reports conflicts.
 
 ## Who It Is For
 
@@ -121,7 +121,7 @@ The newest 60 encrypted backups are retained. Atomic-write temporary files older
 When switching accounts, the app:
 
 1. Decrypts and validates the target snapshot and identity.
-2. Stops the desktop and its app-server when restart is enabled, or requires clients to be closed first. A running independent CLI blocks switching.
+2. Checks for conflicts before stopping the desktop and its app-server when restart is enabled, or requires clients to be closed first. Manual switching on Windows lists conflicting CLI or daemon processes by name, PID and path, with options to cancel or end them and continue. Automatic switching reports conflicts without ending independent processes.
 3. Reads the final old credential, saves it, and creates an encrypted backup; backup failure blocks replacement.
 4. Rechecks client shutdown and target identity, then atomically replaces `auth.json` through a temporary file.
 5. Reads back the identity, updates saved account metadata and starts Codex if enabled.
@@ -129,6 +129,8 @@ When switching accounts, the app:
 The temporary-file plus atomic-rename approach reduces the chance that Codex App reads a partially written `auth.json`.
 
 On Windows, restart stops the desktop process group belonging to the Codex installation. On macOS, it detects the current `ChatGPT` or legacy `Codex` application process, waits for it to exit, and relaunches it through Launch Services.
+
+The Windows conflict dialog defaults to Cancel, preserving the current account and Codex windows. Ending conflicting processes interrupts their tasks. The app rechecks executable paths and start times before ending them; unverifiable processes or shutdown failures stop the switch with a clear message.
 
 ### Reauth Flow
 

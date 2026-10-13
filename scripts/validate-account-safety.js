@@ -25,12 +25,17 @@ async function storage() {
     const filename = path.resolve(__dirname, "../src/main.js"), realRequire = createRequire(filename);
     const selectedFile = path.join(root, "transfer.codexauth");
     const prompts = []; let confirm = 1;
+    let allowEncodingProbe = false;
     let onlineRequests = 0;
     const onlineModule = realRequire("./quota/online-accounts");
     const sandbox = vm.createContext({ require: (name) => name === "electron" ? {
       app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => root },
+      BrowserWindow: { fromWebContents: () => ({}) },
       dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [selectedFile] }) },
-    } : name === "node:child_process" ? { spawn() { throw new Error("No real process execution in this test"); } }
+    } : name === "node:child_process" ? { spawn(...args) {
+      if (!allowEncodingProbe) throw new Error("No real process execution in this test");
+      return require("node:child_process").spawn(...args);
+    } }
       : name === "./quota/online-accounts" ? { ...onlineModule, createOnlineAccounts: (deps) => onlineModule.createOnlineAccounts({ ...deps,
         now: () => NOW,
         request: async (url) => {
@@ -50,19 +55,71 @@ async function storage() {
     // Capture platform scripts without executing them. Windows parser validation
     // below is syntax-only; it never invokes a process-management statement.
     if (process.platform === "win32") {
+      allowEncodingProbe = true;
+      assert.equal(await sandbox.runPowerShell("[Console]::Write('中文路径：用户')"), "中文路径：用户");
+      await assert.rejects(sandbox.runPowerShell("[Console]::Error.Write('进程冲突：请重试'); exit 1"), /进程冲突：请重试/);
+      allowEncodingProbe = false;
       const scripts = [];
-      sandbox.runPowerShell = async (script) => { scripts.push(script); return ""; };
+      sandbox.runPowerShell = async (script) => { scripts.push(script); return "[]"; };
       await sandbox.restartCodexApp();
-      assert.equal(scripts.length, 3);
-      assert.match(scripts[0], /Stop-Process/);
-      assert.match(scripts[0], /WaitForExit/);
-      assert.match(scripts[1], /writers/);
-      assert.match(scripts[2], /Start-Process/);
+      assert.equal(scripts.length, 4);
+      assert.doesNotMatch(scripts[0], /Stop-Process/, "check conflicts before closing the desktop");
+      assert.match(scripts[1], /Stop-Process/);
+      assert.match(scripts[1], /WaitForExit/);
+      assert.match(scripts[2], /conflicts/);
+      assert.match(scripts[3], /Start-Process/);
       const scriptPath = path.join(root, "process-scripts.json");
       await fs.writeFile(scriptPath, JSON.stringify(scripts));
       const { execFileSync } = require("node:child_process");
       execFileSync("powershell.exe", ["-NoProfile", "-Command", "$ErrorActionPreference='Stop'; foreach ($script in (Get-Content -Raw -Encoding UTF8 -LiteralPath $env:CODEXAUTH_TEST_SCRIPTS | ConvertFrom-Json)) { $tokens=$null; $errors=$null; $null=[System.Management.Automation.Language.Parser]::ParseInput($script,[ref]$tokens,[ref]$errors); if ($errors.Count) { throw ($errors | ForEach-Object { $_.ErrorId + ':' + $_.Extent.StartLineNumber }) } }"],
         { windowsHide: true, env: { ...process.env, CODEXAUTH_TEST_SCRIPTS: scriptPath }, stdio: "pipe" });
+
+      const conflict = [{ id: 36644, name: "codex.exe", path: "C:\\Users\\fixture\\.codex\\packages\\app-server-daemon\\bin\\codex.exe", startedAt: "638950000000000000" }];
+      let mutations = 0, notices = 0;
+      sandbox.runPowerShell = async script => {
+        if (/Stop-Process|\$live.Kill\(/.test(script)) mutations++;
+        return JSON.stringify(conflict);
+      };
+      await assert.rejects(sandbox.stopCodexApp(), error => error.code === "CODEX_PROCESS_CONFLICT" && /36644/.test(error.message));
+      assert.equal(mutations, 0, "automatic recovery never terminates independent clients or closes the desktop on a known conflict");
+      assert.equal(await sandbox.stopCodexApp({ confirmConflicts: async () => { notices++; return false; } }), false);
+      assert.equal(mutations, 0); assert.equal(notices, 1);
+      let reads = 0;
+      sandbox.runPowerShell = async script => {
+        if (/Stop-Process|\$live.Kill\(/.test(script)) mutations++;
+        reads++;
+        return reads === 1 ? JSON.stringify(conflict) : "[]";
+      };
+      await sandbox.stopCodexApp({ confirmConflicts: async () => true });
+      assert.equal(mutations, 2, "explicit confirmation permits the selected conflicts to stop before desktop restart");
+      mutations = 0; reads = 0;
+      sandbox.runPowerShell = async script => {
+        reads++;
+        // The final script reports a new conflict without executing its stop branch.
+        return reads === 1 ? "[]" : JSON.stringify(conflict);
+      };
+      await assert.rejects(sandbox.stopCodexApp(), error => error.code === "CODEX_PROCESS_CONFLICT");
+      assert.equal(reads, 2, "a newly arriving conflict aborts before the post-exit check");
+      sandbox.runPowerShell = async () => "invalid output";
+      await assert.rejects(sandbox.stopCodexApp(), error => error.code === "CODEX_PROCESS_CHECK");
+
+      const realSwitch = sandbox.switchAccount;
+      sandbox.broadcastStateChanged = () => {};
+      sandbox.switchAccount = async (_id, options) => {
+        assert.equal(await options.confirmConflicts(conflict), false);
+        return { canceled: true };
+      };
+      confirm = 0;
+      const canceledSwitch = await sandbox.switchAccountFromUi({ sender: {} }, "target", { restartCodex: true, confirmConflicts: true });
+      assert.equal(canceledSwitch.canceled, true);
+      assert.equal(prompts.at(-1).defaultId, 0); assert.equal(prompts.at(-1).cancelId, 0);
+      assert.match(prompts.at(-1).detail, /36644/);
+      sandbox.switchAccount = async () => { throw sandbox.codexProcessConflict(conflict); };
+      assert.equal((await sandbox.switchAccountFromUi({ sender: {} }, "target", {})).canceled, true);
+      assert.doesNotMatch(prompts.at(-1).message, /Error invoking remote method|CategoryInfo|\uFFFD/);
+      sandbox.switchAccount = realSwitch;
+      sandbox.runPowerShell = async () => "[]";
+      confirm = 1;
     }
     await sandbox.ensureStoreDirs();
     const authFile = path.join(home, "auth.json"), aOld = auth("a", "2026-09-01T00:00:00Z", "old"), aNew = auth("a"), bNew = auth("b");
@@ -84,6 +141,12 @@ async function storage() {
       starts++; assert.equal(await fs.readFile(authFile, "utf8"), bNew);
       assert.equal(await sandbox.loadAccountAuth(records.a.id), aNew, "save final old credential after exit");
     };
+    const normalStop = sandbox.stopCodexApp;
+    sandbox.stopCodexApp = async () => false;
+    assert.equal((await sandbox.switchAccount(records.b.id, { restartCodex: true })).canceled, true);
+    assert.equal(await fs.readFile(authFile, "utf8"), aOld, "canceling the conflict dialog preserves credentials");
+    assert.equal(starts, 0, "canceling does not restart the desktop");
+    sandbox.stopCodexApp = normalStop;
     await sandbox.switchAccount(records.b.id, { restartCodex: true });
     assert.equal(starts, 1); assert.equal((await sandbox.readIndex()).activeAccountId, records.b.id);
     assert.equal(await fs.readFile(authFile, "utf8"), bNew);

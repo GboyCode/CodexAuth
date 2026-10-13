@@ -19,6 +19,8 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const { fileCredentialStoreConfig, resolveCodexHome } = require("./codex-config");
+const { WINDOWS_DESKTOP_SCAN, WINDOWS_WRITERS_SCAN, WINDOWS_CONFLICT_OUTPUT,
+  parseProcessRecords, canStopConflicts, stopConflictsScript } = require("./codex-process-guard");
 const { normalizeSubscription, subscriptionFromClaims } = require("./subscription");
 const {
   QUOTA_CONFLICT_WINDOW_MS,
@@ -602,13 +604,15 @@ async function runTokenLedgerOperation(task) {
 function runProcess(command, args = [], stdinText = "") {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      stdout += chunk;
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      stderr += chunk;
     });
     child.on("error", reject);
     child.on("close", (code) => {
@@ -627,7 +631,8 @@ function runProcess(command, args = [], stdinText = "") {
 function runPowerShell(script, stdinText = "") {
   return runProcess(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+      "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false);\n" + script],
     stdinText
   );
 }
@@ -1890,7 +1895,7 @@ async function switchAccountLocked(accountId, options = {}) {
   if (!candidate) throw new Error("Account not found.");
   const candidateAuth = validateAuthJson(await loadAccountAuth(accountId));
   if (identityKey(candidateAuth.identity) !== identityKey(candidate.identity)) throw new Error("保存的凭证与账号不一致，请重新登录后保存。");
-  if (options.restartCodex === true) await stopCodexApp();
+  if (options.restartCodex === true && await stopCodexApp({ confirmConflicts: options.confirmConflicts }) === false) return { canceled: true };
   await assertCodexStopped();
   if (options.allowed && !options.allowed()) throw new Error("登录操作已改变，已取消自动切换。");
   await ensureCodexFileCredentialStore();
@@ -2122,51 +2127,40 @@ async function assertCodexStopped() {
     return;
   }
   if (!isWindows) throw new Error("Unsupported platform.");
-  await runPowerShell(`
-$ErrorActionPreference = 'Stop'
-$writers = @(Get-CimInstance Win32_Process | Where-Object {
-  $_.Name -ieq 'codex.exe' -or ($_.Name -ieq 'ChatGPT.exe' -and (
-    -not $_.ExecutablePath -or $_.ExecutablePath -match '[\\\\/]OpenAI[.\\\\/]Codex'))
-})
-if ($writers.Count -gt 0) { throw '仍有 Codex 客户端运行，请关闭 Codex App 和 CLI 后重试，凭证尚未切换。' }
-`);
+  const conflicts = await readWindowsCodexConflicts(true);
+  if (conflicts.length) throw codexProcessConflict(conflicts);
 }
 
-async function stopCodexApp() {
-  if (accountLogin?.isBusy()) throw new Error("请先完成或取消面板中的账号登录，再切换或重启 Codex。");
-  if (isMac) return stopCodexAppMac();
-  if (!isWindows) throw new Error("Restart is supported on Windows and macOS only.");
-  const script = `
-$ErrorActionPreference = 'Stop'
-$package = Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
-$installRoot = if ($package -and $package.InstallLocation) { [IO.Path]::GetFullPath($package.InstallLocation).TrimEnd('\\') } else { $null }
+function codexProcessConflict(processes) {
+  return Object.assign(new Error(t("仍有 Codex 进程运行（PID：{0}）。请先结束这些进程，再重试切换。", processes.map((p) => p.id).join(", "))),
+    { code: "CODEX_PROCESS_CONFLICT", processes });
+}
 
-function Get-CodexAppProcesses {
-  Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    try {
-      $processPath = $_.Path
-      if (-not $processPath) { return $false }
-      $fullPath = [IO.Path]::GetFullPath($processPath)
-      if ($installRoot -and $fullPath.StartsWith($installRoot + '\\', [StringComparison]::OrdinalIgnoreCase)) {
-        return $true
-      }
-      return ($_.ProcessName -in @('ChatGPT', 'Codex')) -and ($fullPath -like '*\\OpenAI\\Codex\\*')
-    } catch {
-      return $false
-    }
+async function readWindowsCodexConflicts(allWriters = false) {
+  try {
+    return parseProcessRecords(await runPowerShell((allWriters ? WINDOWS_WRITERS_SCAN : WINDOWS_DESKTOP_SCAN) + WINDOWS_CONFLICT_OUTPUT));
+  } catch {
+    throw Object.assign(new Error(t("无法检查 Codex 进程，请稍后重试。")), { code: "CODEX_PROCESS_CHECK" });
   }
 }
 
-$targets = @(Get-CodexAppProcesses)
-# The desktop's app-server lives outside the packaged application directory.
-# Stop only codex.exe descendants of this desktop, never unrelated CLI clients.
-$all = @(Get-CimInstance Win32_Process)
-$owned = @($targets | ForEach-Object { $_.Id })
-do {
-  $children = @($all | Where-Object { $_.ParentProcessId -in $owned -and $_.ProcessId -notin $owned })
-  $owned += @($children | ForEach-Object { $_.ProcessId })
-} while ($children.Count -gt 0)
-$servers = @($all | Where-Object { $_.Name -ieq 'codex.exe' -and $_.ProcessId -in $owned } | ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
+async function stopCodexApp({ confirmConflicts } = {}) {
+  if (accountLogin?.isBusy()) throw new Error("请先完成或取消面板中的账号登录，再切换或重启 Codex。");
+  if (isMac) return stopCodexAppMac();
+  if (!isWindows) throw new Error("Restart is supported on Windows and macOS only.");
+  const conflicts = await readWindowsCodexConflicts();
+  if (conflicts.length) {
+    if (!confirmConflicts || !canStopConflicts(conflicts)) throw codexProcessConflict(conflicts);
+    if (!await confirmConflicts(conflicts)) return false;
+    try { await runPowerShell(stopConflictsScript(conflicts)); }
+    catch {
+      throw Object.assign(new Error(t("未能结束冲突进程，或进程已变化。请重新检查后再切换。")), { code: "CODEX_PROCESS_STOP", processes: conflicts });
+    }
+  }
+  const script = `
+${WINDOWS_DESKTOP_SCAN}
+# Recheck after confirmation, before closing any desktop window.
+if ($conflicts.Count -gt 0) { ${WINDOWS_CONFLICT_OUTPUT}; exit 0 }
 $targets = @($targets) + @($servers)
 if ($targets.Count -gt 0) {
   $targets | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -2182,9 +2176,43 @@ if ($targets.Count -gt 0) {
     if (-not $server.WaitForExit(10000)) { throw 'Codex app-server did not fully exit.' }
   }
 }
+Write-Output '[]'
 `;
-  await runPowerShell(script);
+  let remaining;
+  try { remaining = parseProcessRecords(await runPowerShell(script)); }
+  catch { throw Object.assign(new Error(t("无法关闭 Codex，请手动退出后重试。")), { code: "CODEX_PROCESS_STOP" }); }
+  if (remaining.length) throw codexProcessConflict(remaining);
   await assertCodexStopped();
+}
+
+function codexProcessDetails(processes) {
+  return processes.map((p) => `${p.name} · PID ${p.id}\n${p.path || t("路径不可读取，请手动关闭")}`).join("\n\n");
+}
+
+async function switchAccountFromUi(event, accountId, options) {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  try {
+    // Only this user-initiated IPC entry point may offer to terminate a conflict.
+    // Renderer arguments never authorize process termination or select its targets.
+    const result = await switchAccount(accountId, {
+      restartCodex: options?.restartCodex === true,
+      confirmConflicts: async (processes) => {
+        const answer = await showAppMessageBox(parent, {
+          type: "warning", title: t("Codex 进程冲突"), message: t("后台进程阻止了账号切换"),
+          detail: `${codexProcessDetails(processes)}\n\n${t("结束这些进程会中断它们正在执行的任务。取消将保留当前账号和 Codex 窗口。")}`,
+          buttons: [t("取消"), t("结束进程并切换")], defaultId: 0, cancelId: 0, primaryId: 1,
+        });
+        return answer.response === 1;
+      },
+    });
+    if (!result.canceled) broadcastStateChanged();
+    return result;
+  } catch (error) {
+    if (!error.code?.startsWith("CODEX_PROCESS_")) throw error;
+    await showAppMessageBox(parent, { type: "warning", title: t("无法切换账号"),
+      message: error.message, detail: codexProcessDetails(error.processes ?? []), buttons: [t("知道了")] });
+    return { canceled: true };
+  }
 }
 
 async function startCodexApp() {
@@ -5143,11 +5171,7 @@ function registerIpc() {
     broadcastStateChanged();
     return result;
   });
-  ipcMain.handle("account:switch", async (_event, accountId, options) => {
-    const result = await switchAccount(accountId, options);
-    broadcastStateChanged();
-    return result;
-  });
+  ipcMain.handle("account:switch", switchAccountFromUi);
   ipcMain.handle("account:reorder", async (_event, accountIds) => {
     const result = await reorderAccounts(accountIds);
     broadcastStateChanged();

@@ -522,7 +522,12 @@ async function switchAccount(accountId, button) {
   button.textContent = t("切换中");
   button.disabled = true;
   try {
-    await api.switchAccount(accountId, { restartCodex: restartAfterSwitch });
+    const result = await api.switchAccount(accountId, { restartCodex: restartAfterSwitch });
+    if (result?.canceled) {
+      button.textContent = previous;
+      button.disabled = false;
+      return;
+    }
     button.removeAttribute("aria-busy");
     await refresh(true);
     showToast(restartAfterSwitch ? t("已切换并重启 Codex") : t("已切换账号"));

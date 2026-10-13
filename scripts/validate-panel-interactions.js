@@ -44,7 +44,7 @@ function installFixture(appVersion) {
       return copy(fixture.snapshot);
     },
     updateAccount: async (id, patch) => { Object.assign(fixture.snapshot.accounts.find(a => a.id === id), patch); return copy(fixture.snapshot); },
-    switchAccount: async (id, options) => { fixture.calls.push(["switch", id, options]); return copy(fixture.snapshot); },
+    switchAccount: async (id, options) => { fixture.calls.push(["switch", id, options]); return fixture.cancelSwitch ? { canceled: true } : copy(fixture.snapshot); },
     deleteAccount: async (id) => { fixture.calls.push(["delete", id]); return copy(fixture.snapshot); },
     reauthAccount: async (id) => { fixture.calls.push(["reauth", id]); return copy(fixture.snapshot); },
     importCurrent: async (name) => { fixture.calls.push(["save", name]); return copy(fixture.snapshot); },
@@ -126,6 +126,12 @@ async function run() {
     assert.equal(await evaluate("document.activeElement.classList.contains('account-more')"), true, "background refresh preserves account button focus");
     await click('[data-account-id="backup"] .account-action.primary');
     assert.deepEqual(await evaluate("panelFixture.calls.find(call => call[0] === 'switch')"), ["switch", "backup", { restartCodex: true }]);
+    await evaluate("panelFixture.cancelSwitch = true; document.querySelector('#toast').classList.remove('show')");
+    await click('[data-account-id="backup"] .account-action.primary');
+    assert.equal(await evaluate("document.querySelector('[data-account-id=backup] .account-action.primary').disabled"), false, "cancel restores the switch button");
+    assert.equal(await evaluate("document.querySelector('#toast').classList.contains('show')"), false, "cancel does not show a success toast");
+    assert.equal(await evaluate("document.querySelectorAll('.account-card').length"), 4, "cancel preserves the account list");
+    await evaluate("panelFixture.cancelSwitch = false");
     await click('[data-account-id="backup"] .account-more');
     await click('#renameAccountBtn');
     await evaluate("document.querySelector('#renameInput').value = '备用工作账号'");
