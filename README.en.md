@@ -12,9 +12,9 @@ One-line positioning: **CodexAuth Switch is a local-first Codex App multi-accoun
 
 > This is an unofficial project and is not affiliated with OpenAI.
 
-**Latest: [v0.1.37](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.37)** · [Release notes](docs/releases/v0.1.37.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
+**Latest: [v0.1.75](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.75)** · [Release notes](docs/releases/v0.1.75.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
 
-v0.1.37 fixes stretched and clipped icons in GitHub installers and adds rendering and artifact checks across display scales. It retains official sign-in without logging out, quota recovery, Business fallback selection, local usage statistics, email hiding, and sidebar update links.
+v0.1.75 fixes automatic account switching when newer Codex usage-limit errors omit the error code, supporting both old and new message formats. This release also includes Chinese/English language switching, a simplified account panel, and optional reset-credit recovery after weekly quota exhaustion.
 
 ## Who It Is For
 

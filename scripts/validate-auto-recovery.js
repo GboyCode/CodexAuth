@@ -398,6 +398,23 @@ async function run() {
   }
   const plusWrongCode = clone(plusEmpty); plusWrongCode.turns[0].error.codexErrorInfo = "unauthorized";
   assert.equal(isQuotaFailure(plusWrongCode), false);
+  const currentPlusEmpty = failed();
+  currentPlusEmpty.turns[0].error = { message: "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 11:46 PM.", additionalDetails: null };
+  for (const code of [undefined, null, "other"]) {
+    const sample = clone(currentPlusEmpty);
+    if (code !== undefined) sample.turns[0].error.codexErrorInfo = code;
+    assert.equal(isQuotaFailure(sample, NOW - 1), true, "current desktop usage URL must trigger recovery without a specific error code");
+    assert.equal(recoveryJob(sample, NOW - 1)?.turnId, "failed-turn");
+  }
+  assert.equal(isQuotaFailure(currentPlusEmpty, NOW + 1), false, "current URL must not revive historical failures");
+  for (const message of ["Tool failed: " + currentPlusEmpty.turns[0].error.message,
+    currentPlusEmpty.turns[0].error.message.replace("chatgpt.com/settings", "example.com/settings"),
+    currentPlusEmpty.turns[0].error.message.replace("/settings/usage", "/unexpected/settings/usage")]) {
+    const sample = clone(currentPlusEmpty); sample.turns[0].error.message = message;
+    assert.equal(isQuotaFailure(sample), false, "current URL fallback must retain the native error boundary");
+  }
+  const currentPlusWrongCode = clone(currentPlusEmpty); currentPlusWrongCode.turns[0].error.codexErrorInfo = "unauthorized";
+  assert.equal(isQuotaFailure(currentPlusWrongCode), false);
   assert.equal(isQuotaFailure(failed(), NOW + 1), false);
   assert.equal(canRestart({ threads: [{ kind: "codex", hostId: "local", status: "active" }] }), false);
   assert.equal(canRestart({ threads: Array(50).fill({}) }), false);
@@ -431,6 +448,12 @@ async function run() {
   await plusRecovery.recovery.tick(); await plusRecovery.recovery.tick();
   assert.equal(plusRecovery.stats().warnings, 1, "Plus exhaustion starts the cancellable countdown even when the widget still has 1% remaining");
   assert.equal(plusRecovery.stats().switches, 1); assert.equal(plusRecovery.stats().sends, 1);
+  const currentPlusRecovery = fixture(); currentPlusRecovery.results.set("task", currentPlusEmpty);
+  for (let i = 0; i < 5; i++) await currentPlusRecovery.recovery.tick();
+  assert.equal(currentPlusRecovery.stats().warnings, 1, "current desktop error starts the cancellable countdown");
+  assert.equal(currentPlusRecovery.stats().switches, 1);
+  assert.equal(currentPlusRecovery.stats().sends, 1, "current desktop error resumes the failed task exactly once");
+  assert.equal(currentPlusRecovery.recovery.getStatus().state, "resumed");
   const noFailureAt99 = fixture(); noFailureAt99.accounts[0].quotaSnapshot.session.usedPercent = 99;
   noFailureAt99.results.get("task").turns[0].status = "completed";
   await noFailureAt99.recovery.tick();
