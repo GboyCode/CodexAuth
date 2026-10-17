@@ -751,11 +751,44 @@ async function run() {
   const requiredTools = ["read_thread", "list_threads", "send_message_to_thread", "get_usage_limits"]
     .map((name) => ({ name, namespace: "codex_app" }));
   const pipeNames = ["codex-browser-use-00000000-0000-0000-0000-000000000001", "codex-browser-use-00000000-0000-0000-0000-000000000002"];
+  const appToolsPipe = "codex-app-tools-00000000-0000-0000-0000-000000000003";
+  const pipePath = (name) => `\\\\.\\pipe\\${name}`;
+  for (const name of [appToolsPipe, pipeNames[0]]) {
+    for (const fromEnvironment of [false, true]) {
+      const probes = [];
+      const discovery = createDesktopBridge({ platform: "win32",
+        env: fromEnvironment ? { CODEX_APP_TOOLS_PIPE_PATH: pipePath(name) } : {},
+        listPipes: async () => fromEnvironment ? [] : [name],
+        request: async (pipe, method) => {
+          probes.push(pipe); assert.equal(method, "tools/list");
+          return { tools: requiredTools };
+        } });
+      assert.equal(await discovery.discover(), pipePath(name), "discover new and legacy app-tools endpoints through environment or enumeration");
+      assert.deepEqual(probes, [pipePath(name)]);
+    }
+  }
+  const discoveryProbes = [];
+  const separatedServices = createDesktopBridge({ platform: "win32",
+    env: { CODEX_APP_TOOLS_PIPE_PATH: pipePath(appToolsPipe) },
+    listPipes: async () => [appToolsPipe, pipeNames[0], "codex-app-tools-invalid", "unrelated-service"],
+    request: async (pipe) => {
+      discoveryProbes.push(pipe);
+      return { tools: pipe === pipePath(appToolsPipe) ? requiredTools : [{ name: "browser", namespace: "browser" }] };
+    } });
+  assert.equal(await separatedServices.discover(), pipePath(appToolsPipe), "browser-only service must not obscure the app-tools endpoint");
+  assert.deepEqual(discoveryProbes.sort(), [pipePath(appToolsPipe), pipePath(pipeNames[0])].sort(), "deduplicate endpoints and ignore unrelated pipe names");
+  const ambiguousServices = createDesktopBridge({ platform: "win32", env: {},
+    listPipes: async () => [appToolsPipe, pipeNames[0]], request: async () => ({ tools: requiredTools }) });
+  await assert.rejects(ambiguousServices.discover(), /多个 Codex 桌面实例/, "never choose between two compatible desktop endpoints");
+  const untrustedEnvironment = createDesktopBridge({ platform: "win32",
+    env: { CODEX_APP_TOOLS_PIPE_PATH: "\\\\remote\\pipe\\" + appToolsPipe }, listPipes: async () => [],
+    request: async () => { assert.fail("only known local pipe names can be probed"); } });
+  await assert.rejects(untrustedEnvironment.discover(), /未连接到兼容/);
   function connectionFixture({ failures = 1, protocolFailure = false } = {}) {
     let calls = 0, enumerations = 0;
     const used = [];
     const bridge = createDesktopBridge({ platform: "win32", env: {},
-      listPipes: async () => [pipeNames[Math.min(enumerations++, 1)]],
+      listPipes: async () => [enumerations++ === 0 ? pipeNames[0] : appToolsPipe],
       request: async (pipe, method, params) => {
         if (method === "tools/list") return { tools: requiredTools };
         assert.equal(params.callerSource, "codex", "desktop 26.924 requires the caller source on every tool call");
@@ -772,6 +805,7 @@ async function run() {
   assert.equal(transportReconnect.stats().calls, 2);
   assert.equal(transportReconnect.stats().enumerations, 2);
   assert.notEqual(...transportReconnect.stats().used, "read reconnect discovers the replacement pipe");
+  assert.equal(transportReconnect.stats().used[1], pipePath(appToolsPipe), "reconnect supports migration to the dedicated app-tools endpoint");
   const repeatedFailure = connectionFixture({ failures: 3 });
   await assert.rejects(repeatedFailure.bridge.readUsage("task"));
   assert.equal(repeatedFailure.stats().calls, 2, "reconnect attempts are bounded");

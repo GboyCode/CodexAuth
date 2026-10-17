@@ -12,9 +12,9 @@ CodexAuth Switch 是一个 Windows 与 macOS 本地桌面工具，用来在多�
 
 > 这是非官方项目，与 OpenAI 无官方关联。
 
-**最新版本：[v0.1.76](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.76)** · [更新说明](docs/releases/v0.1.76.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
+**最新版本：[v0.1.77](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.77)** · [更新说明](docs/releases/v0.1.77.md) · [问题反馈](https://github.com/GboyCode/CodexAuth/issues)
 
-v0.1.76 修复 Windows 切换账号遇到残留后台进程时，Codex 先关闭且报错乱码的问题。切换前显示冲突进程，可取消或确认结束后继续；自动切换仅提示冲突。
+v0.1.77 兼容新版 Codex 的本地任务接口，修复额度耗尽后未触发自动切换、浮窗额度停留在旧快照的问题，同时保留旧版接口兼容。
 
 ## 适合谁
 

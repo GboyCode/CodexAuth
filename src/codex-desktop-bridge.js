@@ -9,6 +9,9 @@ const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const REQUIRED_TOOLS = ["read_thread", "list_threads", "send_message_to_thread", "get_usage_limits"];
 const READ_ONLY_TOOLS = new Set(["read_thread", "list_threads", "get_usage_limits"]);
 const RETRYABLE_PIPE_ERRORS = new Set(["CODEX_PIPE_CONNECTION", "CODEX_PIPE_CLOSED", "CODEX_PIPE_TIMEOUT"]);
+const PIPE_PREFIX = "\\\\.\\pipe\\";
+// New desktop versions separate app tools from the browser-use service.
+const APP_TOOLS_PIPE_NAME = /^codex-(?:app-tools|browser-use)-[0-9a-f-]{36}$/i;
 
 function pipeError(message, code) {
   return Object.assign(new Error(message), { code });
@@ -76,12 +79,13 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
     // This adapter is currently verified only against the Windows desktop pipe.
     if (platform !== "win32") throw new Error("自动续任务目前仅支持 Windows Codex 桌面版。" );
     const candidates = new Set();
-    if (env.CODEX_APP_TOOLS_PIPE_PATH?.startsWith("\\\\.\\pipe\\codex-browser-use-")) {
-      candidates.add(env.CODEX_APP_TOOLS_PIPE_PATH);
+    const configuredPipe = env.CODEX_APP_TOOLS_PIPE_PATH;
+    if (configuredPipe?.startsWith(PIPE_PREFIX) && APP_TOOLS_PIPE_NAME.test(configuredPipe.slice(PIPE_PREFIX.length))) {
+      candidates.add(configuredPipe);
     }
     const names = await listPipes();
     for (const name of names) {
-      if (/^codex-browser-use-[0-9a-f-]{36}$/i.test(name)) candidates.add(`\\\\.\\pipe\\${name}`);
+      if (APP_TOOLS_PIPE_NAME.test(name)) candidates.add(`${PIPE_PREFIX}${name}`);
     }
     const matches = (await Promise.all([...candidates].map(async (candidate) => {
       try {

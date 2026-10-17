@@ -12,9 +12,9 @@ One-line positioning: **CodexAuth Switch is a local-first Codex App multi-accoun
 
 > This is an unofficial project and is not affiliated with OpenAI.
 
-**Latest: [v0.1.76](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.76)** · [Release notes](docs/releases/v0.1.76.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
+**Latest: [v0.1.77](https://github.com/GboyCode/CodexAuth/releases/tag/v0.1.77)** · [Release notes](docs/releases/v0.1.77.md) · [Issues](https://github.com/GboyCode/CodexAuth/issues)
 
-v0.1.76 fixes Windows account switching closing Codex before reporting conflicting background processes, along with garbled error text. Conflicts are listed before shutdown, with options to cancel or end the processes and continue. Automatic switching only reports conflicts.
+v0.1.77 supports the local app-tools interface in newer Codex versions, restoring automatic switching after quota exhaustion and live widget quota updates while retaining compatibility with older versions.
 
 ## Who It Is For
 
