@@ -80,6 +80,7 @@ let recoveryCountdown = null;
 let recoveryCountdownWindow = null;
 let updateChecker = null;
 let updateDialogPending = false;
+let updateCheckRequested = false;
 let messageDialogs = null;
 const readRecordFile = createRecordCache();
 let detectedCodexVersion = null;
@@ -5110,28 +5111,48 @@ function showAppMessageBox(parent, options) {
     buttons: (options.buttons ?? ["知道了"]).map((label) => t(label)), compact: parent === widgetWindow });
 }
 
-async function checkForUpdates(event) {
+function scheduleStartupUpdateCheck() {
+  const timer = setTimeout(() => {
+    if (!isQuitting) checkForUpdates(null, { automatic: true }).catch(() => {});
+  }, 3000);
+  timer.unref?.();
+}
+
+async function checkForUpdates(event, { automatic = false } = {}) {
+  if (automatic && updateCheckRequested) return { ok: true, skipped: true };
   if (updateDialogPending) return { ok: true, busy: true };
+  const parent = automatic
+    ? [mainWindow, widgetWindow].find((win) => win && !win.isDestroyed() && win.isVisible())
+    : BrowserWindow.fromWebContents(event.sender);
+  if (automatic && (isQuitting || !parent)) return { ok: true, skipped: true };
+  updateCheckRequested = true;
   updateDialogPending = true;
-  const parent = BrowserWindow.fromWebContents(event.sender);
   const show = (options) => showAppMessageBox(parent, options);
+  let prompted = false;
   try {
     updateChecker ??= createUpdateChecker({ currentVersion: app.getVersion() });
     const result = await updateChecker.check();
     const newer = result.comparison > 0;
+    if (automatic && (!newer || isQuitting || parent.isDestroyed() || !parent.isVisible())) {
+      return { ok: true, latestVersion: result.latestVersion, comparison: result.comparison };
+    }
     const canDownload = newer && result.installer;
     const buttons = canDownload ? [t("下载更新"), t("更新说明"), t("稍后")] : newer ? [t("查看发布页"), t("关闭")] : [t("知道了")];
     const detail = [t("当前 v{0}{1}", result.currentVersion, result.comparison < 0 ? t(" · 正式版 v{0}", result.latestVersion) : "")];
     if (newer && !canDownload) detail.push(t("暂无适用于本机的安装包。"));
+    prompted = true;
     const choice = await show({ type: "info", title: t("CodexAuth 更新"),
       message: newer ? t("发现新版本 v{0}", result.latestVersion) : result.comparison === 0 ? t("已是最新版本") : t("暂无更新"),
-      detail: detail.join("\n"), buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
+      detail: detail.join("\n"), buttons, defaultId: automatic ? buttons.length - 1 : 0,
+      primaryId: 0, cancelId: buttons.length - 1, noLink: true });
     if (canDownload && choice.response === 0) await shell.openExternal(result.installer.url);
     else if (newer && choice.response === (canDownload ? 1 : 0)) await shell.openExternal(result.releaseUrl);
     return { ok: true, latestVersion: result.latestVersion, comparison: result.comparison };
   } catch (error) {
-    await show({ type: "warning", title: t("CodexAuth 更新"), message: t("暂时无法检查更新"),
-      detail: error.message, buttons: [t("关闭")], noLink: true });
+    if (!automatic || prompted) {
+      await show({ type: "warning", title: t("CodexAuth 更新"), message: t("暂时无法检查更新"),
+        detail: error.message, buttons: [t("关闭")], noLink: true });
+    }
     return { ok: false };
   } finally { updateDialogPending = false; }
 }
@@ -5159,7 +5180,7 @@ function registerIpc() {
   ipcMain.handle("recovery-countdown:cancel", (event) => recoveryCountdown?.cancel(event.sender) ?? false);
   ipcMain.handle("app:version", () => app.getVersion());
   ipcMain.handle("app:open-link", (_event, link) => openAppLink(link));
-  ipcMain.handle("updates:check", checkForUpdates);
+  ipcMain.handle("updates:check", (event) => checkForUpdates(event));
   ipcMain.handle("diagnostics:get", async () => (await currentState()).diagnostics);
   ipcMain.handle("state:get", () => currentState());
   ipcMain.handle("account:export-portable", (_event, password, scope = "current") => {
@@ -5273,6 +5294,7 @@ if (hasSingleInstanceLock) {
     await startSessionsWatcher();
     await startSessionsPolling();
     await startAutoRecovery();
+    scheduleStartupUpdateCheck();
 
     app.on("activate", () => {
       showMainWindow();

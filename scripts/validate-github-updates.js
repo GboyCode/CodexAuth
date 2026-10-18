@@ -97,6 +97,60 @@ async function main() {
   vm.runInContext("updateChecker = {check: async () => { throw Error('fixture offline'); }}",context);
   assert.equal((await context.checkForUpdates({sender:{}})).ok,false);
   assert.equal(dialogs.at(-1).type,"warning");
+
+  // Startup checks share the existing verified URLs and dialog, but stay quiet
+  // unless a newer release is available in a still-visible app window.
+  context.fixtureWindow = { visible: true, isDestroyed: () => false, isVisible() { return this.visible; } };
+  vm.runInContext("mainWindow = fixtureWindow", context);
+  const resetAutomatic = () => vm.runInContext("updateCheckRequested = false; updateChecker = {check: async () => result}", context);
+  for (const current of ["0.1.15", "0.1.16"]) {
+    context.result = selectRelease(fixture(), current, "win32", "x64"); resetAutomatic();
+    const count = dialogs.length;
+    assert.equal((await context.checkForUpdates(null, { automatic: true })).ok, true);
+    assert.equal(dialogs.length, count, "same or older releases never produce startup dialogs");
+  }
+  resetAutomatic();
+  vm.runInContext("updateChecker = {check: async () => { throw Error('fixture offline'); }}", context);
+  const beforeOffline = dialogs.length;
+  assert.equal((await context.checkForUpdates(null, { automatic: true })).ok, false);
+  assert.equal(dialogs.length, beforeOffline, "startup network failures stay silent");
+  context.result = selectRelease(fixture(), "0.1.14", "win32", "x64");
+  vm.runInContext("updateChecker = {check: async () => result}", context);
+  response = 2;
+  await context.checkForUpdates({sender:{}});
+  assert.equal(dialogs.length, beforeOffline + 1, "manual retry remains available after a silent startup failure");
+  assert.equal((await context.checkForUpdates(null, { automatic: true })).skipped, true);
+  resetAutomatic();
+  const beforeAutomatic = dialogs.length, beforeAutomaticLinks = opened.length;
+  await context.checkForUpdates(null, { automatic: true });
+  assert.equal(dialogs.length, beforeAutomatic + 1);
+  assert.equal(dialogs.at(-1).message, "发现新版本 v0.1.15");
+  assert.equal(dialogs.at(-1).defaultId, 2, "startup prompt defaults to Later");
+  assert.equal(opened.length, beforeAutomaticLinks, "Later never starts a download");
+  assert.equal((await context.checkForUpdates(null, { automatic: true })).skipped, true);
+  assert.equal(dialogs.length, beforeAutomatic + 1, "only one startup prompt per launch");
+  resetAutomatic(); response = 0;
+  vm.runInContext("mainWindow = null; widgetWindow = fixtureWindow", context);
+  await context.checkForUpdates(null, { automatic: true });
+  assert.equal(opened.at(-1), context.result.installer.url, "widget-only startup can offer the matching installer");
+  resetAutomatic();
+  vm.runInContext("updateChecker = {check: () => new Promise(resolve => { finishCheck = resolve; })}", context);
+  const beforeHidden = dialogs.length;
+  const pendingAutomatic = context.checkForUpdates(null, { automatic: true });
+  assert.equal((await context.checkForUpdates({sender:{}})).busy, true, "manual and startup checks never show concurrent dialogs");
+  context.fixtureWindow.visible = false;
+  context.finishCheck(context.result); await pendingAutomatic;
+  assert.equal(dialogs.length, beforeHidden, "hiding the app while checking suppresses the startup dialog");
+
+  let scheduled, automaticCalls = 0, unreferenced = false;
+  context.setTimeout = (callback, delay) => { assert.equal(delay, 3000); scheduled = callback; return { unref() { unreferenced = true; } }; };
+  context.checkForUpdates = async (event, options) => { assert.equal(event, null); assert.equal(options.automatic, true); automaticCalls++; };
+  context.scheduleStartupUpdateCheck();
+  assert.equal(automaticCalls, 0, "startup does not block on the network request");
+  assert.equal(unreferenced, true, "the delayed check does not keep the app alive");
+  scheduled(); assert.equal(automaticCalls, 1);
+  vm.runInContext("isQuitting = true", context);
+  scheduled(); assert.equal(automaticCalls, 1, "quitting suppresses the delayed check");
   const beforeLinks = opened.length;
   await context.openAppLink("website");
   await context.openAppLink("github");
@@ -106,6 +160,6 @@ async function main() {
     await assert.rejects(context.openAppLink(link), /不支持/);
   }
   assert.equal(opened.length, beforeLinks + 3, "project links only accept fixed destinations");
-  console.log("GitHub updates validated: version ordering, platform assets, URL boundary, transport failures/limits, caching, retry and app-dialog download/cancel actions.");
+  console.log("GitHub updates validated: version ordering, platform assets, URL boundary, transport failures/limits, caching, retry, silent startup checks, prompt deduplication and download/cancel actions.");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

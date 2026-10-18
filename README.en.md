@@ -36,7 +36,7 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - **Account selection**: Plus, five-hour Business, then weekly-only Business; skip unreset windows with at most 2% remaining, and try Business with unknown quota last.
 - **Local quota and usage**: quota windows, reset counts, project/model statistics, incremental log reads and shared refreshes. Data timestamps and scopes are explicit; local totals are not official lifetime totals.
 - **Widget and privacy display**: main window, tray and quick-switch widget; hide emails in the quota overview and expand credential-storage or compatibility details.
-- **Project links**: GitHub icon, actual app version, manual update checks and developer WeChat QR code.
+- **Updates and project links**: checks on startup and prompts when a newer release is available, with manual checks, GitHub and developer WeChat links.
 
 Automatic task recovery is Windows-only. macOS supports account management, quota, usage and credential migration; native macOS sign-in, Keychain and GUI behavior still require end-to-end testing.
 
@@ -225,7 +225,7 @@ wss://
 
 Renderer pages remain offline and receive no credentials or network access. The main process queries standby quota and renews credentials at fixed official HTTPS endpoints, and delegates active-account quota reads to Codex. Saved online results are bound to the account identity and encrypted credential version.
 
-User-triggered update checks also use separate main-process HTTPS requests to this repository's fixed public GitHub endpoint. Only matching installer links within this repository are accepted and opened in the system browser. GitHub login data and Codex credentials are not read.
+The app checks for updates once, three seconds after startup; manual checks remain available in Settings. These main-process HTTPS requests use this repository's fixed public GitHub endpoint without reading GitHub login data or Codex credentials. Startup checks only prompt for a newer release; current or older releases and network failures stay silent. Only matching OS and architecture installer links within this repository are accepted. Download opens the browser after a click; installation remains manual.
 
 User-triggered account sign-in also connects to OpenAI authentication services through the system browser and an isolated official Codex helper, using the official local callback. Renderer pages remain offline.
 
@@ -374,7 +374,7 @@ The sidebar developer link now opens `https://ryanlin.me/assets/contact/wechat-q
 
 ## 0.1.35: Sidebar project and update links
 
-Below local diagnostics, the sidebar now shows a GitHub icon and project link, the running app version, an update-check button and developer Ryan Lin's website. Links open this repository or `https://ryanlin.me` in the system browser. Version text comes from the app. Header and sidebar share the existing update check and display newer-release, up-to-date, newer-local-build or failure status; network access remains user-triggered.
+Below local diagnostics, the sidebar now shows a GitHub icon and project link, the running app version, an update-check button and developer Ryan Lin's website. Links open this repository or `https://ryanlin.me` in the system browser. Version text comes from the app. Header and sidebar share the existing update check and display newer-release, up-to-date, newer-local-build or failure status. Starting with v0.1.83, the app also checks once on startup.
 
 ## 0.1.34: Skip near-empty accounts and add a Business fallback
 
@@ -490,7 +490,7 @@ Discover redirected Codex cache profiles from Windows Store / MSIX installations
 
 Click the version above the main window title or beside the widget brand to check the latest public GitHub release. A newer release offers the installer matching the current OS and architecture; Download opens it in your browser for manual installation. Failed checks can be retried, and newer local builds are not offered a downgrade.
 
-Checks are manual and send no account, credential or usage data. There are no background checks or automatic installs. Uses the public [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
+Checks send no account, credential or usage data and never install automatically. Startup checks were added in v0.1.83. Uses the public [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
 
 ## 0.1.14: Credential file icon
 

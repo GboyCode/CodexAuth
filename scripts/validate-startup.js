@@ -18,7 +18,7 @@ async function scenario(target, fail = false) {
     shutdown: async () => { if (failOnlineShutdown) throw new Error("fixture storage failure"); },
     resume: () => { onlineResumes++; },
   };
-  let ready, finishMetadata, quit = false, errorShown = false;
+  let ready, finishMetadata, quit = false, errorShown = false, scheduledUpdates = 0;
   const readyPromise = new Promise((resolve) => { ready = resolve; });
   const metadata = new Promise((resolve) => { finishMetadata = resolve; });
   const electron = {
@@ -84,6 +84,7 @@ async function scenario(target, fail = false) {
   context.hydrateStoredAccountMetadata = async () => { await metadata; if (fail) throw new Error("fixture startup failure"); };
   context.installNetworkGuards = () => {};
   context.createTray = () => {};
+  context.scheduleStartupUpdateCheck = () => { scheduledUpdates++; };
   context.shouldStartWithWidgetOnly = () => false;
   context.currentState = async () => ({ accounts: [1, 2, 3, 4, 5] });
   context.readIndex = async () => ({ activeAccountId: "active", accounts: [{ id: "active" }, { id: "standby" }] });
@@ -105,11 +106,14 @@ async function scenario(target, fail = false) {
   finishMetadata(); await tick(); await tick();
   if (fail) {
     assert.equal(windows.length, 0); assert.equal(quit, true); assert.equal(errorShown, true);
+    assert.equal(scheduledUpdates, 0, "failed initialization never schedules update checks");
   } else {
     assert.deepEqual(windows, [target]);
+    assert.equal(scheduledUpdates, 1, "main-window and widget-only launches each schedule one update check");
     assert.equal((await results[0]).accounts.length, 5);
     events.get("second-instance")({}, argv);
     assert.deepEqual(windows, [target, target]);
+    assert.equal(scheduledUpdates, 1, "reopening a running app does not schedule another check");
     assert.equal(errorShown, false);
     for (const timer of intervals) await timer.callback();
     await tick();
