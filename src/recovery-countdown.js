@@ -1,4 +1,9 @@
-const COUNTDOWN_MS = 15000;
+const DEFAULT_COUNTDOWN_SECONDS = 15;
+const COUNTDOWN_MS = DEFAULT_COUNTDOWN_SECONDS * 1000;
+
+function normalizeCountdownSeconds(seconds) {
+  return Number.isInteger(seconds) && seconds >= 1 && seconds <= 300 ? seconds : DEFAULT_COUNTDOWN_SECONDS;
+}
 
 function normalizeCountdownPosition(position) {
   if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null;
@@ -17,10 +22,11 @@ function countdownBounds(anchor, area, position) {
 }
 
 // The main process owns the deadline. A missing, closed, or crashed reminder
-// never permits an account switch. Renderer readiness starts the full 15 seconds.
-function createRecoveryCountdown({ createWindow, now = Date.now, schedule = setInterval, unschedule = clearInterval }) {
+// never permits an account switch. Renderer readiness starts the full duration.
+function createRecoveryCountdown({ createWindow, getSeconds = () => DEFAULT_COUNTDOWN_SECONDS,
+  now = Date.now, schedule = setInterval, unschedule = clearInterval }) {
   let active = null;
-  const snapshot = (entry) => ({ ...entry.details, seconds: entry.deadline === null ? 15
+  const snapshot = (entry) => ({ ...entry.details, seconds: entry.deadline === null ? entry.durationSeconds
     : Math.max(0, Math.ceil((entry.deadline - now()) / 1000)) });
   function finish(result) {
     if (!active) return false;
@@ -36,7 +42,9 @@ function createRecoveryCountdown({ createWindow, now = Date.now, schedule = setI
     finish("cancelled");
     if (signal?.aborted) return Promise.resolve("cancelled");
     return new Promise((resolve) => {
-      const entry = { details, signal, resolve, deadline: null, lastTick: now(), openedAt: now(), lastSeconds: null };
+      // Capture once so a settings edit cannot shorten an already visible warning.
+      const entry = { details, signal, resolve, durationSeconds: normalizeCountdownSeconds(getSeconds()),
+        deadline: null, lastTick: now(), openedAt: now(), lastSeconds: null };
       active = entry;
       entry.abort = () => finish("cancelled");
       signal?.addEventListener("abort", entry.abort, { once: true });
@@ -77,7 +85,7 @@ function createRecoveryCountdown({ createWindow, now = Date.now, schedule = setI
     const entry = active;
     try {
       if (entry.deadline === null) {
-        entry.deadline = now() + COUNTDOWN_MS;
+        entry.deadline = now() + entry.durationSeconds * 1000;
         entry.lastTick = now();
         entry.win.show();
         entry.win.focus();
@@ -92,4 +100,5 @@ function createRecoveryCountdown({ createWindow, now = Date.now, schedule = setI
   return { request, ready, cancel };
 }
 
-module.exports = { createRecoveryCountdown, COUNTDOWN_MS, normalizeCountdownPosition, countdownBounds };
+module.exports = { createRecoveryCountdown, COUNTDOWN_MS, DEFAULT_COUNTDOWN_SECONDS, normalizeCountdownSeconds,
+  normalizeCountdownPosition, countdownBounds };

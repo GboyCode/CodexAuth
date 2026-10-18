@@ -64,7 +64,12 @@ function pipeRequest(pipePath, method, params, timeoutMs = 8000, beforeSend) {
 }
 
 function parseToolResult(result) {
-  if (result?.success !== true) throw new Error("Codex 未完成任务接口操作，请在 Codex 中查看任务状态。" );
+  if (result?.success !== true) {
+    const cursorRejected = (result?.contentItems ?? []).some((item) => item.type === "inputText"
+      && /^(?:invalid cursor\b|unknown cursor for thread\b)/i.test(item.text ?? ""));
+    throw pipeError("Codex 未完成任务接口操作，请在 Codex 中查看任务状态。",
+      cursorRejected ? "CODEX_THREAD_CURSOR_UNSUPPORTED" : "CODEX_TOOL_FAILED");
+  }
   for (const item of result.contentItems ?? []) {
     if (item.type !== "inputText") continue;
     try { return JSON.parse(item.text); } catch { /* Try the next structured item. */ }
@@ -123,6 +128,38 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
       const result = await call("read_thread", { threadId: id, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 0 }, id);
       return { thread: result.thread, goal: goals ? await goals.readGoal(id) : null,
         turns: (result.turns ?? []).map(({ id, status, error, startedAt, completedAt }) => ({ id, status, error, startedAt, completedAt })) };
+    },
+    readThreadStatuses: async (ids, anchor, allowed = () => true) => {
+      if (!ids.length) return [];
+      const results = [];
+      // wait_threads requires a RUNNING caller turn, so it cannot guard recovery
+      // after that turn exhausts quota. read_thread reports live runtime status
+      // independently. In paginated history, ordinals start at 1: reading before
+      // that boundary returns no turns and never materializes oversized history.
+      for (let i = 0; i < ids.length; i += 4) {
+        if (!allowed()) return [];
+        const batch = await Promise.all(ids.slice(i, i + 4).map(async (id) => {
+          const args = { threadId: id, hostId: "local", turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 0 };
+          let result;
+          try {
+            result = await call("read_thread", { ...args, cursor: JSON.stringify({ requestedThreadId: id,
+              rolloutOrdinal: 1, includeAnchor: false, scope: { kind: "turns" } }) }, anchor);
+          } catch (error) {
+            // Older desktop history formats reject this cursor. Fall back to a
+            // normal read, never interpret a read failure as an idle task.
+            if (error.code !== "CODEX_THREAD_CURSOR_UNSUPPORTED" || !allowed()) throw error;
+            result = await call("read_thread", args, anchor);
+          }
+          if (result.thread?.id !== id || result.thread.kind !== "codex" || result.thread.hostId !== "local"
+            || !["idle", "notLoaded", "systemError", "active"].includes(result.thread.status?.type)
+            || !Array.isArray(result.turns)) {
+            throw new Error("本地任务状态不完整，暂缓切换账号。");
+          }
+          return { thread: result.thread, turns: result.turns.map(({ id, status }) => ({ id, status })) };
+        }));
+        results.push(...batch);
+      }
+      return results;
     },
     listThreads: (anchor) => call("list_threads", { limit: 50 }, anchor),
     readUsage: (anchor) => call("get_usage_limits", {}, anchor),

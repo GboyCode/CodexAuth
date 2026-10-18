@@ -67,7 +67,8 @@ const { createGoalBridge } = require("./codex-goals");
 const { createAccountLogin, cleanupLoginHomes } = require("./account-login");
 let accountLogin = null;
 let loginQuitPending = false;
-const { createRecoveryCountdown, normalizeCountdownPosition, countdownBounds } = require("./recovery-countdown");
+const { createRecoveryCountdown, DEFAULT_COUNTDOWN_SECONDS, normalizeCountdownSeconds,
+  normalizeCountdownPosition, countdownBounds } = require("./recovery-countdown");
 const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = require("./codex-desktop-bridge");
 const { createDesktopQuotaReader, quotaFromDesktopUsage } = require("./quota/desktop-quota");
 const { createOnlineAccounts, SOURCE: ONLINE_ACCOUNT_SOURCE } = require("./quota/online-accounts");
@@ -457,6 +458,7 @@ function defaultSettings() {
     launchAtLogin: false,
     restartAfterSwitch: true,
     autoSwitchOnLimit: false,
+    autoSwitchCountdownSeconds: DEFAULT_COUNTDOWN_SECONDS,
     autoResetOnWeeklyLimit: false,
     autoSwitchEnabledAt: null,
     widgetBounds: null,
@@ -476,6 +478,7 @@ function normalizeSettings(settings) {
     launchAtLogin: normalized.launchAtLogin === true,
     restartAfterSwitch: normalized.restartAfterSwitch !== false,
     autoSwitchOnLimit: normalized.autoSwitchOnLimit === true,
+    autoSwitchCountdownSeconds: normalizeCountdownSeconds(normalized.autoSwitchCountdownSeconds),
     autoResetOnWeeklyLimit: normalized.autoResetOnWeeklyLimit === true,
     autoSwitchEnabledAt: Number.isFinite(normalized.autoSwitchEnabledAt) ? normalized.autoSwitchEnabledAt : null,
     widgetBounds: normalizeWidgetBounds(normalized.widgetBounds),
@@ -1140,6 +1143,10 @@ async function currentState() {
 
 async function updateSettings(patch) {
   const nextPatch = { ...patch };
+  if (Object.prototype.hasOwnProperty.call(nextPatch, "autoSwitchCountdownSeconds")
+    && nextPatch.autoSwitchCountdownSeconds !== normalizeCountdownSeconds(nextPatch.autoSwitchCountdownSeconds)) {
+    throw new Error("请输入 1–300 的整数秒数。");
+  }
   if (Object.prototype.hasOwnProperty.call(nextPatch, "launchAtLogin")) {
     nextPatch.launchAtLogin = applyLaunchAtLogin(nextPatch.launchAtLogin === true);
   }
@@ -1171,7 +1178,8 @@ function configureAutoRecovery() {
 
 async function startAutoRecovery() {
   const journalPath = path.join(storeRoot(), "auto-recovery.json");
-  recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow });
+  recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow,
+    getSeconds: () => runtimeSettings?.autoSwitchCountdownSeconds });
   const recoveryBridge = createDesktopBridge({ goals: createGoalBridge({ codexHome: codexDir() }) });
   autoRecovery = createAutoRecovery({
     isPaused: () => accountLogin?.isBusy() === true,

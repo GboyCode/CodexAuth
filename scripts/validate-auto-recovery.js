@@ -56,10 +56,10 @@ function fixture(options = {}) {
     stats: () => ({ switches, sends, reads, warnings, stored, activeId, opened }) };
 }
 
-function countdownFixture() {
+function countdownFixture(getSeconds) {
   let clock = NOW, timer = null, win;
   const states = [];
-  const countdown = createRecoveryCountdown({ now: () => clock,
+  const countdown = createRecoveryCountdown({ getSeconds, now: () => clock,
     schedule: (fn) => { timer = fn; return 1; }, unschedule: () => { timer = null; },
     createWindow: () => {
       win = new EventEmitter(); win.webContents = new EventEmitter(); win.shown = false; win.destroyed = false;
@@ -459,6 +459,19 @@ async function run() {
   await noFailureAt99.recovery.tick();
   assert.equal(noFailureAt99.stats().switches, 0, "99% usage alone never triggers account rotation");
 
+  const unchangedSummary = { threads: [{ id: "task", kind: "codex", hostId: "local", updatedAt: NOW / 1000, status: "idle" }] };
+  const delayedFailure = fixture({ list: unchangedSummary });
+  delayedFailure.results.get("task").turns[0].status = "inProgress";
+  await delayedFailure.recovery.tick();
+  delayedFailure.results.set("task", failed()); delayedFailure.advance(3000);
+  await delayedFailure.recovery.tick();
+  assert.equal(delayedFailure.stats().warnings, 1, "an in-progress detail cannot be cached after a terminal list status");
+  const staleSummary = fixture({ list: unchangedSummary });
+  staleSummary.results.get("task").turns[0].status = "completed";
+  await staleSummary.recovery.tick(); staleSummary.results.set("task", failed()); staleSummary.advance(30000);
+  await staleSummary.recovery.tick();
+  assert.equal(staleSummary.stats().warnings, 1, "unchanged sidebar metadata cannot retain an old result forever");
+
   const scanReconnect = fixture(); scanReconnect.results.get("task").turns[0].status = "completed";
   const connectedList = scanReconnect.bridge.listThreads;
   scanReconnect.bridge.listThreads = async () => { throw new Error("Codex 本地接口连接失败。"); };
@@ -575,6 +588,28 @@ async function run() {
   assert.equal(timer.countdown.ready(timer.window().webContents).seconds, 15);
   timer.advance(COUNTDOWN_MS - 250); assert.equal(timer.window().destroyed, false);
   timer.advance(250); assert.equal(await timerResult, "elapsed"); assert.equal(timer.window().destroyed, true);
+  for (const seconds of [1, 7, 60, 300]) {
+    const custom = countdownFixture(() => seconds);
+    const result = custom.countdown.request({}, new AbortController().signal);
+    custom.advance(8000);
+    assert.equal(custom.countdown.ready(custom.window().webContents).seconds, seconds, "full configured duration starts only after readiness");
+    custom.advance(seconds * 1000 - 250);
+    assert.equal(custom.window().destroyed, false, "no early switch at a custom duration");
+    assert.equal(custom.countdown.ready(custom.window().webContents).seconds, 1, "duplicate ready does not restart the timer");
+    custom.advance(250); assert.equal(await result, "elapsed");
+  }
+  let configuredSeconds = 30;
+  const editedTimer = countdownFixture(() => configuredSeconds);
+  const originalCountdown = editedTimer.countdown.request({}, new AbortController().signal);
+  configuredSeconds = 5;
+  assert.equal(editedTimer.countdown.ready(editedTimer.window().webContents).seconds, 30, "settings cannot shorten a pending warning");
+  editedTimer.advance(2000);
+  assert.equal(editedTimer.countdown.ready(editedTimer.window().webContents).seconds, 28);
+  editedTimer.advance(28000); assert.equal(await originalCountdown, "elapsed");
+  const nextCountdown = editedTimer.countdown.request({ usesReset: true }, new AbortController().signal);
+  assert.equal(editedTimer.countdown.ready(editedTimer.window().webContents).seconds, 5, "next warning uses the new duration, including reset-card warnings");
+  assert.equal(editedTimer.countdown.cancel(editedTimer.window().webContents), true);
+  editedTimer.advance(5000); assert.equal(await nextCountdown, "cancelled");
   const manualTimer = countdownFixture();
   const manualResult = manualTimer.countdown.request({}, new AbortController().signal);
   manualTimer.countdown.ready(manualTimer.window().webContents); manualTimer.advance(5000);
@@ -603,6 +638,22 @@ async function run() {
   hiddenRunning.bridge.readThread = async (id) => id === "older-running"
     ? { thread: { id, status: { type: "active" } }, turns: [] } : originalRead(id);
   await hiddenRunning.recovery.tick(); assert.equal(hiddenRunning.stats().switches, 0, "older active tasks outside the recent list prevent restart");
+
+  for (const state of ["notLoaded", "active", "unknown", "inProgress", "missing"]) {
+    const oldHistory = fixture();
+    oldHistory.deps.getLocalThreads = async () => [{ id: "task", updatedAt: NOW / 1000 }, { id: "large-history", updatedAt: NOW / 1000 - 600 }];
+    const read = oldHistory.bridge.readThread;
+    oldHistory.bridge.readThread = async (id) => {
+      assert.notEqual(id, "large-history", "idle checks must not read oversized history"); return read(id);
+    };
+    oldHistory.bridge.readThreadStatuses = async (ids, anchor) => {
+      assert.deepEqual(ids, ["large-history"]); assert.equal(anchor, "task");
+      return state === "missing" ? [] : [{ thread: { id: ids[0], status: { type: state === "inProgress" ? "idle" : state } },
+        turns: [{ status: state === "inProgress" ? "inProgress" : "completed" }] }];
+    };
+    await oldHistory.recovery.tick();
+    assert.equal(oldHistory.stats().switches, state === "notLoaded" ? 1 : 0, "only confirmed idle status permits switching");
+  }
 
   const disabled = fixture({ disableDuringSwitch: true });
   await disabled.recovery.tick(); await disabled.recovery.tick(); assert.equal(disabled.stats().sends, 0);
@@ -784,6 +835,55 @@ async function run() {
     env: { CODEX_APP_TOOLS_PIPE_PATH: "\\\\remote\\pipe\\" + appToolsPipe }, listPipes: async () => [],
     request: async () => { assert.fail("only known local pipe names can be probed"); } });
   await assert.rejects(untrustedEnvironment.discover(), /未连接到兼容/);
+  const statusCalls = [];
+  let statusMode = "idle", legacyCursor = false, legacyReadFails = false;
+  const statusBridge = createDesktopBridge({ platform: "win32", env: {}, listPipes: async () => [appToolsPipe],
+    request: async (_pipe, method, params) => {
+      if (method === "tools/list") return { tools: [...requiredTools, { name: "wait_threads", namespace: "codex_app" }] };
+      statusCalls.push(params);
+      assert.equal(params.tool, "read_thread", "wait_threads aborts when the calling turn has already failed");
+      assert.equal(params.threadId, "anchor");
+      const { threadId: id, cursor } = params.arguments;
+      if (cursor) {
+        assert.deepEqual(JSON.parse(cursor), { requestedThreadId: id, rolloutOrdinal: 1, includeAnchor: false, scope: { kind: "turns" } });
+        if (legacyCursor) return { success: false, contentItems: [{ type: "inputText", text: `Unknown cursor for thread ${id}` }] };
+      } else {
+        assert.equal(legacyCursor, true, "modern status checks never materialize oversized history");
+        if (legacyReadFails) return { success: false };
+      }
+      if (statusMode === "error") return { success: false };
+      const result = { thread: { id, kind: "codex", hostId: "local", status: { type: statusMode } }, turns: [] };
+      if (statusMode === "missing") delete result.thread;
+      if (statusMode === "wrong-host") result.thread.hostId = "remote";
+      if (statusMode === "wrong-id") result.thread.id = "another-thread";
+      if (statusMode === "wrong-kind") result.thread.kind = "chatgpt";
+      if (statusMode === "missing-turns") delete result.turns;
+      return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+    } });
+  const oldIds = Array.from({ length: 9 }, (_, i) => "old-" + i);
+  assert.equal((await statusBridge.readThreadStatuses(oldIds, "anchor")).length, 9);
+  assert.equal(statusCalls.length, 9, "one history-free native read per target, without a running caller");
+  statusMode = "active";
+  assert.equal((await statusBridge.readThreadStatuses(["old-0"], "anchor"))[0].thread.status.type, "active");
+  for (statusMode of ["missing", "error", "wrong-host", "wrong-id", "wrong-kind", "missing-turns", "unknown"]) {
+    await assert.rejects(statusBridge.readThreadStatuses(["old-0"], "anchor"), /状态/);
+  }
+  statusMode = "idle";
+  const endedCaller = fixture();
+  endedCaller.deps.getAnchor = async () => "anchor";
+  endedCaller.deps.getLocalThreads = async () => [{ id: "task", updatedAt: NOW / 1000 }, ...oldIds.map(id => ({ id, updatedAt: NOW / 1000 - 600 }))];
+  endedCaller.bridge.readThreadStatuses = statusBridge.readThreadStatuses;
+  await endedCaller.recovery.tick();
+  assert.equal(endedCaller.stats().warnings, 1, "a quota-failed caller with oversized hidden history reaches countdown");
+  assert.equal(endedCaller.stats().switches, 1);
+  legacyCursor = true;
+  assert.equal((await statusBridge.readThreadStatuses(["old-0"], "anchor"))[0].thread.id, "old-0", "older desktops keep the conservative history-based check");
+  legacyReadFails = true;
+  await assert.rejects(statusBridge.readThreadStatuses(["old-0"], "anchor"), /状态/, "a failed fallback never certifies idle");
+  const beforeCancelled = statusCalls.length;
+  assert.deepEqual(await statusBridge.readThreadStatuses(oldIds, "anchor", () => false), []);
+  assert.equal(statusCalls.length, beforeCancelled, "cancellation prevents further state reads");
+
   function connectionFixture({ failures = 1, protocolFailure = false } = {}) {
     let calls = 0, enumerations = 0;
     const used = [];

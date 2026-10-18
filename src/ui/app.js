@@ -31,6 +31,9 @@ const state = {
   menuAccountId: null,
   accountLoginState: "idle",
   accountsRenderDeferred: false,
+  savingCountdown: false,
+  countdownDraft: null,
+  countdownSaved: false,
 };
 
 const els = {
@@ -91,6 +94,11 @@ const els = {
   accountList: document.querySelector("#accountList"),
   restartAfterSwitch: document.querySelector("#restartAfterSwitch"),
   autoSwitchOnLimit: document.querySelector("#autoSwitchOnLimit"),
+  autoSwitchCountdownSeconds: document.querySelector("#autoSwitchCountdownSeconds"),
+  countdownDecrease: document.querySelector("#countdownDecrease"),
+  countdownIncrease: document.querySelector("#countdownIncrease"),
+  countdownConfirm: document.querySelector("#countdownConfirm"),
+  countdownHelp: document.querySelector("#countdownHelp"),
   autoResetOnWeeklyLimit: document.querySelector("#autoResetOnWeeklyLimit"),
   autoRecoveryStatus: document.querySelector("#autoRecoveryStatus"),
   statsRefreshBtn: document.querySelector("#statsRefreshBtn"),
@@ -268,13 +276,30 @@ function setUsageScope(scope) {
   });
 }
 
+function renderCountdownSetting(snapshot) {
+  const saved = snapshot?.settings?.autoSwitchCountdownSeconds ?? 15;
+  const input = els.autoSwitchCountdownSeconds;
+  if (!input) return;
+  input.value = state.countdownDraft ?? saved;
+  const seconds = input.valueAsNumber;
+  const dirty = state.countdownDraft !== null && seconds !== saved;
+  const disabled = state.savingCountdown || snapshot?.platform !== "win32" || snapshot?.settings?.autoSwitchOnLimit !== true;
+  input.disabled = disabled;
+  els.countdownDecrease.disabled = disabled || seconds <= 1;
+  els.countdownIncrease.disabled = disabled || seconds >= 300;
+  els.countdownConfirm.disabled = disabled || !dirty;
+  els.countdownConfirm.textContent = state.savingCountdown ? t("保存中") : state.countdownSaved && !dirty ? t("已保存") : t("确定");
+  els.countdownHelp.hidden = !dirty;
+  els.countdownHelp.textContent = dirty ? t("未保存 · 当前 {0} 秒", saved) : "";
+}
+
 function renderSettings(snapshot) {
   const language = window.CodexI18n.normalizeLanguage(snapshot?.settings?.language);
   els.languageInputs.forEach((input) => {
     input.checked = input.value === language;
     input.closest(".language-option").classList.toggle("active", input.checked);
   });
-  els.quotaModeHint.textContent = t("当前账号：在线额度与本地日志。备用账号：仅手动刷新或自动切换前查询并按需续期，不定时查询。");
+  els.quotaModeHint.textContent = t("当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。");
   if (els.restartAfterSwitch) {
     els.restartAfterSwitch.checked = snapshot?.settings?.restartAfterSwitch !== false;
   }
@@ -286,6 +311,7 @@ function renderSettings(snapshot) {
     els.autoResetOnWeeklyLimit.checked = snapshot?.settings?.autoResetOnWeeklyLimit === true;
     els.autoResetOnWeeklyLimit.disabled = snapshot?.platform !== "win32" || snapshot?.settings?.autoSwitchOnLimit !== true;
   }
+  renderCountdownSetting(snapshot);
   const supported = snapshot?.platform === "win32";
   const enabled = snapshot?.settings?.autoSwitchOnLimit === true;
   const recovery = snapshot?.autoRecovery;
@@ -1154,6 +1180,53 @@ function wireEvents() {
       els.autoSwitchOnLimit.checked = !enabled;
       showToast(error.message);
     } finally { els.autoSwitchOnLimit.disabled = state.snapshot?.platform !== "win32"; }
+  });
+  const editCountdown = () => {
+    if (state.savingCountdown || els.autoSwitchCountdownSeconds.disabled) return;
+    state.countdownDraft = els.autoSwitchCountdownSeconds.value;
+    state.countdownSaved = false;
+    renderCountdownSetting(state.snapshot);
+  };
+  els.autoSwitchCountdownSeconds?.addEventListener("input", editCountdown);
+  for (const [button, step] of [[els.countdownDecrease, -1], [els.countdownIncrease, 1]]) {
+    button?.addEventListener("click", () => {
+      const input = els.autoSwitchCountdownSeconds;
+      const value = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : state.snapshot?.settings?.autoSwitchCountdownSeconds ?? 15;
+      input.value = Math.max(1, Math.min(300, Math.round(value) + step));
+      editCountdown();
+    });
+  }
+  const saveCountdown = async () => {
+    const input = els.autoSwitchCountdownSeconds;
+    if (state.savingCountdown || input.disabled) return;
+    const seconds = input.valueAsNumber;
+    if (!input.checkValidity() || !Number.isInteger(seconds)) {
+      showToast(t("请输入 1–300 的整数秒数。"));
+      input.focus();
+      return;
+    }
+    if (seconds === (state.snapshot?.settings?.autoSwitchCountdownSeconds ?? 15)) return;
+    state.savingCountdown = true;
+    renderCountdownSetting(state.snapshot);
+    try {
+      state.snapshot = await api.updateSettings({ autoSwitchCountdownSeconds: seconds });
+      state.countdownDraft = null;
+      state.countdownSaved = true;
+    }
+    catch (error) { showToast(error.message); }
+    finally {
+      state.savingCountdown = false;
+      renderSettings(state.snapshot);
+    }
+  };
+  els.countdownConfirm?.addEventListener("click", saveCountdown);
+  els.autoSwitchCountdownSeconds?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); saveCountdown(); }
+  });
+  els.settingsDialog.addEventListener("close", () => {
+    state.countdownDraft = null;
+    state.countdownSaved = false;
+    renderCountdownSetting(state.snapshot);
   });
   els.autoResetOnWeeklyLimit?.addEventListener("change", async () => {
     const enabled = els.autoResetOnWeeklyLimit.checked;

@@ -22,7 +22,8 @@ function installFixture(appVersion) {
   const fixture = window.panelFixture = {
     snapshot: { platform: "win32", platformName: "Windows", current: { exists: true, email: "work@example.com" }, accounts,
       authPath: "C:/example/.codex/auth.json", storeRoot: "C:/example/accounts", accountLogin: { state: "idle" },
-      settings: { language: localStorage.getItem("fixture.language") || "zh-CN", restartAfterSwitch: true, autoSwitchOnLimit: false, autoResetOnWeeklyLimit: false }, autoRecovery: { state: "disabled" } },
+      settings: { language: localStorage.getItem("fixture.language") || "zh-CN", autoSwitchCountdownSeconds: Number(localStorage.getItem("fixture.countdown")) || 15,
+        restartAfterSwitch: true, autoSwitchOnLimit: false, autoResetOnWeeklyLimit: false }, autoRecovery: { state: "disabled" } },
     quota, usage, calls: [], allTotalTokens: 9999,
   };
   const copy = (value) => structuredClone(value);
@@ -38,9 +39,11 @@ function installFixture(appVersion) {
     getVersion: async () => appVersion,
     checkForUpdates: async () => ({ ok: true, comparison: 0 }),
     updateSettings: async (patch) => {
+      fixture.calls.push(["settings", patch]);
       if (fixture.failSettings) throw new Error("设置保存失败");
       Object.assign(fixture.snapshot.settings, patch);
       if (patch.language) localStorage.setItem("fixture.language", patch.language);
+      if (patch.autoSwitchCountdownSeconds) localStorage.setItem("fixture.countdown", patch.autoSwitchCountdownSeconds);
       return copy(fixture.snapshot);
     },
     updateAccount: async (id, patch) => { Object.assign(fixture.snapshot.accounts.find(a => a.id === id), patch); return copy(fixture.snapshot); },
@@ -168,8 +171,52 @@ async function run() {
 
     await click('#settingsBtn');
     assert.equal(await evaluate("document.querySelector('#autoResetOnWeeklyLimit').disabled"), true);
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').disabled"), true);
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "15");
     await click('#autoSwitchOnLimit');
     assert.equal(await evaluate("document.querySelector('#autoResetOnWeeklyLimit').disabled"), false);
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').disabled"), false);
+    await click('#countdownIncrease');
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "16");
+    assert.equal(await evaluate("panelFixture.snapshot.settings.autoSwitchCountdownSeconds"), 15, "stepper changes stay unsaved until confirmed");
+    await click('#countdownDecrease');
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "15");
+    assert.equal(await evaluate("document.querySelector('#countdownConfirm').disabled"), true);
+    await evaluate("document.querySelector('#autoSwitchCountdownSeconds').focus(); document.querySelector('#autoSwitchCountdownSeconds').value = '30'; document.querySelector('#autoSwitchCountdownSeconds').dispatchEvent(new Event('input', {bubbles: true})); document.querySelector('#autoSwitchCountdownSeconds').blur(); panelFixture.notify({scope: 'accounts'})"); await settle();
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "30", "background updates preserve an in-progress edit");
+    await evaluate("document.querySelector('#autoSwitchCountdownSeconds').dispatchEvent(new Event('change', {bubbles: true}))"); await settle();
+    assert.equal(await evaluate("panelFixture.snapshot.settings.autoSwitchCountdownSeconds"), 15, "blur and change never save without confirmation");
+    assert.match(await evaluate("document.querySelector('#countdownHelp').textContent"), /未保存.*15/);
+    await capture('settings-countdown-pending');
+    await click('#countdownConfirm');
+    assert.equal(await evaluate("panelFixture.snapshot.settings.autoSwitchCountdownSeconds"), 30);
+    assert.equal(await evaluate("document.querySelector('#countdownConfirm').textContent"), "已保存");
+    assert.equal(await evaluate("document.querySelector('#countdownConfirm').disabled"), true);
+    await capture('settings-countdown-saved');
+    await evaluate("panelFixture.failSettings = true; document.querySelector('#autoSwitchCountdownSeconds').value = '45'; document.querySelector('#autoSwitchCountdownSeconds').dispatchEvent(new Event('input', {bubbles: true}))");
+    await click('#countdownConfirm');
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "45", "failed save preserves the draft for retry");
+    assert.equal(await evaluate("panelFixture.snapshot.settings.autoSwitchCountdownSeconds"), 30, "failed save preserves the effective duration");
+    assert.match(await evaluate("document.querySelector('#countdownHelp').textContent"), /未保存.*30/);
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').disabled"), false);
+    await evaluate("panelFixture.failSettings = false");
+    const settingsCalls = await evaluate("panelFixture.calls.filter(call => call[0] === 'settings').length");
+    for (const invalid of ['', '0', '-1', '301', '1.5']) {
+      await evaluate(`document.querySelector('#autoSwitchCountdownSeconds').value = ${JSON.stringify(invalid)}; document.querySelector('#autoSwitchCountdownSeconds').dispatchEvent(new Event('input', {bubbles: true}))`);
+      await click('#countdownConfirm');
+      assert.equal(await evaluate("panelFixture.snapshot.settings.autoSwitchCountdownSeconds"), 30);
+    }
+    assert.equal(await evaluate("panelFixture.calls.filter(call => call[0] === 'settings').length"), settingsCalls, "invalid duration never reaches settings persistence");
+    for (const [value, control] of [[1, '#countdownDecrease'], [300, '#countdownIncrease']]) {
+      await evaluate(`document.querySelector('#autoSwitchCountdownSeconds').value = '${value}'; document.querySelector('#autoSwitchCountdownSeconds').dispatchEvent(new Event('input', {bubbles: true}))`);
+      assert.equal(await evaluate(`document.querySelector('${control}').disabled`), true, "stepper stops at the duration boundary");
+    }
+    await click('[data-close-dialog="settingsDialog"]'); await click('#settingsBtn');
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "30", "closing settings discards the unconfirmed draft");
+    await click('#countdownIncrease');
+    await evaluate("document.querySelector('#autoSwitchCountdownSeconds').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}))"); await settle();
+    assert.equal(await evaluate("panelFixture.snapshot.settings.autoSwitchCountdownSeconds"), 31, "Enter explicitly confirms the draft");
+    await click('#countdownDecrease'); await click('#countdownConfirm');
     assert.equal(await evaluate("document.querySelector('#autoRecoverySummary').textContent"), "自动切换：开启");
     await click('#autoResetOnWeeklyLimit');
     assert.equal(await evaluate("panelFixture.snapshot.settings.autoResetOnWeeklyLimit"), true);
@@ -184,6 +231,7 @@ async function run() {
     assert.equal(await evaluate("document.querySelector('#recoveryNotice').hidden"), false);
     await evaluate("panelFixture.snapshot.platform = 'darwin'; panelFixture.notify({scope: 'accounts'})"); await settle();
     assert.equal(await evaluate("document.querySelector('#autoSwitchOnLimit').disabled && document.querySelector('#autoResetOnWeeklyLimit').disabled"), true);
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').disabled"), true);
     await evaluate("panelFixture.snapshot.platform = 'win32'");
 
     await click('#usageTab');
@@ -198,11 +246,14 @@ async function run() {
     assert.equal(await evaluate("panelFixture.snapshot.settings.language"), "en");
     assert.equal(await evaluate("document.documentElement.lang"), "en");
     assert.equal(await evaluate("document.querySelector('#settingsTitle').textContent"), "Settings");
+    assert.equal(await evaluate("document.querySelector('label[for=autoSwitchCountdownSeconds]').textContent"), "Switch countdown");
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "30", "language changes preserve duration");
     assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "Remaining 80%", "language switch preserves known quota");
     assert.equal(await evaluate("document.querySelector('#totalTokens').textContent"), "9,999", "language switch preserves local usage");
     assert.equal(await evaluate("document.querySelector('#appVersion').textContent"), `v${require('../package.json').version}`);
     assert.equal(await evaluate("document.querySelector('[data-account-id=backup] .account-name').textContent"), "备用工作账号", "user-provided names are not translated");
     assert.match(await evaluate("document.querySelector('#autoRecoverySummary').textContent"), /^Auto-switch:/);
+    await evaluate("document.querySelectorAll('#settingsDialog details').forEach(details => { details.open = true; })"); await settle();
     assert.deepEqual(await evaluate(`(() => {
       const dialog = document.querySelector('#settingsDialog');
       const content = dialog.querySelector('.dialog-content');
@@ -224,6 +275,7 @@ async function run() {
     await click('[data-close-dialog="settingsDialog"]');
     assert.equal(await evaluate("document.querySelector('#settingsDialog').open"), false, "close works after scrolling to the bottom");
     await click('#settingsBtn');
+    await evaluate("document.querySelectorAll('#settingsDialog details').forEach(details => { details.open = false; }); panelFixture.snapshot.autoRecovery = {state: 'watching'}; panelFixture.notify({scope: 'accounts'})"); await settle();
     await evaluate("document.querySelector('#settingsDialog .dialog-content').scrollTop = 0");
     await evaluate("document.querySelector('input[name=language]:checked').focus()");
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Left' });
@@ -274,6 +326,8 @@ async function run() {
     assert.equal(await evaluate("document.documentElement.lang"), "en", "saved language is restored on a new renderer");
     assert.equal(await evaluate("document.querySelector('input[name=language]:checked').value"), "en");
     assert.equal(await evaluate("document.querySelector('#settingsBtn').textContent"), "Settings");
+    await click('#settingsBtn');
+    assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "30", "saved countdown is restored on a new renderer");
     assert.deepEqual(errors, [], "renderer errors");
     console.log("Panel validation passed: 860/900/1040 layouts, long names, quota summaries, unknown data, menus, focus, add/import/export, delete cancellation, settings rollback/dependencies, platform limits, recovery notices and independent usage scope. Mock APIs only.");
     console.log(`Screenshots: ${output}`);

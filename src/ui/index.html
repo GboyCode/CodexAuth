@@ -203,27 +203,41 @@
           </div>
         </section>
         <section class="settings-section" aria-labelledby="switchSettingsTitle">
-          <h3 id="switchSettingsTitle" data-i18n="账号切换">账号切换</h3>
-          <label class="toggle-row"><input id="restartAfterSwitch" type="checkbox" checked /><span data-i18n="切换后重启 Codex">切换后重启 Codex</span></label>
-          <label class="toggle-row"><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /><span data-i18n="额度用尽时自动切换">额度用尽时自动切换</span></label>
-          <p id="autoSwitchHelp" class="small-copy" data-i18n="重启 Codex，并向原任务发送继续指令。执行前有 15 秒可取消。">重启 Codex，并向原任务发送继续指令。执行前有 15 秒可取消。</p>
-          <label class="toggle-row"><input id="autoResetOnWeeklyLimit" type="checkbox" aria-describedby="autoResetHelp" /><span data-i18n="自动使用重置卡">自动使用重置卡</span></label>
-          <p id="autoResetHelp" class="small-copy" data-i18n="需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。">需先开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号消耗一张卡；用卡前可取消。</p>
+          <div class="settings-section-heading">
+            <h3 id="switchSettingsTitle" data-i18n="账号切换">账号切换</h3>
+            <button id="restartBtn" class="ghost-btn settings-restart" data-i18n="重启 Codex">重启 Codex</button>
+          </div>
+          <label class="toggle-row"><span data-i18n="切换后重启 Codex">切换后重启 Codex</span><input id="restartAfterSwitch" type="checkbox" checked /></label>
+          <label class="toggle-row"><span data-i18n="额度用尽时自动切换">额度用尽时自动切换</span><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /></label>
+          <div class="countdown-setting">
+            <label for="autoSwitchCountdownSeconds" data-i18n="切换倒计时">切换倒计时</label>
+            <div class="countdown-controls">
+              <div class="countdown-input">
+                <button id="countdownDecrease" type="button" data-i18n-aria-label="减少 1 秒" aria-label="减少 1 秒">−</button>
+                <input id="autoSwitchCountdownSeconds" type="number" inputmode="numeric" min="1" max="300" step="1" value="15" required title="1–300 秒" data-i18n-title="1–300 秒" aria-describedby="countdownHelp" />
+                <span data-i18n="秒">秒</span>
+                <button id="countdownIncrease" type="button" data-i18n-aria-label="增加 1 秒" aria-label="增加 1 秒">+</button>
+              </div>
+              <button id="countdownConfirm" class="countdown-confirm" type="button" data-i18n="确定">确定</button>
+            </div>
+          </div>
+          <p id="countdownHelp" class="small-copy countdown-help" role="status" hidden></p>
+          <label class="toggle-row reset-card-setting"><span><span data-i18n="自动使用重置卡">自动使用重置卡</span><small id="autoResetHelp" class="setting-note" data-i18n="无可用账号时，消耗一张卡">无可用账号时，消耗一张卡</small></span><input id="autoResetOnWeeklyLimit" type="checkbox" /></label>
           <p id="autoRecoveryStatus" class="small-copy" role="status"></p>
-          <details class="local-diagnostics">
-            <summary data-i18n="切换与用卡规则">切换与用卡规则</summary>
+          <details class="local-diagnostics settings-rules">
+            <summary data-i18n="切换规则">切换规则</summary>
+            <p id="autoSwitchHelp" class="small-copy" data-i18n="切换后重启 Codex 并继续原任务；倒计时内可取消。">切换后重启 Codex 并继续原任务；倒计时内可取消。</p>
             <p class="small-copy" data-i18n="优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。">优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。</p>
             <p class="small-copy" data-i18n="未重置且剩余不超过 2%，或已确认耗尽的账号会跳过，切换后核验实际额度。其他本地任务运行时暂缓切换。手动暂停、目标预算用完或任务完成后不自动继续；取消后不重试同一次中断。">未重置且剩余不超过 2%，或已确认耗尽的账号会跳过，切换后核验实际额度。其他本地任务运行时暂缓切换。手动暂停、目标预算用完或任务完成后不自动继续；取消后不重试同一次中断。</p>
-            <p class="small-copy" data-i18n="用卡顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business；同类账号优先使用最早到期的卡。仅五小时额度用尽不用卡。用卡结果未确认时暂停自动用卡，避免重复消耗。">用卡顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business；同类账号优先使用最早到期的卡。仅五小时额度用尽不用卡。用卡结果未确认时暂停自动用卡，避免重复消耗。</p>
+            <p class="small-copy" data-i18n="用卡需开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号用卡，用卡前可取消。优先 Plus → 有五小时限制的 Business → 仅周额度的 Business；同类优先最早到期的卡。仅五小时额度用尽不用卡，结果未确认时暂停用卡。">用卡需开启自动切换。所有账号均不可用时，为周额度耗尽的备用账号用卡，用卡前可取消。优先 Plus → 有五小时限制的 Business → 仅周额度的 Business；同类优先最早到期的卡。仅五小时额度用尽不用卡，结果未确认时暂停用卡。</p>
           </details>
-          <button id="restartBtn" class="ghost-btn settings-restart" data-i18n="重启 Codex">重启 Codex</button>
         </section>
         <details class="local-diagnostics settings-section">
           <summary data-i18n="存储与诊断">存储与诊断</summary>
           <p class="small-copy" data-i18n="登录文件">登录文件</p><p id="currentPath" class="path-copy"></p>
           <p class="small-copy" data-i18n="账号存储">账号存储</p><button id="storePath" class="path-link" title="打开账号存储目录" data-i18n-title="打开账号存储目录"></button>
           <p class="small-copy"><span data-i18n="凭证通过">凭证通过</span> <span id="credentialProtection" data-i18n="系统安全存储">系统安全存储</span> <span data-i18n="加密。切换前会备份当前登录信息。">加密。切换前会备份当前登录信息。</span></p>
-          <p class="small-copy" data-i18n="登录失效时，重新登录该账号并保存即可。">登录失效时，重新登录该账号并保存即可。</p>
+          <p class="small-copy" data-i18n="登录失效后，重新登录并保存即可。">登录失效后，重新登录并保存即可。</p>
           <p id="platformLabel" class="small-copy"></p>
           <p id="diagnosticsInfo" class="small-copy" role="status" data-i18n="读取中">读取中</p>
           <p id="recoveryInfo" class="small-copy" hidden></p>
@@ -231,7 +245,7 @@
         <details class="local-diagnostics settings-section">
           <summary data-i18n="数据说明">数据说明</summary>
           <p id="quotaModeHint" class="small-copy" data-i18n="当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。">当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。</p>
-          <p class="small-copy" data-i18n="缓存和预估会标注来源及更新时间。到达重置时间后需更新数据，不能据此确认额度已恢复。本地用量仅统计这台电脑的日志，不等于官方账号累计。">缓存和预估会标注来源及更新时间。到达重置时间后需更新数据，不能据此确认额度已恢复。本地用量仅统计这台电脑的日志，不等于官方账号累计。</p>
+          <p class="small-copy" data-i18n="缓存与预估均标注来源和时间。重置后需刷新确认额度。本地用量仅统计本机，不代表账号总用量。">缓存与预估均标注来源和时间。重置后需刷新确认额度。本地用量仅统计本机，不代表账号总用量。</p>
         </details>
         <section class="app-about settings-section" aria-label="关于" data-i18n-aria-label="关于">
           <div class="about-heading"><h3 data-i18n="关于 CodexAuth">关于 CodexAuth</h3><span id="appVersion" class="about-version" data-i18n="版本…">版本…</span></div>

@@ -4,7 +4,8 @@ const { canResetAccount } = require("./quota/reset-credits");
 
 const CONTINUE_PROMPT = "刚才任务因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号。请基于本任务已有上下文和当前文件状态，继续完成我上一条请求中尚未完成的工作。先确认已完成的步骤，避免重复执行；保留原有模型、权限与审批要求。";
 const GOAL_CONTINUE_PROMPT = "刚才本任务的目标因 Codex 账号额度耗尽而中断，CodexAuth 已切换账号并恢复原目标。请读取当前目标状态，基于已有上下文和文件进度继续原目标，遵守原预算、模型、权限与审批要求；避免重复已完成的步骤。";
-const POLL_MS = 15000;
+const POLL_MS = 3000;
+const THREAD_CACHE_MS = 30000;
 const MAX_SNAPSHOT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MIN_REMAINING_PERCENT = 2;
 const UNKNOWN_RESET_RETRY_MS = 30 * 60 * 1000;
@@ -238,7 +239,7 @@ function createAutoRecovery(deps) {
     if (!allowed()) return null;
     const abort = new AbortController();
     warningAbort = abort;
-    setStatus("countdown", "自动切换前倒计时 15 秒，可在浮窗弹窗中取消本次。" );
+    setStatus("countdown", "自动切换倒计时中，可在浮窗弹窗中取消本次。" );
     let decision;
     try {
       decision = await deps.beforeSwitch({ targetLabel: (target.displayName || target.identity?.email || "候选账号")
@@ -336,6 +337,16 @@ function createAutoRecovery(deps) {
       setStatus("checking", "正在检查其他本地任务是否已结束。" );
       const visible = new Set(localThreads(list).map((thread) => thread.id));
       const others = metadata.filter((thread) => !visible.has(thread.id));
+      if (deps.bridge.readThreadStatuses && others.length) {
+        const results = await deps.bridge.readThreadStatuses(others.map((thread) => thread.id), anchor, allowed);
+        if (!allowed()) return false;
+        if (results.length !== others.length || results.some((result) => !result?.thread
+          || !["idle", "notLoaded", "systemError"].includes(result.thread.status?.type)
+          || ["inProgress", "running"].includes(result.turns?.[0]?.status))) {
+          setStatus("waiting", "仍有其他本地任务在运行或状态未确认，暂缓切换账号。" ); return false;
+        }
+        return true;
+      }
       for (let i = 0; i < others.length; i += 4) {
         const results = await Promise.all(others.slice(i, i + 4).map((thread) => deps.bridge.readThread(thread.id)));
         if (!allowed()) return false;
@@ -524,14 +535,15 @@ function createAutoRecovery(deps) {
       }
       const failures = [];
       for (const thread of candidates.values()) {
-        if ((thread.status?.type ?? thread.status) === "active"
-          || Math.max(Number(thread.updatedAt) * 1000 || 0, goalMap.get(thread.id)?.updatedAt ?? 0) < cutoff) continue;
+        if ((thread.status?.type ?? thread.status) === "active") { cache.delete(thread.id); continue; }
+        if (Math.max(Number(thread.updatedAt) * 1000 || 0, goalMap.get(thread.id)?.updatedAt ?? 0) < cutoff) continue;
         const signature = `${thread.updatedAt}:${JSON.stringify(thread.status)}`;
         let entry = cache.get(thread.id);
-        if (entry?.signature !== signature) {
+        if (entry?.signature !== signature || now() - entry.checkedAt >= THREAD_CACHE_MS
+          || ["inProgress", "running"].includes(entry.result.turns?.[0]?.status)) {
           const result = await deps.bridge.readThread(thread.id);
           if (!allowed()) return;
-          entry = { signature, result }; cache.set(thread.id, entry);
+          entry = { signature, result, checkedAt: now() }; cache.set(thread.id, entry);
         }
         const result = deps.bridge.listGoals ? { ...entry.result, goal: goalMap.get(thread.id) ?? null } : entry.result;
         const job = recoveryJob(result, cutoff);

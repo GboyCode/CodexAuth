@@ -41,6 +41,10 @@ async function scenario(target, fail = false) {
   assert.equal(context.normalizeSettings({}).language, "zh-CN", "existing installations keep Chinese");
   assert.equal(context.normalizeSettings({ language: "en" }).language, "en");
   assert.equal(context.normalizeSettings({ language: "unsupported" }).language, "zh-CN");
+  assert.equal(context.normalizeSettings({}).autoSwitchCountdownSeconds, 15, "existing settings retain the default countdown");
+  for (const invalid of [undefined, null, "30", "", 0, -1, 301, 1.5, NaN, Infinity]) {
+    assert.equal(context.normalizeSettings({ autoSwitchCountdownSeconds: invalid }).autoSwitchCountdownSeconds, 15, "invalid stored durations recover to the default");
+  }
   if (!fail) {
     const originals = { mutateIndex: context.mutateIndex, currentState: context.currentState, configureAutoRecovery: context.configureAutoRecovery };
     let saved = JSON.stringify({ settings: context.defaultSettings(), accounts: [] });
@@ -51,6 +55,16 @@ async function scenario(target, fail = false) {
     assert.equal(updated.settings.language, "en");
     assert.equal(context.normalizeSettings(JSON.parse(saved).settings).language, "en", "language survives the existing store serialization");
     assert.equal(updated.settings.restartAfterSwitch, true, "language saves preserve other settings");
+    for (const seconds of [1, 30, 300]) {
+      await context.updateSettings({ autoSwitchCountdownSeconds: seconds });
+      assert.equal(context.normalizeSettings(JSON.parse(saved).settings).autoSwitchCountdownSeconds, seconds, "custom duration survives store serialization and reload");
+      assert.equal(vm.runInContext("runtimeSettings.autoSwitchCountdownSeconds", context), seconds, "runtime sees saved duration");
+    }
+    const beforeInvalid = saved;
+    for (const invalid of [null, "30", 0, -1, 301, 1.5]) {
+      await assert.rejects(context.updateSettings({ autoSwitchCountdownSeconds: invalid }), /1–300/);
+      assert.equal(saved, beforeInvalid, "invalid IPC settings do not overwrite persisted values");
+    }
     electron.Menu.buildFromTemplate = items => items;
     context.fixtureTray = { setContextMenu: items => { context.fixtureMenu = items; } };
     vm.runInContext("tray = fixtureTray", context);
@@ -59,6 +73,7 @@ async function scenario(target, fail = false) {
     vm.runInContext("tray = null", context);
     await context.updateSettings({ language: "zh-CN" });
     assert.equal(JSON.parse(saved).settings.language, "zh-CN");
+    assert.equal(JSON.parse(saved).settings.autoSwitchCountdownSeconds, 300, "unrelated setting edits preserve countdown duration");
     Object.assign(context, originals);
     vm.runInContext("runtimeSettings = null", context);
   }

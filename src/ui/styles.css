@@ -1332,8 +1332,10 @@ code {
 .settings-dialog > .dialog-heading { flex-shrink: 0; margin: 0; padding: 22px 22px 20px; }
 .settings-dialog > .dialog-content { min-height: 0; padding: 0 22px 22px; overflow-y: auto; scrollbar-width: none; }
 .settings-dialog > .dialog-content::-webkit-scrollbar { display: none; }
-.settings-section + .settings-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
+.settings-section + .settings-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
 .settings-section h3 { font-size: 14px; margin: 0 0 12px; }
+.settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
+.settings-section-heading h3 { margin: 0; }
 .language-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .language-setting > span { font-weight: 600; font-size: 14px; }
 .language-options { flex-shrink: 0; height: 36px; border-radius: 11px; }
@@ -1343,10 +1345,35 @@ code {
 .language-option:has(input:disabled) { cursor: wait; opacity: .6; }
 html[lang="en"] .account-card { grid-template-columns: minmax(0, 1fr) 240px 240px; }
 .settings-section .small-copy { margin: 8px 0; font-size: 12px; }
-.settings-section .toggle-row + .small-copy { margin-left: 42px; }
+.settings-section .toggle-row { justify-content: space-between; gap: 16px; min-height: 42px; margin: 0; padding: 8px 0; font-size: 13px; }
+.settings-section .toggle-row input { flex-shrink: 0; margin: 0; }
+.setting-note { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.settings-section .reset-card-setting { margin-top: 4px; }
 .settings-section .toggle-row:has(:disabled) { color: var(--muted); }
 .settings-section .toggle-row input:disabled { cursor: not-allowed; opacity: 0.5; }
-.settings-restart, .about-actions .ghost-btn { margin-top: 12px; height: 34px; min-height: 34px; font-size: 12px; }
+.countdown-setting { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding: 4px 0 8px; font-size: 13px; }
+.countdown-controls { display: flex; align-items: center; gap: 10px; }
+.countdown-input { display: flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); }
+.countdown-input input { appearance: textfield; width: 42px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--ink); text-align: center; font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; }
+.countdown-input input::-webkit-inner-spin-button, .countdown-input input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.countdown-input > span { margin-right: 4px; font-size: 12px; }
+.countdown-input button { width: 28px; height: 28px; padding: 0; border-radius: 6px; background: var(--soft); color: var(--ink); font-size: 18px; line-height: 1; }
+.countdown-confirm { min-width: 68px; height: 36px; padding: 0 12px; border-radius: 9px; background: var(--ink); color: var(--surface); font-size: 12px; box-shadow: 0 1px 2px #00000012; }
+.countdown-controls button { transition: transform 90ms ease, background-color 90ms ease, box-shadow 90ms ease; }
+.countdown-controls button:hover:not(:disabled) { box-shadow: inset 0 0 0 100px #8080801a; }
+.countdown-controls button:active:not(:disabled) { transform: translateY(1px) scale(.96); box-shadow: inset 0 2px 4px #00000024; }
+.countdown-confirm:disabled { background: var(--soft); color: var(--muted); box-shadow: none; cursor: default; }
+.countdown-setting:has(input:disabled) { color: var(--muted); }
+.countdown-input :disabled { opacity: .4; cursor: not-allowed; }
+.settings-section .countdown-help { margin: 0 0 8px; text-align: right; }
+.settings-restart { flex: 0 0 auto; height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; }
+.settings-dialog summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; list-style: none; }
+.settings-dialog summary::-webkit-details-marker { display: none; }
+.settings-dialog summary::after { content: ""; flex-shrink: 0; width: 6px; height: 6px; margin-right: 4px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); }
+.settings-dialog details[open] > summary::after { transform: rotate(45deg); }
+.settings-rules { margin-top: 6px; }
+.settings-rules summary { color: var(--muted); }
+.about-actions .ghost-btn { height: 34px; min-height: 34px; font-size: 12px; }
 .path-copy, .path-link { margin: 0 0 12px; font-size: 12px; overflow-wrap: anywhere; }
 .path-link { display: block; max-width: 100%; padding: 0; background: transparent; color: var(--ink); text-align: left; text-decoration: underline; }
 .about-actions { display: flex; align-items: center; gap: 18px; }
