@@ -415,6 +415,32 @@ async function run() {
   }
   const currentPlusWrongCode = clone(currentPlusEmpty); currentPlusWrongCode.turns[0].error.codexErrorInfo = "unauthorized";
   assert.equal(isQuotaFailure(currentPlusWrongCode), false);
+  const compactPrefix = "Error running remote compact task: ";
+  const compactEmpty = clone(workspaceEmpty);
+  compactEmpty.turns[0].error.message = compactPrefix + workspaceEmpty.turns[0].error.message;
+  for (const original of [workspaceEmpty, plusEmpty, currentPlusEmpty]) {
+    const sample = clone(original);
+    sample.turns[0].error.message = compactPrefix + original.turns[0].error.message;
+    for (const code of [undefined, null, "other"]) {
+      sample.turns[0].error.codexErrorInfo = code;
+      assert.equal(isQuotaFailure(sample, NOW - 1), true, "native remote compaction quota failures can omit their error code");
+      assert.equal(recoveryJob(sample, NOW - 1)?.turnId, "failed-turn");
+    }
+    assert.equal(isQuotaFailure(sample, NOW + 1), false, "old compact failures remain excluded");
+    sample.turns[0].error.codexErrorInfo = "unauthorized";
+    assert.equal(isQuotaFailure(sample), false, "an explicit non-quota code still overrides wrapped quota text");
+  }
+  for (const status of ["completed", "interrupted", "inProgress"]) {
+    const sample = clone(compactEmpty); sample.turns[0].status = status;
+    assert.equal(recoveryJob(sample), null, "only failed compact turns can start recovery");
+  }
+  const retriedCompact = clone(compactEmpty); retriedCompact.thread.status.type = "active";
+  assert.equal(recoveryJob(retriedCompact), null, "never switch a task already retried by the user");
+  for (const message of ["connection closed", "429 Too Many Requests", "Your API billing account is out of credits.",
+    "Tool failed: " + workspaceEmpty.turns[0].error.message, compactEmpty.turns[0].error.message]) {
+    const sample = clone(compactEmpty); sample.turns[0].error.message = compactPrefix + message;
+    assert.equal(isQuotaFailure(sample), false, "compaction prefix must not accept arbitrary errors or nested wrappers");
+  }
   assert.equal(isQuotaFailure(failed(), NOW + 1), false);
   assert.equal(canRestart({ threads: [{ kind: "codex", hostId: "local", status: "active" }] }), false);
   assert.equal(canRestart({ threads: Array(50).fill({}) }), false);
@@ -454,6 +480,20 @@ async function run() {
   assert.equal(currentPlusRecovery.stats().switches, 1);
   assert.equal(currentPlusRecovery.stats().sends, 1, "current desktop error resumes the failed task exactly once");
   assert.equal(currentPlusRecovery.recovery.getStatus().state, "resumed");
+  const compactRecovery = fixture(); compactRecovery.results.set("task", compactEmpty);
+  compactRecovery.accounts[0].quotaSnapshot.session.usedPercent = 91;
+  compactRecovery.accounts[0].quotaSnapshot.weekly.usedPercent = 68;
+  for (let i = 0; i < 5; i++) await compactRecovery.recovery.tick();
+  assert.equal(compactRecovery.stats().warnings, 1, "compaction exhaustion starts the countdown even with 9% still shown");
+  assert.equal(compactRecovery.stats().switches, 1);
+  assert.equal(compactRecovery.stats().sends, 1, "resume the failed compact turn exactly once");
+  assert.equal(compactRecovery.recovery.getStatus().state, "resumed");
+  const compactCancelled = fixture({ beforeSwitch: async () => "cancelled" });
+  compactCancelled.results.set("task", compactEmpty);
+  for (let i = 0; i < 3; i++) await compactCancelled.recovery.tick();
+  assert.equal(compactCancelled.stats().warnings, 1, "dismissed compact recovery must not repeat the countdown");
+  assert.equal(compactCancelled.stats().switches, 0);
+  assert.equal(compactCancelled.stats().sends, 0);
   const noFailureAt99 = fixture(); noFailureAt99.accounts[0].quotaSnapshot.session.usedPercent = 99;
   noFailureAt99.results.get("task").turns[0].status = "completed";
   await noFailureAt99.recovery.tick();

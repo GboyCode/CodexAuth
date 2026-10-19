@@ -122,12 +122,15 @@ function isQuotaFailure(result, since = 0) {
   const thread = result?.thread, turn = result?.turns?.[0];
   const code = turn?.error?.codexErrorInfo;
   const message = typeof turn?.error?.message === "string" ? turn.error.message.trim() : "";
+  // Native compaction failures wrap the same quota error, but read_thread
+  // drops its codexErrorInfo. Unwrap only this one observed native prefix.
+  const quotaMessage = message.replace(/^Error running remote compact task: /, "");
   // Desktop read_thread can omit codexErrorInfo for both workspace credits and
   // Plus usage limits. Match known native templates in the failed turn's error;
   // a stale widget snapshot (e.g. 99% used) is never the exhaustion trigger.
   // Newer desktop errors link to /settings/usage; older ones include /codex.
-  const nativeQuotaMessage = /^Your workspace is out of credits\. Add credits to continue\.$/i.test(message)
-    || /^You['’]ve hit your usage limit\. Upgrade to Pro \(https:\/\/chatgpt\.com\/explore\/pro\), visit https:\/\/chatgpt\.com\/(?:codex\/)?settings\/usage to purchase more credits or try again at [^\r\n]{1,80}\.$/i.test(message);
+  const nativeQuotaMessage = /^Your workspace is out of credits\. Add credits to continue\.$/i.test(quotaMessage)
+    || /^You['’]ve hit your usage limit\. Upgrade to Pro \(https:\/\/chatgpt\.com\/explore\/pro\), visit https:\/\/chatgpt\.com\/(?:codex\/)?settings\/usage to purchase more credits or try again at [^\r\n]{1,80}\.$/i.test(quotaMessage);
   const missingCodeQuota = (code == null || code === "other")
     && nativeQuotaMessage;
   // Do not infer exhaustion from 429, arbitrary transcripts, or tool/image failures.

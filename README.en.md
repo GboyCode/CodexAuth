@@ -148,6 +148,8 @@ This does not bypass or replace official login. The real login still happens ins
 
 The optional recovery toggle is off by default. Every 3 seconds it checks local tasks for explicit new quota failures or goals in `usageLimited`. A nearly empty widget estimate alone does not trigger switching.
 
+Native quota exhaustion during context compaction also triggers recovery, even when the desktop interface omits the error code or the widget balance has not caught up. Ordinary compaction failures, network errors and manual interruptions do not trigger recovery.
+
 Before switching, live local task states are read through the desktop interface without requiring the interrupted task to remain running. Paginated history checks omit old messages so oversized history cannot block the reminder. Failed reads or running tasks still defer switching.
 
 The Switch countdown setting accepts whole numbers from 1 to 300 seconds and defaults to 15. Adjust with − / + or type a value, then click Confirm (or press Enter) to save locally. A Saved label confirms success; closing settings discards unconfirmed edits. Changes apply to the next countdown; an already visible reminder keeps its original duration. Account switches and reset-card reminders share this setting.
