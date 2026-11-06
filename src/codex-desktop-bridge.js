@@ -8,7 +8,7 @@ const crypto = require("node:crypto");
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const REQUIRED_TOOLS = ["read_thread", "list_threads", "send_message_to_thread", "get_usage_limits"];
 const READ_ONLY_TOOLS = new Set(["read_thread", "list_threads", "get_usage_limits"]);
-const RETRYABLE_PIPE_ERRORS = new Set(["CODEX_PIPE_CONNECTION", "CODEX_PIPE_CLOSED", "CODEX_PIPE_TIMEOUT"]);
+const RETRYABLE_PIPE_ERRORS = new Set(["CODEX_PIPE_CONNECTION", "CODEX_PIPE_CLOSED", "CODEX_PIPE_TIMEOUT", "CODEX_PIPE_UNAVAILABLE"]);
 const PIPE_PREFIX = "\\\\.\\pipe\\";
 // New desktop versions separate app tools from the browser-use service.
 const APP_TOOLS_PIPE_NAME = /^codex-(?:app-tools|browser-use)-[0-9a-f-]{36}$/i;
@@ -56,9 +56,9 @@ function pipeRequest(pipePath, method, params, timeoutMs = 8000, beforeSend) {
         const message = JSON.parse(buffer.subarray(4, length + 4).toString("utf8"));
         if (message.id !== 1 || message.jsonrpc !== "2.0") throw new Error();
         // Do not put arbitrary native error text (possibly containing auth data) in UI/logs.
-        if (message.error) return finish(new Error("Codex 拒绝了本地任务接口请求。"));
+        if (message.error) return finish(pipeError("Codex 拒绝了本地任务接口请求。", "CODEX_PIPE_REJECTED"));
         finish(null, message.result);
-      } catch { finish(new Error("Codex 本地接口返回了不兼容的数据。")); }
+      } catch { finish(pipeError("Codex 本地接口返回了不兼容的数据。", "CODEX_PIPE_PROTOCOL")); }
     });
   });
 }
@@ -74,7 +74,7 @@ function parseToolResult(result) {
     if (item.type !== "inputText") continue;
     try { return JSON.parse(item.text); } catch { /* Try the next structured item. */ }
   }
-  throw new Error("Codex 任务接口返回格式不兼容。" );
+  throw pipeError("Codex 任务接口返回格式不兼容。", "CODEX_PIPE_PROTOCOL");
 }
 
 function createDesktopBridge({ request = pipeRequest, platform = process.platform, env = process.env, goals,
@@ -94,20 +94,22 @@ function createDesktopBridge({ request = pipeRequest, platform = process.platfor
     }
     const matches = (await Promise.all([...candidates].map(async (candidate) => {
       try {
-        const result = await request(candidate, "tools/list", { threadStartKind: "all" }, 1500);
+        const result = await request(candidate, "tools/list", { threadStartKind: "all" }, 4000);
         return REQUIRED_TOOLS.every((name) => result?.tools?.some((tool) => tool.name === name && tool.namespace === "codex_app")) ? candidate : null;
       } catch { return null; }
     }))).filter(Boolean);
-    if (matches.length !== 1) throw new Error(matches.length > 1
+    if (matches.length !== 1) throw pipeError(matches.length > 1
       ? "检测到多个 Codex 桌面实例，无法确定要恢复的实例。"
-      : "未连接到兼容的 Codex 桌面版，请打开 Codex 并保持任务窗口可用。" );
+      : "未连接到兼容的 Codex 桌面版，请打开 Codex 并保持任务窗口可用。",
+      matches.length > 1 ? "CODEX_PIPE_AMBIGUOUS" : "CODEX_PIPE_UNAVAILABLE");
     endpoint = matches[0];
     return endpoint;
   }
   async function call(tool, args, threadId, beforeSend) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const currentEndpoint = endpoint ?? await discover();
+      let currentEndpoint = endpoint;
       try {
+        currentEndpoint ??= await discover();
         await beforeSend?.();
         return parseToolResult(await request(currentEndpoint, "tools/call", {
           namespace: "codex_app", tool, arguments: args, threadId, callerSource: "codex",

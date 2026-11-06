@@ -21,7 +21,9 @@ const { spawn } = require("node:child_process");
 const { fileCredentialStoreConfig, resolveCodexHome } = require("./codex-config");
 const { WINDOWS_DESKTOP_SCAN, WINDOWS_WRITERS_SCAN, WINDOWS_CONFLICT_OUTPUT,
   parseProcessRecords, canStopConflicts, stopConflictsScript } = require("./codex-process-guard");
-const { normalizeSubscription, subscriptionFromClaims } = require("./subscription");
+const { normalizeSubscription, subscriptionFromClaims, mergeSubscriptionClaims, accountSubscription } = require("./subscription");
+const { createSubscriptionReader } = require("./subscription-client");
+const { preserveProjectState } = require("./codex-project-state");
 const {
   QUOTA_CONFLICT_WINDOW_MS,
   QUOTA_ESTIMATE_ALGORITHM,
@@ -73,6 +75,8 @@ const { createDesktopBridge, readLocalThreadAnchor, readLocalThreadMetadata } = 
 const { createDesktopQuotaReader, quotaFromDesktopUsage } = require("./quota/desktop-quota");
 const { createOnlineAccounts, SOURCE: ONLINE_ACCOUNT_SOURCE } = require("./quota/online-accounts");
 let onlineAccounts = null;
+let subscriptionReader = null;
+let subscriptionTimer = null;
 let onlineQuitReady = false;
 let autoRecovery = null;
 let autoRecoveryTimer = null;
@@ -134,6 +138,9 @@ const desktopQuotaReader = createDesktopQuotaReader({
       localDataCache.invalidate();
       broadcastStateChanged({ scope: "quota" });
     }
+  },
+  onStatus: async (scope, status) => {
+    if (await saveDesktopQuotaStatus(scope, status)) broadcastStateChanged({ scope: "quota" });
   },
 });
 
@@ -935,7 +942,11 @@ function markAccountAuthSnapshot(account, auth, content, now, { trustedLogin = f
   ) {
     account.refreshTokenRotatedAt = now;
   }
-  account.identity = auth.identity;
+  const sameIdentity = identityKey(account.identity ?? {}) === identityKey(auth.identity)
+    && normalizePlanType(account.identity?.planType) === normalizePlanType(auth.identity.planType);
+  const subscription = sameIdentity ? mergeSubscriptionClaims(account.identity?.subscription, auth.identity.subscription) : auth.identity.subscription;
+  if (!sameIdentity) { delete account.subscription; delete account.subscriptionStatus; }
+  account.identity = { ...auth.identity, subscription };
   account.updatedAt = now;
   account.lastRefresh = authLastRefresh(auth.parsed);
   account.authFingerprint = fingerprint(content);
@@ -947,6 +958,22 @@ function markAccountAuthSnapshot(account, auth, content, now, { trustedLogin = f
     delete account.reauthReason;
     delete account.reauthMarkedAt;
   }
+}
+
+function quotaQueryStatus(previous, status) {
+  const next = { checkedAt: status.checkedAt, error: status.error, code: status.code ?? null,
+    httpStatus: status.httpStatus ?? null, retryAt: status.retryAt ?? null, source: status.source };
+  return { ...next, lastFailure: status.error ? { ...next } : previous?.lastFailure ?? null };
+}
+
+async function saveDesktopQuotaStatus(scope, status) {
+  return mutateIndex(async (index) => {
+    const account = index.accounts.find((item) => item.id === scope.accountId);
+    if (!account || index.activeAccountId !== scope.accountId || account.lastSwitchedAt !== scope.since
+      || Date.parse(account.onlineQuotaStatus?.checkedAt) > Date.parse(status.checkedAt)) return { write: false, value: false };
+    account.onlineQuotaStatus = quotaQueryStatus(account.onlineQuotaStatus, status);
+    return { value: true };
+  });
 }
 
 function getOnlineAccounts() {
@@ -989,7 +1016,8 @@ function getOnlineAccounts() {
       if (Date.parse(account.quotaSnapshot?.checkedAt) > Date.parse(quota.checkedAt)) return { write: false };
       account.quotaSnapshot = { ...quota, identityKey: identityKey(account.identity) };
       account.quotaSnapshotUpdatedAt = quota.checkedAt;
-      account.onlineQuotaStatus = { checkedAt: quota.checkedAt, error: null };
+      account.onlineQuotaStatus = quotaQueryStatus(account.onlineQuotaStatus,
+        { checkedAt: quota.checkedAt, error: null, source: "online-account" });
       delete account.needsReauth;
       delete account.reauthReason;
       delete account.reauthMarkedAt;
@@ -1004,7 +1032,7 @@ function getOnlineAccounts() {
     saveStatus: (id, content, status) => mutateIndex(async (index) => {
       const account = index.accounts.find((item) => item.id === id);
       if (!account || await loadAccountAuth(id) !== content) return { write: false };
-      account.onlineQuotaStatus = { checkedAt: status.checkedAt, error: status.error };
+      account.onlineQuotaStatus = quotaQueryStatus(account.onlineQuotaStatus, status);
       if (status.needsReauth) {
         account.needsReauth = true;
         account.reauthReason = status.error;
@@ -1014,6 +1042,51 @@ function getOnlineAccounts() {
     }),
   });
   return onlineAccounts;
+}
+
+async function readSubscriptionCredentials(id) {
+  const account = (await readIndex()).accounts.find((item) => item.id === id);
+  if (!account) return null;
+  const current = await readCurrentAuth().catch(() => null);
+  const active = current && identityKey(current.identity) === identityKey(account.identity);
+  const content = active ? current.content : await loadAccountAuth(id);
+  const auth = validateAuthJson(content);
+  if (identityKey(auth.identity) !== identityKey(account.identity)) throw new Error("账号身份已改变。");
+  return { content, identity: auth.identity };
+}
+
+function getSubscriptions() {
+  if (subscriptionReader) return subscriptionReader;
+  subscriptionReader = createSubscriptionReader({
+    getAccount: async (id) => (await readIndex()).accounts.find((account) => account.id === id),
+    listAccounts: async () => (await readIndex()).accounts,
+    readCredentials: readSubscriptionCredentials,
+    saveResult: async (id, expected, subscription, status) => {
+      // Reads do not rotate credentials; discard a response if credentials or
+      // identity changed while it was in flight. Never write back auth.json.
+      const fresh = await readSubscriptionCredentials(id).catch(() => null);
+      if (expected && (!fresh || fresh.content !== expected.content)) return;
+      const changed = await mutateIndex(async (index) => {
+        const account = index.accounts.find((item) => item.id === id);
+        if (!account || (expected && (identityKey(account.identity) !== identityKey(expected.identity)
+          || normalizePlanType(account.identity?.planType) !== normalizePlanType(expected.identity.planType)))
+          || Date.parse(account.subscriptionStatus?.checkedAt) > Date.parse(status.checkedAt)) return { write: false, value: false };
+        if (subscription) account.subscription = subscription;
+        account.subscriptionStatus = status;
+        return { value: true };
+      });
+      if (changed) broadcastStateChanged({ scope: "accounts" });
+    },
+  });
+  return subscriptionReader;
+}
+
+function startSubscriptionPolling() {
+  if (subscriptionTimer) return;
+  const poll = () => { if (!isQuitting) getSubscriptions().checkAll().catch(() => {}); };
+  subscriptionTimer = setInterval(poll, 3600000);
+  subscriptionTimer.unref?.();
+  poll();
 }
 
 function portableSnapshotRisk(previous, incoming) {
@@ -1562,6 +1635,17 @@ async function backupCurrentAuth(content, reason) {
   return backupPath;
 }
 
+async function backupCodexProjectState(content) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const extension = credentialFileExtension();
+  const filename = `codex-project-state-${stamp}-${crypto.randomUUID()}.${extension}`;
+  await writeTextAtomic(path.join(backupsDir(), filename), `${await protectText(content)}\n`);
+  // These backups may include local prompts; keep them encrypted and bounded.
+  const previous = (await fs.readdir(backupsDir())).filter(name =>
+    /^codex-project-state-[0-9TZ-]+-[0-9a-f-]+\.(?:dpapi|keychain)$/.test(name)).sort().reverse();
+  for (const name of previous.slice(5)) await fs.rm(path.join(backupsDir(), name), { force: true }).catch(() => {});
+}
+
 async function migratePlaintextBackups() {
   await ensureStoreDirs();
   let entries;
@@ -1738,7 +1822,7 @@ function scheduleReauthCheck(accountId, expectedFingerprint, expectedLastRefresh
         account.reauthMarkedAt = new Date().toISOString();
         return { value: true };
       });
-      if (changed) broadcastStateChanged();
+      if (changed) { broadcastStateChanged(); getSubscriptions().checkAll().catch(() => {}); }
     } catch {
       // Reauth checks are best-effort and should not interrupt the app.
     }
@@ -1753,7 +1837,7 @@ function scheduleAuthSync() {
     authSyncTimer = null;
     try {
       const changed = await syncCurrentAuthToStoredAccount();
-      if (changed) broadcastStateChanged();
+      if (changed) { broadcastStateChanged(); getSubscriptions().checkAll().catch(() => {}); }
     } catch {
       // The auth file can be temporarily missing or half-written while Codex updates it.
     }
@@ -1926,6 +2010,14 @@ async function switchAccountLocked(accountId, options = {}) {
     const targetContent = await loadAccountAuth(target.id);
     const validation = validateAuthJson(targetContent);
     if (identityKey(validation.identity) !== identityKey(target.identity)) throw new Error("保存的凭证与账号不一致，请重新登录后保存。");
+    let sourceIdentity = null;
+    try { sourceIdentity = (await readCurrentAuth()).identity; } catch { /* Legacy desktops may have no active login. */ }
+    await preserveProjectState({ codexHome: codexDir(), sourceIdentity, targetIdentity: validation.identity,
+      backup: backupCodexProjectState, writeAtomic: writeTextAtomic,
+      beforeWrite: async () => {
+        await assertCodexStopped();
+        if (options.allowed && !options.allowed()) throw new Error("登录操作已改变，已取消自动切换。");
+      } });
     // Do not replace credentials if another client started while backing up.
     await assertCodexStopped();
     if (options.allowed && !options.allowed()) throw new Error("登录操作已改变，已取消自动切换。");
@@ -4409,7 +4501,7 @@ async function getAllAccountsQuotaSummary() {
       id: account.id,
       displayName: account.displayName,
       planType: account.identity?.planType ?? null,
-      subscription: normalizeSubscription(account.identity?.subscription),
+      subscription: accountSubscription(account),
       isActive,
       onlineQuotaStatus: account.onlineQuotaStatus ?? null,
       quotaSnapshot: snapshot
@@ -5162,10 +5254,12 @@ async function checkAccountQuota(accountId) {
   const scope = await dashboardScope();
   if (scope.hasCurrentAuth && scope.accountId === accountId) {
     const quota = await desktopQuotaReader.refresh(scope);
+    getSubscriptions().check(accountId).catch(() => {});
     return { refreshed: !!quota, available: null, reason: quota ? "在线额度已更新。"
-      : "当前账号在线查询未成功，请确认 Codex 已打开且有可用任务。" };
+      : desktopQuotaReader.getStatus(scope)?.error ?? "当前账号在线查询未成功，请确认 Codex 已打开且有可用任务。" };
   }
-  const result = await getOnlineAccounts().check(accountId, { force: true });
+  const result = await getOnlineAccounts().check(accountId, { force: true, manual: true });
+  getSubscriptions().check(accountId).catch(() => {});
   broadcastStateChanged({ scope: "quota" });
   return { refreshed: !!result.quota, available: result.available, reason: result.reason ?? (result.available === true ? "在线额度可用。"
     : result.available === false ? "当前额度不足，自动切换会跳过此账号。" : "额度数据不完整，暂不能确认可用。") };
@@ -5293,6 +5387,7 @@ if (hasSingleInstanceLock) {
     await startLocalLogWatcher();
     await startSessionsWatcher();
     await startSessionsPolling();
+    startSubscriptionPolling();
     await startAutoRecovery();
     scheduleStartupUpdateCheck();
 
@@ -5331,6 +5426,8 @@ app.on("before-quit", (event) => {
     return;
   }
   isQuitting = true;
+  subscriptionReader?.stop();
+  if (subscriptionTimer) clearInterval(subscriptionTimer);
   if (widgetBoundsSaveTimer) {
     clearTimeout(widgetBoundsSaveTimer);
     widgetBoundsSaveTimer = null;

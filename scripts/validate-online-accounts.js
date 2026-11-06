@@ -19,6 +19,7 @@ function fixture(options = {}) {
   let queue = Promise.resolve();
   const deps = {
     now: () => clock,
+    sleep: async () => { await options.onRetry?.(); },
     runExclusive: (fn) => {
       const work = queue.then(async () => { assert.equal(locked, false); locked = true; try { return await fn(); } finally { locked = false; } });
       queue = work.catch(() => {}); return work;
@@ -140,8 +141,52 @@ async function run() {
   await network.service.check("b");
   assert.equal(network.state().status.needsReauth, false);
   assert.deepEqual(network.account.quotaSnapshot, quota, "failure keeps the previous success and timestamp");
-  await network.service.check("b", { force: true }); assert.equal(network.calls.length, 1, "force still respects failure backoff");
-  network.advance(60001); await network.service.check("b"); assert.equal(network.calls.length, 2);
+  assert.equal(network.calls.length, 2, "transient reads retry once");
+  await network.service.check("b", { force: true }); assert.equal(network.calls.length, 2, "automatic checks respect failure backoff");
+  await network.service.check("b", { force: true, manual: true });
+  assert.equal(network.calls.length, 4, "explicit refresh bypasses a transient failure cooldown");
+  network.advance(10001); await network.service.check("b"); assert.equal(network.calls.length, 6);
+  assert.equal(network.state().status.code, "network");
+  assert.equal(network.state().status.retryAt, NOW + 20001);
+
+  for (const failure of [new OnlineError("timeout", "timeout"), { status: 503 }]) {
+    const transient = fixture({ request: async (_url, _init, { calls }) => {
+      if (calls.length > 1) return { status: 200, data: sample() };
+      if (failure instanceof Error) throw failure;
+      return failure;
+    } });
+    assert.equal((await transient.service.check("b")).available, true);
+    assert.equal(transient.calls.length, 2, "short-lived read failures recover automatically");
+    assert.equal(transient.state().status, null);
+  }
+  for (const response of [{ status: 429, retryAfter: "120" }, { status: 503, retryAfter: "120" },
+    { status: 429, retryAfter: new Date(NOW + 120000).toUTCString() }, { status: 429, retryAfter: "7200" }, { status: 403 }]) {
+    const limited = fixture({ request: async () => response });
+    await limited.service.check("b");
+    await limited.service.check("b", { force: true, manual: true });
+    assert.equal(limited.calls.length, 1, "manual refresh respects server cooldowns and nontransient errors");
+    assert.equal(limited.state().status.httpStatus, response.status);
+    const delay = response.retryAfter === "7200" ? 7200000 : response.retryAfter ? 120000 : 60000;
+    limited.advance(delay - 1); await limited.service.check("b", { force: true, manual: true });
+    assert.equal(limited.calls.length, 1);
+    limited.advance(1); await limited.service.check("b", { force: true, manual: true });
+    assert.equal(limited.calls.length, 2);
+  }
+  const uncertainRenewal = fixture({ expired: true, request: async () => { throw new OnlineError("network", "offline"); } });
+  await uncertainRenewal.service.check("b");
+  await uncertainRenewal.service.check("b", { force: true, manual: true });
+  assert.deepEqual(uncertainRenewal.calls.map((call) => call.url), [TOKEN_URL], "never automatically replay renewal POST or bypass its cooldown");
+  let retryCancelled = false;
+  const cancelRetry = fixture({ onRetry: () => { retryCancelled = true; },
+    request: async () => { throw new OnlineError("network", "offline"); } });
+  await cancelRetry.service.check("b", { allowed: () => !retryCancelled });
+  assert.equal(cancelRetry.calls.length, 1, "recheck cancellation before retry");
+  let switchRetry;
+  const activeRetry = fixture({ onRetry: () => switchRetry(),
+    request: async () => { throw new OnlineError("network", "offline"); } });
+  switchRetry = activeRetry.active;
+  await activeRetry.service.check("b");
+  assert.equal(activeRetry.calls.length, 1, "do not retry against an account activated during the wait");
 
   const unauthorized = fixture({ request: async (url, _init, { calls }) => url === TOKEN_URL
     ? { status: 200, data: { access_token: token(NOW / 1000 + 7200) } }

@@ -60,12 +60,19 @@ async function validateReader() {
   assert.equal(updates.at(-1).scope.since, current.since);
   assert.equal(reader.read({ ...scope, hasCurrentAuth: false }), null);
 
-  let failures = 0;
+  let failures = 0, offline = true;
+  const statuses = [];
   const unavailable = createDesktopQuotaReader({ now: () => now, getScope: async () => scope,
-    getAnchor: async () => "thread", readUsage: async () => { failures++; throw new Error("offline"); },
-    onUpdate: () => assert.fail("unavailable desktop must not update") });
+    getAnchor: async () => "thread", readUsage: async () => {
+      failures++;
+      if (offline) throw Object.assign(new Error("FAKE-secret"), { code: "CODEX_PIPE_TIMEOUT" });
+      return usage(40);
+    }, onStatus: (_scope, status) => statuses.push(status), onUpdate: () => { assert.equal(offline, false); } });
   unavailable.read(scope); await flush(); unavailable.read(scope); await flush();
   assert.equal(failures, 1, "failed reads are throttled too");
+  assert.equal(unavailable.getStatus(scope).code, "CODEX_PIPE_TIMEOUT");
+  assert.equal(unavailable.getStatus(scope).error.includes("FAKE"), false);
+  assert.equal(statuses[0].checkedAt, new Date(now).toISOString());
 
   let resetClock = NOW, resetCalls = 0;
   const resetting = createDesktopQuotaReader({ now: () => resetClock, getScope: async () => scope,
@@ -102,6 +109,18 @@ async function validateReader() {
   request.resolve(usage(30));
   assert.equal(await switched, null, "a manual refresh crossing an account switch is discarded");
   assert.equal(await unavailable.refresh(scope), null, "failed manual reads do not report stale data as fresh");
+  offline = false;
+  assert.equal((await unavailable.refresh(scope)).session.usedPercent, 40);
+  assert.equal(unavailable.getStatus(scope).error, null, "recovery clears the visible failure");
+  const successfulAt = unavailable.read(scope).checkedAt;
+  now += 1000; offline = true;
+  await unavailable.refresh(scope);
+  assert.equal(unavailable.read(scope).checkedAt, successfulAt, "failure keeps the last successful data");
+  assert.equal(unavailable.getStatus({ ...scope, since: stamp(1) }), null, "status cannot cross account scopes");
+  const noAnchor = createDesktopQuotaReader({ now: () => now, getScope: async () => scope,
+    getAnchor: async () => null, readUsage: () => assert.fail("no anchor"), onUpdate: () => {} });
+  await noAnchor.refresh(scope);
+  assert.equal(noAnchor.getStatus(scope).code, "CODEX_QUOTA_ANCHOR");
 }
 
 async function validateManualDispatch() {
@@ -111,13 +130,15 @@ async function validateManualDispatch() {
     ? { app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => __dirname } }
     : name === "./quota/desktop-quota" ? { quotaFromDesktopUsage, createDesktopQuotaReader: () => ({
       refresh: async () => { currentCalls++; return fresh ? { checkedAt: stamp() } : null; },
+      getStatus: () => ({ error: "Codex 本地接口响应超时，请稍后重试。" }),
     }) } : realRequire(name),
     process, __dirname: path.dirname(filename), console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval });
   vm.runInContext(fs.readFileSync(filename, "utf8"), sandbox);
   sandbox.dashboardScope = async () => scope;
   sandbox.broadcastStateChanged = () => {};
+  sandbox.getSubscriptions = () => ({ check: async () => {} });
   sandbox.getOnlineAccounts = () => ({ check: async (id, options) => {
-    standbyCalls++; assert.equal(id, "standby"); assert.equal(options.force, true);
+    standbyCalls++; assert.equal(id, "standby"); assert.equal(options.force, true); assert.equal(options.manual, true);
     return fresh ? { available: false, quota: { weekly: { usedPercent: 100 } } } : { available: null, reason: "offline" };
   } });
   assert.equal((await sandbox.checkAccountQuota(scope.accountId)).refreshed, true);
@@ -126,7 +147,9 @@ async function validateManualDispatch() {
   assert.equal(exhausted.refreshed, true, "successfully reading an exhausted account still counts as refreshed");
   assert.equal(exhausted.available, false);
   fresh = false;
-  assert.equal((await sandbox.checkAccountQuota(scope.accountId)).refreshed, false);
+  const failed = await sandbox.checkAccountQuota(scope.accountId);
+  assert.equal(failed.refreshed, false);
+  assert.match(failed.reason, /超时/);
   assert.equal((await sandbox.checkAccountQuota("standby")).refreshed, false);
   assert.equal(currentCalls, 2); assert.equal(standbyCalls, 2);
   await assert.rejects(sandbox.checkAccountQuota(null), /请选择账号/);
@@ -149,6 +172,14 @@ async function validateIntegration() {
   const account = { id: scope.accountId, identity: { planType: "plus" }, lastSwitchedAt: scope.since, quotaSnapshot: old };
   const index = { activeAccountId: scope.accountId, accounts: [account] };
   sandbox.mutateIndex = async (action) => (await action(index))?.value;
+  const failure = { checkedAt: stamp(), error: "timeout", code: "CODEX_PIPE_TIMEOUT", source: "local-desktop" };
+  assert.equal(await sandbox.saveDesktopQuotaStatus(scope, failure), true);
+  assert.equal(account.onlineQuotaStatus.lastFailure.code, failure.code);
+  assert.equal(await sandbox.saveDesktopQuotaStatus({ ...scope, since: stamp(1) }, failure), false);
+  assert.equal(await sandbox.saveDesktopQuotaStatus(scope, { checkedAt: stamp(1), error: null, source: "local-desktop" }), true);
+  assert.equal(account.onlineQuotaStatus.error, null);
+  assert.equal(account.onlineQuotaStatus.lastFailure.checkedAt, stamp(), "retain the last failure after recovery");
+  assert.equal(await sandbox.saveDesktopQuotaStatus(scope, failure), false, "older failure cannot replace a new success");
   const resolved = await sandbox.resolveQuotaWithMode(scope, []);
   assert.equal(resolved.session.usedPercent, 100, "desktop replaces the stuck 67% remaining snapshot");
   assert.equal(resolved.weekly.usedPercent, 16);

@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { normalizeSubscription, subscriptionFromClaims } = require("../src/subscription");
+const { normalizeSubscription, subscriptionFromClaims, mergeSubscriptionClaims, accountSubscription,
+  parseSubscription, subscriptionRefreshDue, subscriptionUrl, isSubscriptionUrl } = require("../src/subscription");
 
 const identity = { userId: "workspace-a", subject: "person-a", planType: "plus" };
 const until = "2026-10-10T20:08:19+08:00";
@@ -43,11 +44,47 @@ const display = ui.window.CodexQuotaUI.subscriptionDisplay;
 assert.match(display(snapshot, Date.parse("2026-10-01T00:00:00Z")).label, /^到期 \d{2}\/\d{2}$/);
 assert.match(display(snapshot, Date.parse("2026-10-01T00:00:00Z")).title, /2026/);
 assert.match(display(snapshot, Date.parse("2026-10-01T00:00:00Z")).title, /不代表自动扣费日/);
-assert.equal(display(snapshot, Date.parse("2026-10-11T00:00:00Z")).label, "到期 待更新",
-  "an elapsed local snapshot must not claim the current subscription has expired");
+assert.match(display(snapshot, Date.parse("2026-10-11T00:00:00Z")).label, /^到期 \d{2}\/\d{2} · 待更新$/,
+  "an elapsed snapshot keeps its known date without claiming the current subscription has expired");
 assert.equal(display(null).label, "到期 未知");
 
 (async () => {
+  const now = Date.parse("2026-10-01T00:00:00Z"), day = 86400000;
+  const online = parseSubscription({ plan_type: "plus", active_until: "2026-11-01T00:00:00Z" }, identity, now);
+  assert.equal(online.source, "online-subscription");
+  assert.equal(online.checkedAt, new Date(now).toISOString());
+  assert.equal(parseSubscription({ plan_type: "plus", active_until: online.activeUntil, account_id: "wrong" }, identity, now), null);
+  assert.equal(parseSubscription({ plan_type: "team", active_until: online.activeUntil }, identity, now), null);
+  assert.equal(parseSubscription({ plan_type: "plus", active_until: "invalid" }, identity, now), null);
+  assert.equal(parseSubscription({ plan_type: "plus" }, identity, now), null);
+  assert.deepEqual(accountSubscription({ subscription: online, identity: { subscription: snapshot } }), online,
+    "online subscription takes precedence over dated login claims");
+  assert.deepEqual(mergeSubscriptionClaims(snapshot, null), snapshot);
+  assert.deepEqual(mergeSubscriptionClaims(snapshot, { ...snapshot, activeUntil: "2026-09-01T00:00:00Z", checkedAt: "2026-08-01T00:00:00Z" }), snapshot);
+  const account = { subscription: online };
+  assert.equal(subscriptionRefreshDue({ identity: { subscription: snapshot } }, now), true, "bootstrap a live record once");
+  assert.equal(subscriptionRefreshDue(account, now + 10 * day), false, "reuse the cache weeks before expiry");
+  const expiry = Date.parse(online.activeUntil);
+  assert.equal(subscriptionRefreshDue(account, expiry - day), true, "refresh in the day before expiry");
+  account.subscription = { ...online, checkedAt: new Date(expiry - day).toISOString() };
+  assert.equal(subscriptionRefreshDue(account, expiry - 1), false);
+  assert.equal(subscriptionRefreshDue(account, expiry), true, "refresh when the old date is crossed");
+  account.subscription.checkedAt = new Date(expiry).toISOString();
+  assert.equal(subscriptionRefreshDue(account, expiry + day - 1), false, "past dates are checked at most daily");
+  assert.equal(subscriptionRefreshDue(account, expiry + day), true);
+  account.subscriptionStatus = { retryAt: expiry + 2 * day };
+  assert.equal(subscriptionRefreshDue(account, expiry + day), false, "persisted failure cooldown survives restart");
+  assert.equal(isSubscriptionUrl(subscriptionUrl("workspace-a")), true);
+  for (const invalid of ["https://evil.example/backend-api/subscriptions?account_id=workspace-a",
+    "https://chatgpt.com/backend-api/subscriptions?account_id=workspace-a&extra=x",
+    "https://chatgpt.com/backend-api/subscriptions?account_id=workspace-a#fragment",
+    "https://chatgpt.com/backend-api/subscriptions?account_id=../", "http://chatgpt.com/backend-api/subscriptions?account_id=a"]) {
+    assert.equal(isSubscriptionUrl(invalid), false);
+  }
+  const { requestJson } = require("../src/quota/online-accounts");
+  await assert.rejects(requestJson(subscriptionUrl("workspace-a"), { method: "POST" }), /地址/);
+
+  sandbox.accountSubscription = accountSubscription;
   sandbox.waitForIndexMutations = async () => {};
   sandbox.readIndex = async () => ({ accounts: [{ id: "saved-a", displayName: "Test account", identity: parsed }] });
   sandbox.readCurrentAuth = async () => ({ identity: parsed });
@@ -58,5 +95,7 @@ assert.equal(display(null).label, "到期 未知");
   assert.equal(summary.accounts[0].subscription.activeUntil, snapshot.activeUntil,
     "subscription dates are available even when quota has no snapshot");
   assert.equal(summary.accounts[0].isActive, true);
+  sandbox.readIndex = async () => ({ accounts: [{ id: "saved-a", identity: parsed, subscription: online }] });
+  assert.equal((await sandbox.getAllAccountsQuotaSummary()).accounts[0].subscription.activeUntil, online.activeUntil);
   console.log("Subscription validation passed: dated claims, workspace/person/plan binding, invalid dates, metadata propagation, safe overview output and stale/unknown display.");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -218,7 +218,7 @@ function createAccountQuotaDetails(account) {
     const note = document.createElement("p");
     note.className = "account-quota-empty";
     note.textContent = t("更新失败 · 显示缓存");
-    note.title = account.onlineQuotaStatus.error;
+    note.title = q.quotaFailureDetail(account.onlineQuotaStatus);
     details.append(note);
   }
 

@@ -420,7 +420,7 @@ function createAccountQuotaDetails(account) {
     const warning = document.createElement("p");
     warning.className = "account-quota-empty";
     warning.textContent = account.quotaSnapshot ? t("更新失败 · 显示缓存") : t("更新失败");
-    warning.title = account.onlineQuotaStatus.error;
+    warning.title = q.quotaFailureDetail(account.onlineQuotaStatus);
     details.append(warning);
   }
 
@@ -504,7 +504,7 @@ function accountCard(account) {
   switched.textContent = account.needsReauth ? t("需要重新登录")
     : account.onlineQuotaStatus?.error ? quota ? t("更新失败 · 显示缓存") : t("更新失败")
       : q.quotaFreshnessLabel(quota, { compact: true, inline: true });
-  switched.title = account.reauthReason || account.onlineQuotaStatus?.error || q.quotaFreshnessLabel(quota);
+  switched.title = account.reauthReason || q.quotaFailureDetail(account.onlineQuotaStatus) || q.quotaFreshnessLabel(quota);
   meta.append(identity, switched);
 
   main.append(line, meta);
@@ -770,7 +770,7 @@ function overviewQuotaFailure(account) {
   if (failed && (!Number.isFinite(snapshotAt) || snapshotAt <= failed.at)) return failed.reason;
   const status = account.onlineQuotaStatus;
   return status?.error && (!Number.isFinite(snapshotAt) || Date.parse(status.checkedAt) >= snapshotAt)
-    ? t("在线查询失败。") : null;
+    ? q.quotaFailureDetail(status) : null;
 }
 
 async function renderAllAccountsQuota() {

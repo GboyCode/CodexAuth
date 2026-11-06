@@ -1,5 +1,18 @@
-// Subscription metadata is a dated account snapshot, not a live billing lookup.
-// Never substitute JWT exp or a quota reset for the subscription's end date.
+// Subscription dates are separate from both credential expiry and quota resets.
+const SUBSCRIPTION_URL = "https://chatgpt.com/backend-api/subscriptions";
+const DAY_MS = 86400000;
+
+function subscriptionUrl(accountId) {
+  if (typeof accountId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(accountId)) throw new Error("Invalid subscription account.");
+  return `${SUBSCRIPTION_URL}?account_id=${accountId}`;
+}
+
+function isSubscriptionUrl(value) {
+  try {
+    const url = new URL(value);
+    return value === subscriptionUrl(url.searchParams.get("account_id"));
+  } catch { return false; }
+}
 function subscriptionTimestamp(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
   const [year, month, day] = value.slice(0, 10).split("-").map(Number);
@@ -12,10 +25,42 @@ function subscriptionTimestamp(value) {
 }
 
 function normalizeSubscription(value) {
-  if (value?.source !== "auth-claims") return null;
+  if (!["auth-claims", "online-subscription"].includes(value?.source)) return null;
   const activeUntil = subscriptionTimestamp(value.activeUntil);
   if (!activeUntil) return null;
-  return { activeUntil, checkedAt: subscriptionTimestamp(value.checkedAt), source: "auth-claims" };
+  return { activeUntil, checkedAt: subscriptionTimestamp(value.checkedAt), source: value.source };
+}
+
+function mergeSubscriptionClaims(previous, incoming) {
+  const before = normalizeSubscription(previous), next = normalizeSubscription(incoming);
+  if (!before) return next;
+  if (!next) return before;
+  return (Date.parse(next.checkedAt) || 0) >= (Date.parse(before.checkedAt) || 0) ? next : before;
+}
+
+function accountSubscription(account) {
+  return normalizeSubscription(account.subscription) ?? normalizeSubscription(account.identity?.subscription);
+}
+
+function parseSubscription(data, identity, now = Date.now()) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const plan = (value) => typeof value === "string" ? value.toLowerCase().replace(/^team$/, "business") : null;
+  if (!identity?.userId || !plan(identity.planType) || plan(data.plan_type) !== plan(identity.planType)
+    || plan(data.plan_type) === "free" || (data.account_id && data.account_id !== identity.userId)) return null;
+  return normalizeSubscription({ activeUntil: data.active_until, checkedAt: new Date(now).toISOString(), source: "online-subscription" });
+}
+
+function subscriptionRefreshDue(account, now = Date.now()) {
+  const retryAt = account.subscriptionStatus?.retryAt;
+  if (typeof retryAt === "number" && Number.isFinite(retryAt) && retryAt > now) return false;
+  const saved = normalizeSubscription(account.subscription);
+  if (!saved || saved.source !== "online-subscription") return true;
+  const until = Date.parse(saved.activeUntil), checked = Date.parse(saved.checkedAt);
+  if (!Number.isFinite(checked) || checked > now) return true;
+  if (until - now > DAY_MS) return false;
+  // Refresh once in the day before expiry, again when the date is crossed,
+  // then at most daily if the service still reports the old subscription.
+  return (until <= now && checked < until) || now - checked >= DAY_MS;
 }
 
 function subscriptionFromClaims(payloads, identity) {
@@ -38,4 +83,5 @@ function subscriptionFromClaims(payloads, identity) {
   return candidates.sort((a, b) => (Date.parse(b.checkedAt) || 0) - (Date.parse(a.checkedAt) || 0))[0] ?? null;
 }
 
-module.exports = { normalizeSubscription, subscriptionFromClaims };
+module.exports = { normalizeSubscription, subscriptionFromClaims, mergeSubscriptionClaims,
+  accountSubscription, parseSubscription, subscriptionRefreshDue, subscriptionUrl, isSubscriptionUrl };

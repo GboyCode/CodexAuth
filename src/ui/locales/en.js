@@ -101,6 +101,17 @@
     "批量刷新失败，请稍后重试。": "Refresh failed. Try again later.",
     "刷新全部": "Refresh all",
     "在线查询失败。": "Online check failed.",
+    "Codex 本地接口连接失败，请稍后重试。": "Could not connect to Codex. Try again shortly.",
+    "Codex 本地接口已断开，请稍后重试。": "The Codex connection closed. Try again shortly.",
+    "Codex 本地接口响应超时，请稍后重试。": "Codex did not respond in time. Try again shortly.",
+    "未连接到兼容的 Codex 桌面版，请打开 Codex 后重试。": "No compatible Codex desktop app is connected. Open Codex and try again.",
+    "检测到多个 Codex 桌面实例，无法确定额度来源。": "Multiple Codex desktop instances are open. The quota source is ambiguous.",
+    "Codex 拒绝了本地额度查询，请稍后重试。": "Codex rejected the quota query. Try again shortly.",
+    "Codex 本地接口返回格式不兼容。": "The Codex response format is incompatible.",
+    "Codex 未完成额度查询，请稍后重试。": "Codex could not complete the quota query. Try again shortly.",
+    "没有可用的本地任务，请在 Codex 中打开任务后重试。": "No local task is available. Open a task in Codex and try again.",
+    "Codex 返回的账号或额度数据不匹配，请稍后重试。": "The account or quota data returned by Codex does not match. Try again shortly.",
+    "当前账号额度读取或保存失败，请稍后重试。": "Could not read or save quota for the current account. Try again shortly.",
     "当前账号": "Current account",
     "全部账号额度暂时不可用": "Account quotas are unavailable",
     "已刷新": "Refreshed",
@@ -215,6 +226,7 @@
     "\n更新 {0}": "\nUpdated {0}",
     "\n不代表自动扣费日。": "\nThis is not the automatic billing date.",
     "到期 待更新": "Expiry pending",
+    "{0} · 待更新": "{0} · awaiting update",
     "{0}\n日期已过，待更新。": "{0}\nDate has passed. Awaiting update.",
     "当前版本 v{0}，点击从 GitHub 检查更新": "Current version v{0}. Check GitHub for updates.",
     "正在连接 GitHub…": "Connecting to GitHub…",
@@ -384,7 +396,10 @@
     "CodexAuth 加密迁移文件": "CodexAuth encrypted transfer file",
     "CodexAuth 加密凭证": "CodexAuth encrypted credentials",
     "选择账号凭证（可多选）": "Select credential files",
-    "更新已保存的账号": "Update saved accounts"
+    "更新已保存的账号": "Update saved accounts",
+    "无法读取 Codex 项目状态，已取消切换以保护项目列表。": "Could not read Codex project state. Switching was canceled to protect your project list.",
+    "无法确认 Codex 项目状态所属账号，已取消切换。": "Could not verify the account that owns Codex project state. Switching was canceled.",
+    "Codex 项目状态在切换期间发生变化，请重试。": "Codex project state changed during the switch. Please try again."
   };
   if (typeof module === "object" && module.exports) module.exports = messages;
   else root.CodexEnglish = messages;

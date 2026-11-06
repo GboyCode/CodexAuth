@@ -222,14 +222,22 @@
     let title = t("到期 {0}", fullDate);
     if (Number.isFinite(checkedAt)) title += t("\n更新 {0}", new Date(checkedAt).toLocaleDateString(window.CodexI18n.locale()));
     title += t("\n不代表自动扣费日。");
-    if (until <= now) return { label: t("到期 待更新"), title: t("{0}\n日期已过，待更新。", title) };
+    const label = t("到期 {0}", new Intl.DateTimeFormat(window.CodexI18n.locale(), { month: "2-digit", day: "2-digit" }).format(date));
+    if (until <= now) return { label: t("{0} · 待更新", label), title: t("{0}\n日期已过，待更新。", title) };
     return {
-      label: t("到期 {0}", new Intl.DateTimeFormat(window.CodexI18n.locale(), { month: "2-digit", day: "2-digit" }).format(date)),
+      label,
       title,
     };
   }
 
+  function quotaFailureDetail(status) {
+    if (!status?.error) return "";
+    const at = Date.parse(status.checkedAt);
+    return [t(status.error), Number.isFinite(at) ? new Date(at).toLocaleString(global.CodexI18n.locale()) : ""].filter(Boolean).join("\n");
+  }
+
   global.CodexQuotaUI = {
+    quotaFailureDetail,
     subscriptionDisplay,
     resetCreditsLabel,
     clampPercent,

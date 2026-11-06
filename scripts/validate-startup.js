@@ -90,6 +90,8 @@ async function scenario(target, fail = false) {
   context.readIndex = async () => ({ activeAccountId: "active", accounts: [{ id: "active" }, { id: "standby" }] });
   context.dashboardScope = async () => ({ hasCurrentAuth: false });
   context.broadcastStateChanged = () => {};
+  let subscriptionScans = 0;
+  context.getSubscriptions = () => ({ checkAll: async () => { subscriptionScans++; }, check: async () => {} });
   const open = (type) => {
     assert.ok(handlers.has("state:get"), "a window must never precede IPC registration");
     windows.push(type); results.push(handlers.get("state:get")());
@@ -110,6 +112,7 @@ async function scenario(target, fail = false) {
   } else {
     assert.deepEqual(windows, [target]);
     assert.equal(scheduledUpdates, 1, "main-window and widget-only launches each schedule one update check");
+    assert.equal(subscriptionScans, 1, "startup schedules a separate due-only subscription scan");
     assert.equal((await results[0]).accounts.length, 5);
     events.get("second-instance")({}, argv);
     assert.deepEqual(windows, [target, target]);

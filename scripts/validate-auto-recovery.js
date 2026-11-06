@@ -875,6 +875,20 @@ async function run() {
     env: { CODEX_APP_TOOLS_PIPE_PATH: "\\\\remote\\pipe\\" + appToolsPipe }, listPipes: async () => [],
     request: async () => { assert.fail("only known local pipe names can be probed"); } });
   await assert.rejects(untrustedEnvironment.discover(), /未连接到兼容/);
+  let discoveryAttempts = 0, usageCalls = 0;
+  const slowDiscovery = createDesktopBridge({ platform: "win32", env: {}, listPipes: async () => [appToolsPipe],
+    request: async (_pipe, method, _params, timeoutMs) => {
+      if (method === "tools/list") {
+        assert.equal(timeoutMs, 4000);
+        if (++discoveryAttempts === 1) throw Object.assign(new Error("busy"), { code: "CODEX_PIPE_TIMEOUT" });
+        return { tools: requiredTools };
+      }
+      usageCalls++;
+      return { success: true, contentItems: [{ type: "inputText", text: '{"ordinaryUsageAllowed":true}' }] };
+    } });
+  assert.equal((await slowDiscovery.readUsage("anchor")).ordinaryUsageAllowed, true);
+  assert.equal(discoveryAttempts, 2, "read-only calls retry failed endpoint discovery");
+  assert.equal(usageCalls, 1);
   const statusCalls = [];
   let statusMode = "idle", legacyCursor = false, legacyReadFails = false;
   const statusBridge = createDesktopBridge({ platform: "win32", env: {}, listPipes: async () => [appToolsPipe],

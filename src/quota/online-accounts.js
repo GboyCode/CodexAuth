@@ -2,26 +2,32 @@ const https = require("node:https");
 const crypto = require("node:crypto");
 const { normalizeBucket, normalizeResetCredits } = require("./local-records");
 const { canResetAccount, resetWindowKey, chooseResetCredit, RESET_CREDITS_URL, CONSUME_RESET_URL } = require("./reset-credits");
+const { isSubscriptionUrl } = require("../subscription");
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CACHE_MS = 60000;
+const TRANSIENT_RETRY_MS = 10000;
+const TRANSIENT_HTTP_STATUSES = new Set([408, 500, 502, 503, 504]);
 const RENEW_AGE_MS = 7 * 86400000;
 const SOURCE = "online-account";
 const digest = (text) => crypto.createHash("sha256").update(text).digest("hex");
 const numeric = (n) => typeof n === "number" && Number.isFinite(n) ? n : null;
 
 class OnlineError extends Error {
-  constructor(code, message, { status = 0, reauth = false, retryMs = CACHE_MS } = {}) {
-    super(message); this.code = code; this.status = status; this.reauth = reauth; this.retryMs = retryMs;
+  constructor(code, message, { status = 0, reauth = false, retryable = ["network", "timeout"].includes(code),
+    retryMs = retryable ? TRANSIENT_RETRY_MS : CACHE_MS } = {}) {
+    super(message); this.code = code; this.status = status; this.reauth = reauth;
+    this.retryMs = retryMs; this.retryable = retryable;
   }
 }
 
 // Main process only. No redirects, configurable destinations, raw error bodies,
 // cookies or renderer network permissions. Bound both elapsed time and size.
 function requestJson(url, { method = "GET", headers = {}, body } = {}) {
-  if (![USAGE_URL, TOKEN_URL, RESET_CREDITS_URL, CONSUME_RESET_URL].includes(url)) return Promise.reject(new OnlineError("destination", "不支持的服务地址。"));
+  if (![USAGE_URL, TOKEN_URL, RESET_CREDITS_URL, CONSUME_RESET_URL].includes(url)
+    && !(method === "GET" && body === undefined && isSubscriptionUrl(url))) return Promise.reject(new OnlineError("destination", "不支持的服务地址。"));
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
     let timer;
@@ -52,11 +58,14 @@ function responseError(response, refresh = false, now = Date.now()) {
   const code = typeof response.data?.error === "string" ? response.data.error : response.data?.error?.code;
   const reauth = refresh && [400, 401, 403].includes(response.status)
     && ["invalid_grant", "refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"].includes(code);
-  const retrySeconds = Number(response.retryAfter);
-  const retryMs = Math.min(3600000, Math.max(CACHE_MS, Number.isFinite(retrySeconds)
-    ? retrySeconds * 1000 : (Date.parse(response.retryAfter) - now) || CACHE_MS));
+  const retryAfter = response.retryAfter == null ? "" : String(response.retryAfter).trim();
+  const retrySeconds = Number(retryAfter);
+  const delay = retryAfter ? (Number.isFinite(retrySeconds) ? retrySeconds * 1000 : Date.parse(retryAfter) - now) : NaN;
+  const serverDelay = Number.isFinite(delay) ? Math.max(0, delay) : null;
+  const retryable = !refresh && TRANSIENT_HTTP_STATUSES.has(response.status) && serverDelay === null;
+  const retryMs = retryable ? TRANSIENT_RETRY_MS : Math.max(CACHE_MS, serverDelay ?? 0);
   return new OnlineError(reauth ? "reauth" : "http", reauth ? "官方拒绝续期，请重新登录此账号。"
-    : `官方${refresh ? "续期" : "额度"}接口暂不可用（HTTP ${response.status}）。`, { status: response.status, reauth, retryMs });
+    : `官方${refresh ? "续期" : "额度"}接口暂不可用（HTTP ${response.status}）。`, { status: response.status, reauth, retryMs, retryable });
 }
 
 function normalizeOnlineWindow(raw, now) {
@@ -145,6 +154,7 @@ function shouldRenew(auth, now) {
 
 function createOnlineAccounts(deps) {
   const now = deps.now ?? Date.now, request = deps.request ?? requestJson;
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const flights = new Map(), pendingWrites = new Map(), attempts = new Map(), resetDetails = new Map();
   let stopping = false;
   async function commit(id) {
@@ -153,7 +163,7 @@ function createOnlineAccounts(deps) {
     await deps.saveAuth(id, pending.previous, pending.next);
     pendingWrites.delete(id);
   }
-  async function checkLocked(id, { force = false, allowed = () => true } = {}) {
+  async function checkLocked(id, { force = false, manual = false, allowed = () => true } = {}) {
     if (stopping || !allowed()) return { available: null, reason: "检查已取消。" };
     try {
       // A rotated token must be persisted before any later request or switch.
@@ -163,7 +173,9 @@ function createOnlineAccounts(deps) {
       if (context.account.needsReauth) return { available: null, reason: "此账号需要重新登录。" };
       let content = context.content, auth = JSON.parse(content), fingerprint = digest(content);
       const attempt = attempts.get(id);
-      if (attempt?.fingerprint === fingerprint && attempt.retryAt > now()) return { available: null, reason: attempt.reason };
+      if (attempt?.fingerprint === fingerprint && attempt.retryAt > now() && !(manual && attempt.retryable)) {
+        return { available: null, reason: attempt.reason };
+      }
       const cached = context.account.quotaSnapshot;
       if (!force && cached?.source === SOURCE && cached.authFingerprint === fingerprint
         && cached.accountId === context.account.identity?.userId && Date.parse(cached.checkedAt) <= now()
@@ -174,8 +186,14 @@ function createOnlineAccounts(deps) {
         if (!allowed()) throw new OnlineError("cancelled", "检查已取消。");
         const fresh = await deps.readAccount(id);
         if (!fresh || fresh.active || fresh.content !== content) throw new OnlineError("changed", "账号状态已改变，请重新检查。");
-        const response = await request(TOKEN_URL, { method: "POST", body: { client_id: CLIENT_ID,
-          grant_type: "refresh_token", refresh_token: auth.tokens.refresh_token, scope: "openid profile email" } });
+        let response;
+        try {
+          response = await request(TOKEN_URL, { method: "POST", body: { client_id: CLIENT_ID,
+            grant_type: "refresh_token", refresh_token: auth.tokens.refresh_token, scope: "openid profile email" } });
+        } catch (error) {
+          if (error instanceof OnlineError) { error.retryable = false; error.retryMs = Math.max(CACHE_MS, error.retryMs); }
+          throw error;
+        }
         if (response.status !== 200) throw responseError(response, true, now());
         const tokens = response.data;
         if (typeof tokens?.access_token !== "string" || !tokens.access_token) throw new OnlineError("schema", "官方续期响应缺少有效凭据。");
@@ -193,8 +211,24 @@ function createOnlineAccounts(deps) {
       };
       let renewed = false;
       if (shouldRenew(auth, now())) { await renew(); renewed = true; }
-      const read = () => request(USAGE_URL, { headers: { Authorization: `Bearer ${auth.tokens.access_token}`,
-        "ChatGPT-Account-Id": context.account.identity.userId } });
+      // Retry only the read-only usage request. Token rotation and reset-card
+      // POSTs must never be replayed after an uncertain network outcome.
+      const read = async () => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (stopping || !allowed()) throw new OnlineError("cancelled", "检查已取消。");
+          const fresh = await deps.readAccount(id);
+          if (!fresh || fresh.active || fresh.content !== content) throw new OnlineError("changed", "账号状态已改变，请重新检查。");
+          try {
+            const response = await request(USAGE_URL, { headers: { Authorization: `Bearer ${auth.tokens.access_token}`,
+              "ChatGPT-Account-Id": context.account.identity.userId } });
+            if (response.status !== 200 && response.status !== 401) throw responseError(response, false, now());
+            return response;
+          } catch (error) {
+            if (attempt > 0 || !(error instanceof OnlineError) || !error.retryable) throw error;
+            await sleep(750);
+          }
+        }
+      };
       if (!allowed()) throw new OnlineError("cancelled", "检查已取消。");
       let response = await read();
       if (response.status === 401 && !renewed) { await renew(); response = await read(); }
@@ -213,8 +247,10 @@ function createOnlineAccounts(deps) {
       const safe = error instanceof OnlineError ? error : new OnlineError("storage", "账号凭据读取或保存失败，请检查本机存储后重试。");
       const context = await deps.readAccount(id).catch(() => null);
       if (context && !context.active) {
-        attempts.set(id, { fingerprint: digest(context.content), retryAt: now() + safe.retryMs, reason: safe.message });
-        await deps.saveStatus(id, context.content, { checkedAt: new Date(now()).toISOString(), error: safe.message, needsReauth: safe.reauth }).catch(() => {});
+        const retryAt = now() + safe.retryMs;
+        attempts.set(id, { fingerprint: digest(context.content), retryAt, reason: safe.message, retryable: safe.retryable });
+        await deps.saveStatus(id, context.content, { checkedAt: new Date(now()).toISOString(), error: safe.message,
+          code: safe.code, httpStatus: safe.status || null, retryAt, source: SOURCE, needsReauth: safe.reauth }).catch(() => {});
       }
       return { available: null, reason: safe.message };
     }

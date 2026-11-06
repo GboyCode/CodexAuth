@@ -8,10 +8,11 @@ const { createRequire } = require("node:module");
 const { createAutoRecovery } = require("../src/auto-recovery");
 const { createDesktopBridge, pipeRequest } = require("../src/codex-desktop-bridge");
 const { encryptPortableCredentials } = require("../src/portable-credentials");
+const { rendererOwner, ACCOUNT_STATE_KEY } = require("../src/codex-project-state");
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const NOW = 1800000000000;
 function auth(person, date = "2026-09-22T00:00:00Z", revision = "new") {
-  const claims = { sub: `fake-${person}`, email: `${person}@example.test`, "https://api.openai.com/auth": { chatgpt_account_id: "shared-workspace" } };
+  const claims = { sub: `fake-${person}`, email: `${person}@example.test`, "https://api.openai.com/auth": { chatgpt_account_id: "shared-workspace", chatgpt_user_id: `person-${person}` } };
   return JSON.stringify({ auth_mode: "chatgpt", last_refresh: date, tokens: {
     access_token: `FAKE-access-${person}-${revision}`, refresh_token: `FAKE-refresh-${person}-${revision}`,
     id_token: `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.FAKE`,
@@ -147,9 +148,19 @@ async function storage() {
     assert.equal(await fs.readFile(authFile, "utf8"), aOld, "canceling the conflict dialog preserves credentials");
     assert.equal(starts, 0, "canceling does not restart the desktop");
     sandbox.stopCodexApp = normalStop;
+    const projectStatePath = path.join(home, ".codex-global-state.json");
+    const projectState = { "local-projects": { p1: { id: "p1", name: "fixture", rootPaths: [home] } },
+      "electron-persisted-atom-state": {}, [ACCOUNT_STATE_KEY]: { owner: rendererOwner(records.a.identity), inactive: {} } };
+    await fs.writeFile(projectStatePath, JSON.stringify(projectState));
     await sandbox.switchAccount(records.b.id, { restartCodex: true });
     assert.equal(starts, 1); assert.equal((await sandbox.readIndex()).activeAccountId, records.b.id);
     assert.equal(await fs.readFile(authFile, "utf8"), bNew);
+    const preparedState = JSON.parse(await fs.readFile(projectStatePath, "utf8"));
+    assert.equal(preparedState[ACCOUNT_STATE_KEY].inactive[rendererOwner(records.b.identity)].globals["local-projects"].p1.name, "fixture");
+    const projectBackups = (await fs.readdir(sandbox.backupsDir())).filter(name => name.startsWith("codex-project-state-"));
+    assert.equal(projectBackups.length, 1);
+    assert.ok((await fs.readFile(path.join(sandbox.backupsDir(), projectBackups[0]), "utf8")).startsWith("VAULT:"), "project snapshots use encrypted storage");
+    await fs.rm(projectStatePath);
     running = true;
     await assert.rejects(sandbox.switchAccount(records.a.id, { restartCodex: false }), /still running/);
     assert.equal(await fs.readFile(authFile, "utf8"), bNew, "no-restart mode cannot write under a running client");
@@ -167,6 +178,11 @@ async function storage() {
     await assert.rejects(sandbox.switchAccount(records.a.id, { restartCodex: false }), /backup failed/);
     assert.equal(await fs.readFile(authFile, "utf8"), bNew);
     sandbox.backupCurrentAuth = backup;
+    // Unsafe project metadata prevents credential replacement as well.
+    await fs.writeFile(projectStatePath, "broken project state");
+    await assert.rejects(sandbox.switchAccount(records.a.id, { restartCodex: false }), /项目状态/);
+    assert.equal(await fs.readFile(authFile, "utf8"), bNew);
+    await fs.rm(projectStatePath);
     // A corrupt or mismatched saved account must not even close the desktop.
     await sandbox.saveAccountAuth(records.a.id, bNew);
     await assert.rejects(sandbox.switchAccount(records.a.id, { restartCodex: true }), /凭证与账号不一致/);
