@@ -34,9 +34,11 @@ async function run() {
     tray: {getBounds: () => anchor}, hardenWindow() {}, activate: () => app.focus({steal:true})});
   ipcMain.handle("native-test:fit", (_event, height) => panel.fitHeight(height));
   let external;
+  const events = [];
   try {
     await panel.show();
     const win = panel.getWindow();
+    for (const name of ["show", "hide", "focus", "blur"]) win.on(name, () => events.push({name, time:Date.now(), visible:win.isVisible(), focused:win.isFocused()}));
     await waitFor(() => win.isFocused(), "menu window must acquire native focus");
     assert.equal(win.hasShadow(), false);
     assert.equal(win.getBounds().width, 320);
@@ -78,6 +80,12 @@ async function run() {
     await fs.writeFile(path.resolve(__dirname, "../output/playwright/panel/mac-native-validation.json"), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report));
     console.log("Native macOS focus passed: cross-application dismissal, reopen, no window shadow, 320pt width, hidden refresh timer stopped.");
+  } catch (error) {
+    const win = panel.getWindow();
+    console.error("Native panel event trace:", JSON.stringify(events));
+    if (win) console.error("Native panel final state:", JSON.stringify({visible:win.isVisible(), focused:win.isFocused(),
+      renderer:await win.webContents.executeJavaScript("({classes:document.body.className, hidden:document.hidden, opacity:getComputedStyle(document.body).opacity, height:innerHeight})")}));
+    throw error;
   } finally {
     external?.kill();
     panel.getWindow()?.destroy();
