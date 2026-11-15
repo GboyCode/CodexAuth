@@ -299,6 +299,11 @@ function renderCountdownSetting(snapshot) {
 }
 
 function renderSettings(snapshot) {
+  if (api.platform === "darwin") {
+    const label = document.querySelector("#restartAfterSwitchLabel");
+    label.dataset.i18n = "切换后重启";
+    label.textContent = t("切换后重启");
+  }
   window.CodexLoginItemUI?.render(snapshot);
   const language = window.CodexI18n.normalizeLanguage(snapshot?.settings?.language);
   els.languageInputs.forEach((input) => {

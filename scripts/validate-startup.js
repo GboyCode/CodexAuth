@@ -25,6 +25,7 @@ async function scenario(target, fail = false) {
   const electron = {
     app: { requestSingleInstanceLock: () => true, whenReady: () => readyPromise,
       on: (name, fn) => events.set(name, fn), setName() {}, setAppUserModelId() {},
+      setActivationPolicy: policy => { assert.equal(quietMac, true); assert.equal(policy, "accessory"); },
       quit: () => { quit = true; }, getLoginItemSettings: () => ({wasOpenedAtLogin: quietMac, status: "enabled", openAtLogin: true}) },
     Menu: { setApplicationMenu() {} },
     ipcMain: { handle: (name, fn) => { assert.ok(!handlers.has(name)); handlers.set(name, fn); } },

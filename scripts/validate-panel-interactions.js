@@ -441,6 +441,7 @@ async function run() {
     await win.loadFile(path.resolve(__dirname, "../src/ui/index.html")); await settle();
     await click('#settingsBtn');
     assert.equal(await evaluate("document.querySelector('#loginItemStatus').hidden"), true);
+    assert.equal(await evaluate("document.querySelector('#restartAfterSwitchLabel').textContent"), "切换后重启");
     await click('#launchAtLogin');
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'settings' && c[1].launchAtLogin === true)"), true);
     await evaluate("panelFixture.failSettings = true"); await click('#launchAtLogin');

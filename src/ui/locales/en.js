@@ -1,5 +1,6 @@
 (function (root) {
   const messages = {
+    "切换后重启": "Restart after switching",
     "登录时启动": "Open at login",
     "请在系统设置 → 通用 → 登录项中允许启动。": "Allow startup in System Settings → General → Login Items.",
     "登录后仅显示菜单栏图标，不弹出窗口。": "Start in the menu bar without opening a window.",

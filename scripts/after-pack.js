@@ -7,6 +7,7 @@ exports.default = async function afterPack(context) {
   if (context.electronPlatformName === "darwin") {
     const contents = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, "Contents");
     const info = await fs.readFile(path.join(contents, "Info.plist"), "utf8");
+    assert.match(info, /<key>LSUIElement<\/key>\s*<true\s*\/>/, "macOS bundle must launch as an accessory without flashing a Dock icon");
     assert.match(info, /<key>CFBundleIconName<\/key>\s*<string>Icon<\/string>/, "Tahoe must use the compiled asset catalog");
     const catalog = await fs.stat(path.join(contents, "Resources", "Assets.car"));
     assert.ok(catalog.size > 0, "native icon asset catalog must be packaged");

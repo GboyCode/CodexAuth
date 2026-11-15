@@ -2389,6 +2389,7 @@ function trayMenuItem(label, options = {}) {
 
 function showMainWindow() {
   macTrayPanel?.hide();
+  if (isMac) app.focus({ steal: true });
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
   }
@@ -5443,6 +5444,7 @@ function registerIpc() {
 if (hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     app.setName(APP_NAME);
+    if (isMac) app.setActivationPolicy("accessory");
     if (isWindows) {
       app.setAppUserModelId(APP_ID);
     }

@@ -23,6 +23,7 @@ async function run() {
   const helper = path.join(root, "focus-fixture");
   execFileSync("/usr/bin/swiftc", [path.join(__dirname, "mac-focus-fixture.swift"), "-o", helper]);
   await app.whenReady();
+  app.setActivationPolicy("accessory");
   app.on("window-all-closed", () => {});
   // Only replace the IPC fixture; all native window options are production code.
   class FixtureWindow extends BrowserWindow {
@@ -42,6 +43,7 @@ async function run() {
     await waitFor(() => win.isFocused(), "menu window must acquire native focus");
     assert.equal(win.hasShadow(), false);
     assert.equal(win.getBounds().width, 320);
+    assert.equal(app.dock.isVisible(), false, "accessory app has no running Dock icon");
     await win.webContents.executeJavaScript("panelFixture.savedAccounts = structuredClone(panelFixture.snapshot.accounts); panelFixture.snapshot.accounts = panelFixture.savedAccounts.slice(0,3); panelFixture.notify({scope:'accounts'})");
     await waitFor(async () => {
       const state = await win.webContents.executeJavaScript("({count: document.querySelectorAll('.account-row').length, height:lastMacPanelHeight})");
@@ -63,6 +65,12 @@ async function run() {
     await waitFor(() => win.webContents.executeJavaScript("refreshTimer === null"), "hiding must remove the quota timer");
     await panel.show();
     await waitFor(() => win.isVisible() && win.isFocused(), "panel must reopen and regain focus");
+    const main = new FixtureWindow({width:800, height:600, show:false});
+    await main.loadFile(path.resolve(__dirname, "../src/ui/index.html"));
+    app.focus({steal:true}); main.show(); main.focus();
+    await waitFor(() => main.isFocused(), "accessory mode can open and focus the main window");
+    assert.equal(app.dock.isVisible(), false, "opening the main window must not restore the Dock icon");
+    main.destroy();
     panel.hide();
     await waitFor(() => !win.isVisible(), "explicit close works");
     await waitFor(() => win.webContents.executeJavaScript("refreshTimer === null"), "reopened panel stops its timer on close");
@@ -72,6 +80,7 @@ async function run() {
     const metrics = app.getAppMetrics();
     assert.equal(await win.webContents.executeJavaScript("panelFixture.calls.length"), quotaCalls, "hidden panel performs no fixture API calls");
     const report = { scope: "isolated menu panel with fixture accounts; not a full-app production benchmark",
+      accessoryDockHidden: true, accessoryMainWindowFocused: true,
       externalApplicationDismissal: true, automaticAccountHeight: true, interruptedHideSafe: true,
       hiddenRefreshTimerRemoved: true, sampleSeconds: 5,
       totalCpuPercent: metrics.reduce((sum, item) => sum + item.cpu.percentCPUUsage, 0),
