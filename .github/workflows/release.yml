@@ -67,8 +67,16 @@ jobs:
       - name: Validate icon rendering at 100% and 200% scale
         run: npm run icon:validate
 
+      - name: Validate macOS switcher behavior
+        run: npm run macos:validate
+
       - name: Build Intel and Apple Silicon DMGs
-        run: npm run pack:mac
+        # Icon Composer assets need Xcode 26+; electron-builder checks its version.
+        # Resolve the selected Xcode's tool instead of relying on a PATH shim.
+        shell: bash
+        run: |
+          export PATH="$(dirname "$(xcrun --find actool)"):$PATH"
+          npm run pack:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 

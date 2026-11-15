@@ -38,7 +38,7 @@ Codex 账号切换、Codex 多账号、Codex App 账号管理、OpenAI Codex 账
 - **浮窗与隐私显示**：主窗口、托盘、浮窗快速切换；总览眼睛按钮可隐藏该区域邮箱；凭证原理和兼容性自检可展开查看。
 - **版本与联系入口**：启动自动检查更新，有新版时弹窗提示；也可手动检查，并提供 GitHub 与开发者微信入口。
 
-Windows 提供自动任务恢复；macOS 提供账号管理、额度、用量及迁移功能。macOS 原生登录/Keychain/GUI 仍待实机端到端验证。
+Windows 提供额度、用量统计、桌面浮窗及自动任务恢复。macOS 专注账号管理、切换及凭证迁移：点击顶部菜单栏的单色图标，在图标下方打开固定位置的账号面板；点击外部或按 Esc 收起。macOS 不再展示或后台扫描用量、额度，也不创建桌面浮窗。macOS 原生登录、Keychain、Tahoe 图标与菜单栏交互仍需实机端到端验证。
 
 ## 界面截图
 
@@ -326,9 +326,10 @@ npm run pack:win
 
 ### 打包 macOS DMG
 
-请在 macOS 上运行：
+请在安装 Xcode 26 或更新版本的 macOS 上运行（原生 `.icon` 图标需要 `actool`）：
 
 ```bash
+export PATH="$(dirname "$(xcrun --find actool)"):$PATH"
 npm run pack:mac
 ```
 

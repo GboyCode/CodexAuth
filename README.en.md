@@ -38,7 +38,7 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - **Widget and privacy display**: main window, tray and quick-switch widget; hide emails in the quota overview and expand credential-storage or compatibility details.
 - **Updates and project links**: checks on startup and prompts when a newer release is available, with manual checks, GitHub and developer WeChat links.
 
-Automatic task recovery is Windows-only. macOS supports account management, quota, usage and credential migration; native macOS sign-in, Keychain and GUI behavior still require end-to-end testing.
+Windows provides quotas, usage statistics, the desktop widget and automatic task recovery. macOS focuses on account management, switching and credential migration. Click the monochrome menu bar icon to open an anchored account panel; click outside or press Escape to dismiss it. macOS does not display or scan usage/quotas and does not create a desktop widget. Native macOS sign-in, Keychain, Tahoe icons and menu bar interactions still require end-to-end testing.
 
 ## Screenshots
 
@@ -313,9 +313,10 @@ npm run pack:win
 
 ### Build macOS DMGs
 
-Run this command on macOS:
+Run this command on macOS with Xcode 26 or later (`actool` is required for the native `.icon` asset):
 
 ```bash
+export PATH="$(dirname "$(xcrun --find actool)"):$PATH"
 npm run pack:mac
 ```
 

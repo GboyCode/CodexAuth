@@ -6,7 +6,7 @@ const { app, BrowserWindow } = require("electron");
 app.on("window-all-closed", () => {});
 
 // Render the production UI against isolated fixtures, never the app main process or real credentials.
-function installFixture(appVersion) {
+function installFixture(appVersion, platform = "win32") {
   const quota = {
     source: "online-account", checkedAt: new Date().toISOString(), planType: "plus",
     session: { windowMinutes: 300, usedPercent: 20, resetsAt: Date.now() / 1000 + 7200 },
@@ -20,7 +20,7 @@ function installFixture(appVersion) {
   ];
   const usage = { tokenUsage: { totalTokens: 1200, inputTokens: 1000, outputTokens: 200 }, scannedFiles: 2, totalFiles: 2, sessionsAnalyzed: 2, coverage: {} };
   const fixture = window.panelFixture = {
-    snapshot: { platform: "win32", platformName: "Windows", current: { exists: true, email: "work@example.com" }, accounts,
+    snapshot: { platform, platformName: platform === "darwin" ? "macOS" : "Windows", current: { exists: true, email: "work@example.com" }, accounts,
       authPath: "C:/example/.codex/auth.json", storeRoot: "C:/example/accounts", accountLogin: { state: "idle" },
       settings: { language: localStorage.getItem("fixture.language") || "zh-CN", autoSwitchCountdownSeconds: Number(localStorage.getItem("fixture.countdown")) || 15,
         restartAfterSwitch: true, autoSwitchOnLimit: false, autoResetOnWeeklyLimit: false }, autoRecovery: { state: "disabled" } },
@@ -28,7 +28,7 @@ function installFixture(appVersion) {
   };
   const copy = (value) => structuredClone(value);
   window.codexAuth = {
-    platform: "win32",
+    platform,
     getState: async () => copy(fixture.snapshot),
     getQuota: async () => { if (fixture.failQuota) throw new Error("quota unavailable"); return { quota: copy(fixture.quota) }; },
     getDashboard: async () => ({ quota: copy(fixture.quota), usage: copy(fixture.usage), scope: { since: new Date().toISOString() } }),
@@ -58,6 +58,8 @@ function installFixture(appVersion) {
     cancelPortable: async () => {},
     restartCodex: async () => { fixture.calls.push(["restart"]); },
     showWidget: async () => {}, openPath: async () => {}, openAppLink: async () => {},
+    showMainWindow: async () => { fixture.calls.push(["main"]); },
+    hideWidget: async () => { fixture.calls.push(["hide"]); },
   };
   window.confirm = (message) => { fixture.confirmMessage = message; return false; };
 }
@@ -76,7 +78,7 @@ async function run() {
   win.webContents.on("console-message", (_event, level, message) => { if (level === 3) errors.push(message); });
   const evaluate = code => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Renderer timed out: ${code.slice(0, 160)}`)), 10000);
-    win.webContents.executeJavaScript(code).then(resolve, reject).finally(() => clearTimeout(timeout));
+    win.webContents.executeJavaScript(code).then(resolve, error => reject(new Error(`${error.message}\nEvaluation: ${code}\nRenderer: ${errors.join("\n")}`))).finally(() => clearTimeout(timeout));
   });
   const settle = () => evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   const click = async selector => {
@@ -84,7 +86,7 @@ async function run() {
     await settle();
   };
   const capture = async name => {
-    await evaluate("document.querySelector('#toast').classList.remove('show'); Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))");
+    await evaluate("document.querySelector('#toast')?.classList.remove('show'); Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))");
     await fs.writeFile(path.join(output, `${name}.png`), (await win.webContents.capturePage()).toPNG());
   };
   try {
@@ -232,7 +234,13 @@ async function run() {
     await evaluate("panelFixture.snapshot.platform = 'darwin'; panelFixture.notify({scope: 'accounts'})"); await settle();
     assert.equal(await evaluate("document.querySelector('#autoSwitchOnLimit').disabled && document.querySelector('#autoResetOnWeeklyLimit').disabled"), true);
     assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').disabled"), true);
-    await evaluate("panelFixture.snapshot.platform = 'win32'");
+    assert.equal(await evaluate("document.querySelector('#usageTab').checkVisibility()"), false);
+    assert.equal(await evaluate("document.querySelector('#widgetBtn').checkVisibility()"), false);
+    assert.equal(await evaluate("document.querySelectorAll('.account-quota-preview, .account-expand-cue, .account-quota-details').length"), 0);
+    await click('#usageTab');
+    assert.equal(await evaluate("document.querySelector('#accountsPage').classList.contains('active')"), true);
+    await capture('mac-accounts');
+    await evaluate("panelFixture.snapshot.platform = 'win32'; panelFixture.notify({scope: 'accounts'})"); await settle();
 
     await click('#usageTab');
     assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "剩余 80%");
@@ -328,6 +336,20 @@ async function run() {
     assert.equal(await evaluate("document.querySelector('#settingsBtn').textContent"), "Settings");
     await click('#settingsBtn');
     assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "30", "saved countdown is restored on a new renderer");
+    await win.loadFile(path.resolve(__dirname, "../src/ui/mac-tray.html"));
+    win.setContentSize(360, 420);
+    await settle();
+    await evaluate("panelFixture.snapshot.platform = 'darwin'; panelFixture.snapshot.settings.language = 'zh-CN'; panelFixture.notify()"); await settle();
+    assert.equal(await evaluate("document.querySelectorAll('.account').length"), 4);
+    assert.equal(await evaluate("document.querySelector('[data-account-id=current] button') === null"), true);
+    assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
+    await click('[data-account-id=backup] button');
+    assert.deepEqual(await evaluate("panelFixture.calls.find(c => c[0] === 'switch')"), ['switch', 'backup', {restartCodex: true}]);
+    await click('#manage');
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'main')"), true);
+    await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'}))"); await settle();
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'hide')"), true);
+    await capture('mac-menu-bar');
     assert.deepEqual(errors, [], "renderer errors");
     console.log("Panel validation passed: 860/900/1040 layouts, long names, quota summaries, unknown data, menus, focus, add/import/export, delete cancellation, settings rollback/dependencies, platform limits, recovery notices and independent usage scope. Mock APIs only.");
     console.log(`Screenshots: ${output}`);
@@ -343,4 +365,7 @@ async function run() {
       new Promise(resolve => setTimeout(resolve, 1500))]);
   }
 }
-run().then(() => app.quit()).catch(error => { console.error(error); app.exit(1); });
+module.exports = { installFixture };
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  run().then(() => app.quit()).catch(error => { console.error(error); app.exit(1); });
+}

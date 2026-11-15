@@ -1399,3 +1399,6 @@ html[lang="en"] .account-card { grid-template-columns: minmax(0, 1fr) 240px 240p
   .current-account-bar { padding: 14px; gap: 10px; }
   .current-account-bar h2 { font-size: 15px; }
 }
+/* macOS is an account switcher; statistics stay available on Windows. */
+html.switch-only [data-usage-only] { display: none !important; }
+html.switch-only #accountList .account-card { grid-template-columns: minmax(0, 1fr) auto; }

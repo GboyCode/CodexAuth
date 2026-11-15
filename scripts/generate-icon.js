@@ -131,6 +131,29 @@ async function main() {
   const root = path.resolve(__dirname, "..");
   const appSource = path.join(root, "src", "ui", "assets", "codex-monochrome.svg");
   const trayIconSource = path.join(root, "src", "ui", "assets", "codex-monochrome-no-bg.svg");
+  // Tahoe must receive foreground artwork separately from the system-drawn
+  // background/mask. Reusing the legacy rounded PNG produces a nested tile.
+  // Keep the source vector-based; actool rasterizes it at the required sizes
+  // and electron-builder also bundles its ICNS fallback for older macOS.
+  const macAssets = path.join(root, "build", "CodexAuth.icon", "Assets");
+  const macSvg = (await fs.readFile(trayIconSource, "utf8"))
+    .replace('height="1em"', 'height="1024"')
+    .replace('width="1em"', 'width="1024"')
+    .replace('viewBox="0 0 24 24"', 'viewBox="1 1 22 22"');
+  await fs.mkdir(macAssets, { recursive: true });
+  await fs.writeFile(path.join(macAssets, "codex.svg"), macSvg);
+  // Template images use alpha as the mask: the face must be transparent,
+  // not white paint, so it remains legible on both menu bar appearances.
+  const trayTemplateSource = path.join(root, "src", "ui", "assets", "codex-trayTemplate.svg");
+  const templateSvg = (await fs.readFile(appSource, "utf8"))
+    .replace(/<rect x="1\.5"[^>]*\/>/, "")
+    .replace('fill="url(#lobe-icons-codex-_R_0_)"', 'fill="black"');
+  await fs.writeFile(trayTemplateSource, templateSvg);
+  for (const [size, suffix] of [[16, ""], [32, "@2x"]]) {
+    const templateImage = await renderSvg(trayTemplateSource, size * 4);
+    await fs.writeFile(path.join(path.dirname(trayTemplateSource), `codex-trayTemplate${suffix}.png`),
+      templateImage.resize({ width: size, height: size, quality: "best" }).toPNG());
+  }
   const pngTarget = path.join(root, "src", "ui", "assets", "codex-color.png");
   const iconTarget = path.join(root, "src", "ui", "assets", "codex-color.ico");
   const trayIconTarget = path.join(root, "src", "ui", "assets", "codex-color-tray.ico");
@@ -180,7 +203,7 @@ async function main() {
   await fs.writeFile(iconTarget, buildIco(whiteIconImages));
   await fs.writeFile(trayIconTarget, buildIco(trayIconImages));
   console.log(
-    `Wrote ${path.relative(root, pngTarget)}, ${path.relative(root, iconTarget)}, and ${path.relative(
+    `Wrote build/CodexAuth.icon/Assets/codex.svg, ${path.relative(root, pngTarget)}, ${path.relative(root, iconTarget)}, and ${path.relative(
       root,
       trayIconTarget
     )}.`

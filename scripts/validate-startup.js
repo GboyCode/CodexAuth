@@ -31,7 +31,7 @@ async function scenario(target, fail = false) {
   };
   const context = vm.createContext({ require: (name) => name === "electron" ? electron
     : name === "./quota/online-accounts" ? { ...realRequire(name), createOnlineAccounts: () => online } : realRequire(name),
-    __dirname: path.dirname(filename), process, Buffer, console: { error() {} }, setTimeout, clearTimeout,
+    __dirname: path.dirname(filename), process: { ...process, platform: "win32" }, Buffer, console: { error() {} }, setTimeout, clearTimeout,
     setInterval: (callback) => { const timer = { callback, unref() {} }; intervals.add(timer); return timer; },
     clearInterval: (timer) => intervals.delete(timer) });
   vm.runInContext(fs.readFileSync(filename, "utf8"), context);

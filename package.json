@@ -1,6 +1,6 @@
 {
   "name": "codexauth-switch",
-  "version": "0.1.88",
+  "version": "0.1.89",
   "private": true,
   "description": "Local Windows and macOS account switcher for Codex App.",
   "author": "GboyCode",
@@ -40,10 +40,12 @@
     "i18n:validate": "node scripts/validate-i18n.js",
     "start": "npm run icon:app && electron .",
     "dev": "npm run icon:app && electron .",
+    "preview:mac": "electron scripts/preview-macos.js",
     "dev:hidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-dev-hidden.ps1",
     "lint": "node --check src/main.js && node --check src/platform-support.js && node --check src/codex-config.js && node --check src/preload.js && node --check src/quota/constants.js && node --check src/quota/token-math.js && node --check src/quota/usage-math.js && node --check src/quota/local-data-cache.js && node --check src/ui/shared-quota.js && node --check src/ui/app.js && node --check src/ui/widget.js && node --check src/quota/local-records.js && node --check src/quota/local-estimate.js && node --check src/account-recovery.js && node --check src/quota/browser-reset-cache.js && node --check src/portable-credentials.js && node --check src/github-updates.js && node --check src/ui/updates.js && node --check src/auto-recovery.js && node --check src/codex-desktop-bridge.js && node --check src/recovery-countdown.js && node --check src/ui/recovery-countdown.js && node --check src/codex-goals.js && node --check src/account-login.js && node --check src/ui/glass.js && node --check src/quota/online-accounts.js && node --check src/quota/official-estimate.js",
     "codex-config:validate": "node scripts/validate-codex-config.js",
     "platform:validate": "node scripts/validate-platform-support.js",
+    "macos:validate": "node scripts/validate-macos-switcher.js",
     "quota:validate": "node scripts/validate-quota-estimate.js",
     "usage:validate": "node scripts/validate-usage-scope.js",
     "icon:app": "electron scripts/generate-icon.js && node scripts/validate-icon-assets.js",
@@ -106,7 +108,7 @@
       ]
     },
     "mac": {
-      "icon": "src/ui/assets/codex-color.png",
+      "icon": "build/CodexAuth.icon",
       "fileAssociations": [
         {
           "ext": "codexauth",

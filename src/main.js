@@ -23,6 +23,9 @@ const { WINDOWS_DESKTOP_SCAN, WINDOWS_WRITERS_SCAN, WINDOWS_CONFLICT_OUTPUT,
   parseProcessRecords, canStopConflicts, stopConflictsScript } = require("./codex-process-guard");
 const { normalizeSubscription, subscriptionFromClaims, mergeSubscriptionClaims, accountSubscription } = require("./subscription");
 const { createSubscriptionReader } = require("./subscription-client");
+const { createMacTrayPanel } = require("./mac-tray-panel");
+let macTrayPanel = null;
+let macTrayMenu = null;
 const { preserveProjectState } = require("./codex-project-state");
 const {
   QUOTA_CONFLICT_WINDOW_MS,
@@ -865,9 +868,9 @@ async function localDiagnostics(index, current) {
     })();
   }
   const config=await fs.readFile(codexConfigPath(),"utf8").catch(()=>"");
-  const files=await localDataCache.getSessionFiles(sessionsDir(),walkSessionFiles);
+  const files=isMac ? [] : await localDataCache.getSessionFiles(sessionsDir(),walkSessionFiles);
   let dbReadable=false;
-  try {
+  if (!isMac) try {
     const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(logsDbPath(),{readOnly:true});
     try { const columns=db.prepare("pragma table_info(logs)").all().map((c)=>c.name);dbReadable=columns.includes("ts")&&columns.includes("feedback_log_body"); } finally {db.close();}
   } catch { /* sessions remain available without SQLite */ }
@@ -875,9 +878,9 @@ async function localDiagnostics(index, current) {
   return {version:app.getVersion(),codexVersion:await detectedCodexVersion,
     fileCredentials:!fileCredentialStoreConfig(config).changed,
     authRecognized:!!current?.exists&&!current?.error, authSynchronized:!!matching,
-    accountCount:index.accounts.length,logDatabase:path.basename(logsDbPath()),dbReadable,
+    accountCount:index.accounts.length,logDatabase:isMac ? null : path.basename(logsDbPath()),dbReadable,
     sessionFiles:files.length,latestLogAt:files[0]?.mtimeMs?new Date(files[0].mtimeMs).toISOString():null,
-    recovery:index.recovery??null, mode:"local-usage-and-online-standby-quota"};
+    recovery:index.recovery??null, mode:isMac ? "account-switch-only" : "local-usage-and-online-standby-quota"};
 }
 
 async function readLocalResetCredits(scope, records) {
@@ -1082,6 +1085,7 @@ function getSubscriptions() {
 }
 
 function startSubscriptionPolling() {
+  if (isMac) return;
   if (subscriptionTimer) return;
   const poll = () => { if (!isQuitting) getSubscriptions().checkAll().catch(() => {}); };
   subscriptionTimer = setInterval(poll, 3600000);
@@ -1251,6 +1255,7 @@ function configureAutoRecovery() {
 }
 
 async function startAutoRecovery() {
+  if (isMac) return;
   const journalPath = path.join(storeRoot(), "auto-recovery.json");
   recoveryCountdown = createRecoveryCountdown({ createWindow: createRecoveryCountdownWindow,
     getSeconds: () => runtimeSettings?.autoSwitchCountdownSeconds });
@@ -1822,7 +1827,7 @@ function scheduleReauthCheck(accountId, expectedFingerprint, expectedLastRefresh
         account.reauthMarkedAt = new Date().toISOString();
         return { value: true };
       });
-      if (changed) { broadcastStateChanged(); getSubscriptions().checkAll().catch(() => {}); }
+      if (changed) { broadcastStateChanged(); if (!isMac) getSubscriptions().checkAll().catch(() => {}); }
     } catch {
       // Reauth checks are best-effort and should not interrupt the app.
     }
@@ -1837,7 +1842,7 @@ function scheduleAuthSync() {
     authSyncTimer = null;
     try {
       const changed = await syncCurrentAuthToStoredAccount();
-      if (changed) { broadcastStateChanged(); getSubscriptions().checkAll().catch(() => {}); }
+      if (changed) { broadcastStateChanged(); if (!isMac) getSubscriptions().checkAll().catch(() => {}); }
     } catch {
       // The auth file can be temporarily missing or half-written while Codex updates it.
     }
@@ -1872,6 +1877,7 @@ function shouldRefreshForLocalLog(filename) {
 }
 
 function scheduleLocalLogRefresh() {
+  if (isMac) return;
   if (localLogRefreshTimer) return;
   localLogRefreshTimer = setTimeout(() => {
     localLogRefreshTimer = null;
@@ -1905,6 +1911,7 @@ async function refreshQuotaSnapshotFromLocalLog() {
 }
 
 async function startLocalLogWatcher() {
+  if (isMac) return;
   if (localLogWatcher) return;
   try {
     await fs.mkdir(codexDir(), { recursive: true });
@@ -1920,6 +1927,7 @@ async function startLocalLogWatcher() {
 // Codex writes rate_limits into these files during conversations, so watching
 // them lets us pick up quota changes without needing a separate API call.
 async function startSessionsWatcher() {
+  if (isMac) return;
   if (sessionsWatcher) return;
   const dir = sessionsDir();
   try {
@@ -1939,6 +1947,7 @@ async function startSessionsWatcher() {
 // Runs every 15 seconds — low enough frequency to avoid any risk of triggering
 // rate-limiting or appearing as automated API access.
 async function startSessionsPolling() {
+  if (isMac) return;
   if (sessionsPollingInterval) return;
   sessionsPollingInterval = setInterval(async () => {
     try {
@@ -2343,6 +2352,11 @@ throw 'Cannot find Codex App launcher.'
 }
 
 function trayIcon() {
+  if (isMac) {
+    const icon = nativeImage.createFromPath(path.join(__dirname, "ui", "assets", "codex-trayTemplate.png"));
+    icon.setTemplateImage(true);
+    return icon;
+  }
   const icon = nativeImage.createFromPath(isWindows ? trayIconIcoPath() : appIconPngPath());
   if (!icon.isEmpty() && isWindows) return icon;
   return icon.resize({ width: 16, height: 16 });
@@ -2362,6 +2376,7 @@ function trayMenuItem(label, options = {}) {
 }
 
 function showMainWindow() {
+  macTrayPanel?.hide();
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
   }
@@ -2371,6 +2386,11 @@ function showMainWindow() {
 }
 
 function showWidgetWindow() {
+  if (isMac) {
+    macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation });
+    macTrayPanel.show().catch(error => console.error("Menu bar panel failed:", error));
+    return;
+  }
   if (!widgetWindow || widgetWindow.isDestroyed()) {
     createWidgetWindow();
   }
@@ -2380,6 +2400,7 @@ function showWidgetWindow() {
 }
 
 function hideWidgetWindow() {
+  macTrayPanel?.hide();
   if (widgetWindow && !widgetWindow.isDestroyed()) {
     clearWidgetDockTimers();
     widgetWindow.hide();
@@ -2387,6 +2408,11 @@ function hideWidgetWindow() {
 }
 
 function toggleWidgetWindow() {
+  if (isMac) {
+    macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation });
+    Promise.resolve(macTrayPanel.toggle()).catch(error => console.error("Menu bar panel failed:", error));
+    return;
+  }
   if (widgetWindow && !widgetWindow.isDestroyed() && widgetWindow.isVisible()) {
     hideWidgetWindow();
     return;
@@ -2396,7 +2422,7 @@ function toggleWidgetWindow() {
 
 function broadcastStateChanged(payload = { scope: "accounts" }) {
   const message = payload && typeof payload === "object" ? payload : { scope: "accounts" };
-  for (const win of [mainWindow, widgetWindow, recoveryCountdownWindow]) {
+  for (const win of [mainWindow, widgetWindow, recoveryCountdownWindow, macTrayPanel?.getWindow()]) {
     if (win && !win.isDestroyed()) {
       win.webContents.send("state:changed", message);
     }
@@ -2429,13 +2455,13 @@ async function rebuildTrayMenu() {
       )
     : [trayMenuItem(t("暂无已保存账号"), { enabled: false })];
 
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
+  const menu = Menu.buildFromTemplate([
       trayMenuItem(APP_NAME, { enabled: false }),
       trayMenuItem(t("当前：{0}", currentLabel), { enabled: false }),
       { type: "separator" },
       trayMenuItem(t("打开主窗口"), { click: () => showMainWindow() }),
       trayMenuItem(widgetVisible ? t("隐藏浮窗") : t("显示浮窗"), {
+        visible: !isMac,
         click: () => {
           toggleWidgetWindow();
           rebuildTrayMenu().catch(() => {});
@@ -2458,8 +2484,11 @@ async function rebuildTrayMenu() {
           app.quit();
         },
       }),
-    ])
-  );
+    ]);
+  // A native status-item menu consumes left clicks on macOS. Keep it on
+  // right click so left click can open our anchored account panel.
+  if (isMac) macTrayMenu = menu;
+  else tray.setContextMenu(menu);
 }
 
 function createTray() {
@@ -2467,6 +2496,14 @@ function createTray() {
   tray = new Tray(trayIcon());
   tray.setToolTip(APP_NAME);
   tray.on("click", () => toggleWidgetWindow());
+  if (isMac) {
+    tray.on("right-click", () => {
+      macTrayPanel?.hide();
+      if (macTrayMenu) tray.popUpContextMenu(macTrayMenu);
+    });
+    screen.on("display-metrics-changed", () => macTrayPanel?.hide());
+    screen.on("display-removed", () => macTrayPanel?.hide());
+  }
   rebuildTrayMenu().catch(() => {});
 }
 
@@ -4117,6 +4154,7 @@ async function readLatestLocalQuota(options = {}) {
 }
 
 async function readLocalUsage(options = {}) {
+  if (isMac) return { ...emptyLocalUsage(null), available: false };
   const files = options.files ?? await localDataCache.getSessionFiles(sessionsDir(), walkSessionFiles);
   const cutoff = Date.parse(options.since);
   // Unchanged files from before this account boundary cannot contain new usage.
@@ -4451,6 +4489,7 @@ async function resolveQuotaWithMode(scope, files) {
 }
 
 async function getQuota() {
+  if (isMac) return { quota: null, scope: null };
   const scope = await dashboardScope();
   if (!scope.hasCurrentAuth) {
     return { quota: resolveQuota(scope, null), scope, checkedAt: new Date().toISOString() };
@@ -4467,6 +4506,7 @@ async function getQuota() {
 }
 
 async function getDashboard() {
+  if (isMac) return { quota: null, usage: { available: false }, scope: null };
   const scope = await dashboardScope();
   if (!scope.hasCurrentAuth) {
     return { quota: resolveQuota(scope, null), usage: { ...emptyLocalUsage(scope.since), available: false }, scope };
@@ -4483,6 +4523,7 @@ async function getDashboard() {
 }
 
 async function getAllAccountsQuotaSummary() {
+  if (isMac) return { accounts: [] };
   await waitForIndexMutations();
   const index = await readIndex();
   let currentIdentityKey = null;
@@ -4676,6 +4717,7 @@ function createRecoveryCountdownWindow() {
 }
 
 function createWidgetWindow() {
+  if (isMac) throw new Error("macOS uses the menu bar account panel.");
   if (widgetWindow && !widgetWindow.isDestroyed()) return widgetWindow;
   const savedBounds = normalizeWidgetBounds(runtimeSettings?.widgetBounds);
   const bounds = clampWidgetBoundsToDisplay(savedBounds);
@@ -5250,6 +5292,7 @@ async function checkForUpdates(event, { automatic = false } = {}) {
 }
 
 async function checkAccountQuota(accountId) {
+  if (isMac) return { refreshed: false, available: null, reason: "macOS 仅提供账号切换。" };
   if (typeof accountId !== "string") throw new Error("请选择账号。");
   const scope = await dashboardScope();
   if (scope.hasCurrentAuth && scope.accountId === accountId) {
