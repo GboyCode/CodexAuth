@@ -17,6 +17,7 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefers
   let requested = false;
   let contentHeight = 400;
   let hideTimer = null;
+  let opening = false;
   function fitHeight(height) {
     if (!Number.isFinite(height) || height < 200 || height > 100000) return;
     contentHeight = Math.ceil(height);
@@ -28,6 +29,7 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefers
   }
   function hide() {
     requested = false;
+    opening = false;
     if (!win || win.isDestroyed() || hideTimer) return;
     win.webContents.send("mac-panel:visibility", { visible: false });
     if (prefersReducedMotion()) { win.hide(); return; }
@@ -55,7 +57,14 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefers
           contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
       });
       hardenWindow(win);
+      win.on("show", () => {
+        opening = false;
+        if (requested) win.focus();
+      });
       win.on("blur", () => {
+        // AppKit can briefly focus/blur while ordering an accessory window in,
+        // before its native show event. This isn't an outside click.
+        if (opening) return;
         // Clicking the status item also blurs the panel. Let its click handler
         // toggle it, otherwise that click would immediately reopen the panel.
         const point = screen.getCursorScreenPoint();
@@ -72,6 +81,7 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefers
     win.setBounds(panelBounds(anchor, screen.getDisplayMatching(anchor).workArea, contentHeight));
     win.webContents.send("mac-panel:visibility", { visible: true });
     win.webContents.send("state:changed", { scope: "accounts" });
+    opening = !win.isVisible();
     // Explicit status-item activation must also activate NSApplication when
     // returning from another app, before asking its window to become key.
     activate();

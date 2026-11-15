@@ -81,7 +81,8 @@ async function run() {
     isDestroyed() { return false; }
     loadFile(file) { assert.match(file, /widget\.html$/); return Promise.resolve(); }
     setBounds(value) { this.bounds = value; }
-    show() { this.visible = true; }
+    isVisible() { return this.visible; }
+    show() { this.visible = true; this.emit("blur"); this.emit("show"); }
     hide() { this.visible = false; }
     focus() {}
   }
