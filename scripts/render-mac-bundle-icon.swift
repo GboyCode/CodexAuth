@@ -7,7 +7,12 @@ let input = CommandLine.arguments[1]
 let icon: NSImage
 if input.hasSuffix(".icns") {
     guard let legacy = NSImage(contentsOfFile: input) else { fatalError("Cannot load ICNS") }
-    icon = legacy
+    guard let largest = legacy.representations.max(by: { $0.pixelsWide < $1.pixelsWide }) else {
+        fatalError("ICNS has no representations")
+    }
+    print("ICNS representations: \(legacy.representations.map { $0.pixelsWide }); selected \(largest.pixelsWide)")
+    icon = NSImage(size: NSSize(width: CGFloat(largest.pixelsWide), height: CGFloat(largest.pixelsHigh)))
+    icon.addRepresentation(largest)
 } else {
     icon = NSWorkspace.shared.icon(forFile: input)
 }

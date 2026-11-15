@@ -47,14 +47,20 @@ function compare(master, actual) {
     if (white(master, ax, ay)) {
       const part = face[x < 95 ? 0 : x > 160 ? 2 : 1];
       part.total++;
-      if (white(actual, bx, by)) part.matching++;
+      // Native glass edges and ICNS antialiasing can move a stroke boundary by
+      // a few pixels. Match a small neighborhood without accepting a lost eye.
+      const radius = Math.max(1, Math.round(b.width / 128));
+      if ([-radius, 0, radius].some(dy => [-radius, 0, radius].some(dx =>
+        white(actual, Math.max(0, Math.min(actual.width - 1, bx + dx)),
+          Math.max(0, Math.min(actual.height - 1, by + dy)))))) part.matching++;
     }
   }
   const similarity = intersection / union;
   assert.ok(similarity >= .95, `compiled icon lost artwork: similarity ${similarity.toFixed(4)}`);
   face.forEach((part, i) => {
     assert.ok(part.total > 30, `master face component ${i} is missing`);
-    assert.ok(part.matching / part.total >= .9, `compiled face component ${i} is missing or distorted`);
+    assert.ok(part.matching / part.total >= .9,
+      `compiled face component ${i} is missing or distorted: ${(part.matching / part.total * 100).toFixed(2)}% matched`);
   });
   return similarity;
 }
