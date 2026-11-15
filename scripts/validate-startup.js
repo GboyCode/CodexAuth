@@ -9,6 +9,7 @@ const realRequire = createRequire(filename);
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 async function scenario(target, fail = false) {
+  const quietMac = target === "tray";
   const events = new Map(), handlers = new Map(), windows = [], results = [];
   const onlineChecks = [], intervals = new Set();
   let failOnlineShutdown = false, onlineResumes = 0;
@@ -24,14 +25,14 @@ async function scenario(target, fail = false) {
   const electron = {
     app: { requestSingleInstanceLock: () => true, whenReady: () => readyPromise,
       on: (name, fn) => events.set(name, fn), setName() {}, setAppUserModelId() {},
-      quit: () => { quit = true; } },
+      quit: () => { quit = true; }, getLoginItemSettings: () => ({wasOpenedAtLogin: quietMac, status: "enabled", openAtLogin: true}) },
     Menu: { setApplicationMenu() {} },
     ipcMain: { handle: (name, fn) => { assert.ok(!handlers.has(name)); handlers.set(name, fn); } },
     dialog: { showErrorBox: () => { errorShown = true; } },
   };
   const context = vm.createContext({ require: (name) => name === "electron" ? electron
     : name === "./quota/online-accounts" ? { ...realRequire(name), createOnlineAccounts: () => online } : realRequire(name),
-    __dirname: path.dirname(filename), process: { ...process, platform: "win32" }, Buffer, console: { error() {} }, setTimeout, clearTimeout,
+    __dirname: path.dirname(filename), process: { ...process, platform: quietMac ? "darwin" : "win32" }, Buffer, console: { error() {} }, setTimeout, clearTimeout,
     setInterval: (callback) => { const timer = { callback, unref() {} }; intervals.add(timer); return timer; },
     clearInterval: (timer) => intervals.delete(timer) });
   vm.runInContext(fs.readFileSync(filename, "utf8"), context);
@@ -45,7 +46,7 @@ async function scenario(target, fail = false) {
   for (const invalid of [undefined, null, "30", "", 0, -1, 301, 1.5, NaN, Infinity]) {
     assert.equal(context.normalizeSettings({ autoSwitchCountdownSeconds: invalid }).autoSwitchCountdownSeconds, 15, "invalid stored durations recover to the default");
   }
-  if (!fail) {
+  if (!fail && !quietMac) {
     const originals = { mutateIndex: context.mutateIndex, currentState: context.currentState, configureAutoRecovery: context.configureAutoRecovery };
     let saved = JSON.stringify({ settings: context.defaultSettings(), accounts: [] });
     context.mutateIndex = async task => { const index = JSON.parse(saved); await task(index); saved = JSON.stringify(index); };
@@ -100,19 +101,20 @@ async function scenario(target, fail = false) {
   context.showMainWindow = () => open("main");
   context.showWidgetWindow = () => open("widget");
   const argv = target === "widget" ? ["app", "--codexauth-startup"] : ["app"];
-  events.get("second-instance")({}, argv);
+  if (!quietMac) events.get("second-instance")({}, argv);
   assert.equal(windows.length, 0, "launch before Electron ready is queued");
   ready(); await tick();
-  events.get("second-instance")({}, argv);
+  if (!quietMac) events.get("second-instance")({}, argv);
   assert.equal(windows.length, 0, "launch during slow credential hydration is queued");
   finishMetadata(); await tick(); await tick();
   if (fail) {
     assert.equal(windows.length, 0); assert.equal(quit, true); assert.equal(errorShown, true);
     assert.equal(scheduledUpdates, 0, "failed initialization never schedules update checks");
   } else {
-    assert.deepEqual(windows, [target]);
+    assert.deepEqual(windows, quietMac ? [] : [target]);
     assert.equal(scheduledUpdates, 1, "main-window and widget-only launches each schedule one update check");
-    assert.equal(subscriptionScans, 1, "startup schedules a separate due-only subscription scan");
+    assert.equal(subscriptionScans, quietMac ? 0 : 1, "Mac login must not start subscription scans");
+    if (quietMac) return;
     assert.equal((await results[0]).accounts.length, 5);
     events.get("second-instance")({}, argv);
     assert.deepEqual(windows, [target, target]);
@@ -148,6 +150,6 @@ async function scenario(target, fail = false) {
 }
 
 (async () => {
-  await scenario("main"); await scenario("widget"); await scenario("main", true);
+  await scenario("main"); await scenario("widget"); await scenario("main", true); await scenario("tray");
   console.log("Startup validation passed: launch ordering, initialization failure, no background quota queries, manual refresh and safe exit recovery.");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -1,5 +1,11 @@
 (function (root) {
   const messages = {
+    "登录时启动": "Open at login",
+    "请在系统设置 → 通用 → 登录项中允许启动。": "Allow startup in System Settings → General → Login Items.",
+    "登录后仅显示菜单栏图标，不弹出窗口。": "Start in the menu bar without opening a window.",
+    "请先安装应用到 Applications 后再设置登录时启动。": "Install the app in Applications before enabling open at login.",
+    "macOS 未启用登录项，请在系统设置的登录项中检查。": "macOS did not enable the login item. Check Login Items in System Settings.",
+    "macOS 未关闭登录项，请在系统设置的登录项中检查。": "macOS did not disable the login item. Check Login Items in System Settings.",
     "仍有 Codex 进程运行（PID：{0}）。请先结束这些进程，再重试切换。": "Codex processes are still running (PID: {0}). Close them before switching accounts.",
     "无法检查 Codex 进程，请稍后重试。": "Unable to check Codex processes. Please try again.",
     "未能结束冲突进程，或进程已变化。请重新检查后再切换。": "The conflicting processes could not be stopped or have changed. Check them again before switching.",

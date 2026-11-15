@@ -14,7 +14,8 @@ async function run() {
   let template = false;
   const context = vm.createContext({
     require: name => name === "electron" ? {
-      app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getVersion: () => "test" },
+      app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getVersion: () => "test",
+        getLoginItemSettings: () => ({openAtLogin:false, status:"not-registered"}) },
       ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
       nativeImage: { createFromPath: file => { assert.match(file, /codex-trayTemplate\.png$/); return { setTemplateImage: value => { template = value; } }; } },
       BrowserWindow: unexpected,
@@ -94,7 +95,11 @@ async function run() {
   assert.equal(window.options.movable, false);
   assert.equal(window.options.resizable, false);
   assert.equal(window.options.transparent, true);
-  assert.equal(window.options.vibrancy, "popover");
+  assert.equal(window.options.vibrancy, undefined, "no extra white native material behind the v0.1.88 background");
+  assert.equal(window.options.type, undefined, "must acquire real key-window focus");
+  assert.equal(window.options.focusable, true);
+  assert.equal(window.options.hasShadow, false);
+  assert.equal(window.bounds.width, 320);
   assert.equal(window.options.webPreferences.sandbox, true);
   assert.equal(window.bounds.x + window.bounds.width, 1024, "panel stays on screen at the right edge");
   assert.equal(window.bounds.y, 30, "panel is anchored beneath the menu bar");

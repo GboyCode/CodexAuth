@@ -12,7 +12,7 @@ for (const [source, translated] of Object.entries(english)) {
   assert.deepEqual(slots(translated), slots(source), `Interpolation mismatch: ${source}`);
   assert.ok(translated.trim(), `Empty translation: ${source}`);
 }
-for (const file of ["app.js", "widget.js", "shared-quota.js", "updates.js", "recovery-countdown.js", "../main.js"]) {
+for (const file of ["app.js", "widget.js", "login-item-ui.js", "shared-quota.js", "updates.js", "recovery-countdown.js", "../main.js"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   for (const match of source.matchAll(/\bt\(("(?:[^"\\]|\\.)*")/g)) {
     const key = JSON.parse(match[1]);

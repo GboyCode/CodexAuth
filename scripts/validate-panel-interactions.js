@@ -354,7 +354,7 @@ async function run() {
         codexAuth[method] = async () => { throw new Error("Unexpected desktop/usage call: " + method); };
       }`);
     await win.loadFile(path.resolve(__dirname, "../src/ui/widget.html"));
-    win.setContentSize(360, 560);
+    win.setContentSize(320, 560);
     await settle();
     assert.equal(await evaluate("document.body.classList.contains('mac-tray-panel')"), true);
     assert.equal(await evaluate("document.querySelectorAll('.account-row').length"), 4);
@@ -376,6 +376,13 @@ async function run() {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.quota-card')).backgroundImage"), "none");
     await media(false); await settle();
     assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.widget')).boxShadow"), "none");
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.accounts')).paddingLeft"), "6px");
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.account-row')).filter(row => {
+      const label = row.querySelector('.account-label').getBoundingClientRect();
+      const actions = row.querySelector('.account-row-actions').getBoundingClientRect();
+      return label.right > actions.left || actions.right > row.getBoundingClientRect().right;
+    }).map(row => row.dataset.accountId)`), [], "compact account actions do not overlap long names");
     await click('#refreshBtn');
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'current-quota' && c[1]?.force)"), true);
     await click('[data-account-id=backup]');
@@ -387,6 +394,12 @@ async function run() {
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'reauth' && c[1] === 'reauth')"), true);
     await click('#settingsBtn');
     assert.equal(await evaluate("document.querySelector('#settingsPanel').hidden"), false);
+    await click('#launchAtLogin');
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'settings' && c[1].launchAtLogin === true)"), true);
+    await evaluate("panelFixture.failSettings = true");
+    await click('#launchAtLogin');
+    assert.equal(await evaluate("document.querySelector('#launchAtLogin').checked"), true, "failed system update rolls back the switch");
+    await evaluate("panelFixture.failSettings = false");
     await click('#settingsBtn');
     await click('#mainBtn');
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'main')"), true);
@@ -395,9 +408,10 @@ async function run() {
     assert.equal(await evaluate("macIntervals.some(timer => timer.delay === 60000)"), true);
     assert.equal(await evaluate("macIntervals.some(timer => timer.delay === 5000)"), false);
     const callsBeforeHidden = await evaluate("panelFixture.calls.length");
-    await evaluate("Object.defineProperty(document, 'hidden', {configurable:true, value:true}); macIntervals.find(timer => timer.delay === 60000).callback(); panelFixture.notify({scope:'quota'})");
+    await evaluate("Object.defineProperty(document, 'hidden', {configurable:true, value:true}); document.dispatchEvent(new Event('visibilitychange')); macIntervals.find(timer => timer.delay === 60000).callback(); panelFixture.notify({scope:'quota'})");
     await settle();
     assert.equal(await evaluate("panelFixture.calls.length"), callsBeforeHidden, "hidden menu panel does not poll quota");
+    assert.equal(await evaluate("refreshTimer"), null, "hidden menu panel removes its refresh timer entirely");
     await evaluate("delete document.hidden");
     await capture('mac-menu-bar');
     win.webContents.debugger.detach();

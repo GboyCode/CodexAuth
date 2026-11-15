@@ -71,6 +71,19 @@ body:has(.shell) {
 .head-actions button.active:hover { background: var(--accent-hover); }
 .widget .account-row button:disabled { color: var(--muted); background: #ffffff73; box-shadow: none; }
 
+/* Compact macOS popover: same translucent material as the Windows widget,
+   with no outer CSS shadow (the native window shadow is disabled as well). */
+body.mac-tray-panel .widget { padding: 10px; box-shadow: none; }
+body.mac-tray-panel .accounts { padding-left: 6px; padding-right: 6px; }
+body.mac-tray-panel .account-row { padding-left: 3px; padding-right: 3px; }
+body.mac-tray-panel .accounts .section-title { padding: 0 3px; }
+body.mac-tray-panel .widget-head { gap: 6px; }
+body.mac-tray-panel .head-actions { gap: 5px; }
+body.mac-tray-panel .brand { gap: 7px; }
+body.mac-tray-panel .brand-version { font-size: 14px; }
+body.mac-tray-panel .login-setting { display: flex; margin-top: 12px; gap: 8px; align-items: center; }
+body.mac-tray-panel .login-note { font-size: 11px; line-height: 1.5; color: var(--muted); margin: 6px 0 0; }
+
 body:has(.countdown-row) > main {
   border-color: #ffffffd9;
   background: linear-gradient(135deg, #fffffff5, #f2f2f6f2);

@@ -1,7 +1,7 @@
 const path = require("node:path");
 
 function panelBounds(anchor, workArea) {
-  const width = Math.min(360, workArea.width);
+  const width = Math.min(320, workArea.width);
   const height = Math.min(560, workArea.height);
   return {
     x: Math.round(Math.max(workArea.x, Math.min(anchor.x + anchor.width / 2 - width / 2, workArea.x + workArea.width - width))),
@@ -22,11 +22,15 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow }) {
     requested = true;
     if (!win || win.isDestroyed()) {
       win = new BrowserWindow({
-        width: 360, height: 560, show: false, frame: false,
+        width: 320, height: 560, show: false, frame: false,
         movable: false, resizable: false, minimizable: false,
         maximizable: false, fullscreenable: false, skipTaskbar: true,
-        type: "panel", alwaysOnTop: true, transparent: true,
-        backgroundColor: "#00000000", vibrancy: "popover", visualEffectState: "active",
+        // A nonactivating NSPanel may never acquire the key-window focus needed
+        // for blur dismissal. Use a focusable transient window instead.
+        focusable: true, alwaysOnTop: true, transparent: true, hasShadow: false,
+        // Match the v0.1.88 transparent widget; don't add a second native white
+        // material behind the CSS background controlled by the opacity slider.
+        backgroundColor: "#00000000",
         webPreferences: { preload: path.join(__dirname, "preload.js"),
           contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
       });

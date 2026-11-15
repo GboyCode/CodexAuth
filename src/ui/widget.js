@@ -346,6 +346,7 @@ async function saveDraggedAccountOrder() {
 }
 
 function renderAccounts(snapshot) {
+  window.CodexLoginItemUI?.render(snapshot);
   // A refresh that started before a drag must not replace or reorder its targets.
   if (accountOrderDrag) return;
   latestSnapshot = snapshot;
@@ -714,11 +715,18 @@ wireEvents();
 if (!isMacPanel) wireResizeHandles();
 loadWidgetOpacity();
 if (!isMacPanel) loadPinState();
-refresh(true);
-window.setInterval(() => {
-  if (isMacPanel && document.hidden) return;
-  refresh(true);
-}, REFRESH_MS);
+let refreshTimer = null;
+function syncRefreshTimer() {
+  if (isMacPanel && document.hidden) {
+    if (refreshTimer !== null) window.clearInterval(refreshTimer);
+    refreshTimer = null;
+  } else if (refreshTimer === null) {
+    refreshTimer = window.setInterval(() => { if (!isMacPanel || !document.hidden) refresh(true); }, REFRESH_MS);
+  }
+}
+if (!isMacPanel || !document.hidden) refresh(true);
+syncRefreshTimer();
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") refresh(true);
+  syncRefreshTimer();
+  if (!document.hidden && document.visibilityState === "visible") refresh(true);
 });

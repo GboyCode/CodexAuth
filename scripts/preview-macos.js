@@ -29,7 +29,7 @@ async function main() {
     return win;
   };
   const mainWindow = make("macOS 主窗口预览 · 模拟账号", 1040, 720);
-  const panel = make("macOS 菜单栏面板预览 · 模拟账号", 360, 560);
+  const panel = make("macOS 菜单栏面板预览 · 模拟账号", 320, 560);
   ipcMain.on("preview:main", () => { if (!mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
   ipcMain.on("preview:hide", () => panel.hide());
   await mainWindow.loadFile(path.resolve(__dirname, "../src/ui/index.html"));

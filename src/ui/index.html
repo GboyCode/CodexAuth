@@ -208,6 +208,10 @@
             <button id="restartBtn" class="ghost-btn settings-restart" data-i18n="重启 Codex">重启 Codex</button>
           </div>
           <label class="toggle-row"><span data-i18n="切换后重启 Codex">切换后重启 Codex</span><input id="restartAfterSwitch" type="checkbox" checked /></label>
+          <div id="loginItemControl" hidden>
+            <label class="toggle-row"><span data-i18n="登录时启动">登录时启动</span><input id="launchAtLogin" type="checkbox" /></label>
+            <p id="loginItemStatus" class="small-copy" role="status"></p>
+          </div>
           <label data-windows-only class="toggle-row"><span data-i18n="额度用尽时自动切换">额度用尽时自动切换</span><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /></label>
           <div data-windows-only class="countdown-setting">
             <label for="autoSwitchCountdownSeconds" data-i18n="切换倒计时">切换倒计时</label>
@@ -311,6 +315,7 @@
     <script src="./locales/en.js"></script>
     <script src="./i18n.js"></script>
     <script src="./shared-quota.js"></script>
+    <script src="./login-item-ui.js"></script>
     <script src="./app.js"></script>
     <script src="./updates.js"></script>
     <script src="./glass.js"></script>

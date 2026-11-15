@@ -60,6 +60,10 @@
           <strong id="opacityValue">98%</strong>
         </label>
         <input id="opacityRange" type="range" min="0" max="100" value="98" />
+        <div id="loginItemControl" hidden>
+          <label class="login-setting"><input id="launchAtLogin" type="checkbox" /><span data-i18n="登录时启动">登录时启动</span></label>
+          <p id="loginItemStatus" class="login-note" role="status"></p>
+        </div>
       </div>
 
       <section class="quota-card">
@@ -107,6 +111,7 @@
     <script src="./locales/en.js"></script>
     <script src="./i18n.js"></script>
     <script src="./shared-quota.js"></script>
+    <script src="./login-item-ui.js"></script>
     <script src="./widget.js"></script>
     <script src="./updates.js"></script>
     <script src="./glass.js"></script>

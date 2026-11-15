@@ -299,6 +299,7 @@ function renderCountdownSetting(snapshot) {
 }
 
 function renderSettings(snapshot) {
+  window.CodexLoginItemUI?.render(snapshot);
   const language = window.CodexI18n.normalizeLanguage(snapshot?.settings?.language);
   els.languageInputs.forEach((input) => {
     input.checked = input.value === language;

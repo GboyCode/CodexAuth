@@ -125,7 +125,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-panel-preview
-          path: output/playwright/panel/mac-menu-bar.png
+          path: |
+            output/playwright/panel/mac-menu-bar.png
+            output/playwright/panel/mac-native-validation.json
           if-no-files-found: warn
 
   publish-release:

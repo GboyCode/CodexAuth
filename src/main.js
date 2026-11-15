@@ -24,6 +24,7 @@ const { WINDOWS_DESKTOP_SCAN, WINDOWS_WRITERS_SCAN, WINDOWS_CONFLICT_OUTPUT,
 const { normalizeSubscription, subscriptionFromClaims, mergeSubscriptionClaims, accountSubscription } = require("./subscription");
 const { createSubscriptionReader } = require("./subscription-client");
 const { createMacTrayPanel } = require("./mac-tray-panel");
+const macLogin = require("./mac-login").createMacLogin(app);
 let macTrayPanel = null;
 let macTrayMenu = null;
 const { preserveProjectState } = require("./codex-project-state");
@@ -509,6 +510,10 @@ function loginItemIdentityOptions() {
 }
 
 function applyLaunchAtLogin(enabled) {
+  if (isMac) {
+    const item = macLogin.set(enabled);
+    return item.enabled || item.pending;
+  }
   const openAtLogin = enabled === true;
   app.setLoginItemSettings({
     ...loginItemIdentityOptions(),
@@ -525,6 +530,7 @@ function hasStartupArg(argv = process.argv) {
 function wasOpenedFromLoginItem() {
   if (hasStartupArg()) return true;
   try {
+    if (isMac) return macLogin.read().openedAtLogin;
     const loginSettings = app.getLoginItemSettings(loginItemIdentityOptions());
     return loginSettings.wasOpenedAtLogin === true || loginSettings.wasOpenedAsHidden === true;
   } catch {
@@ -537,6 +543,10 @@ function shouldStartWithWidgetOnly(settings) {
 }
 
 function normalizeSettingsForState(settings) {
+  if (isMac) {
+    const item = macLogin.read();
+    return { ...normalizeSettings(settings), launchAtLogin: item.enabled || item.pending, launchAtLoginStatus: item.status };
+  }
   return normalizeSettings(settings);
 }
 
@@ -1340,7 +1350,7 @@ async function syncLaunchAtLoginFromSettings() {
   const index = await readIndex();
   const settings = normalizeSettings(index.settings);
   runtimeSettings = settings;
-  applyLaunchAtLogin(settings.launchAtLogin === true);
+  if (!isMac) applyLaunchAtLogin(settings.launchAtLogin === true);
   return settings;
 }
 
@@ -5441,7 +5451,9 @@ if (hasSingleInstanceLock) {
     installNetworkGuards();
     createTray();
     startupReady = true;
-    if (pendingWindow === "widget" || (!pendingWindow && shouldStartWithWidgetOnly(settings))) {
+    if (isMac && !pendingWindow && wasOpenedFromLoginItem()) {
+      // Login startup creates the status item only, without a renderer/window.
+    } else if (pendingWindow === "widget" || (!pendingWindow && shouldStartWithWidgetOnly(settings))) {
       showWidgetWindow();
     } else {
       createWindow();
