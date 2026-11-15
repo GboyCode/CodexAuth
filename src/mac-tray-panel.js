@@ -59,7 +59,12 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefers
       hardenWindow(win);
       win.on("show", () => {
         opening = false;
-        if (requested) win.focus();
+        if (requested) {
+          win.focus();
+          // AppKit restores the previous first responder while ordering in.
+          // Reset renderer focus after that native restoration has completed.
+          win.webContents.send("mac-panel:visibility", { visible: true });
+        }
       });
       win.on("blur", () => {
         // AppKit can briefly focus/blur while ordering an accessory window in,
