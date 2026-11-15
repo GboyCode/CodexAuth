@@ -2400,7 +2400,8 @@ function showMainWindow() {
 function showWidgetWindow() {
   if (isMac) {
     macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation,
-      prefersReducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion });
+      prefersReducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion,
+      activate: () => app.focus({ steal: true }) });
     macTrayPanel.show().catch(error => console.error("Menu bar panel failed:", error));
     return;
   }
@@ -2423,7 +2424,8 @@ function hideWidgetWindow() {
 function toggleWidgetWindow() {
   if (isMac) {
     macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation,
-      prefersReducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion });
+      prefersReducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion,
+      activate: () => app.focus({ steal: true }) });
     Promise.resolve(macTrayPanel.toggle()).catch(error => console.error("Menu bar panel failed:", error));
     return;
   }

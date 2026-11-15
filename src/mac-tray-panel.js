@@ -11,7 +11,7 @@ function panelBounds(anchor, workArea, contentHeight = 400) {
   };
 }
 
-function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefersReducedMotion = () => false }) {
+function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefersReducedMotion = () => false, activate = () => {} }) {
   let win = null;
   let loaded = null;
   let requested = false;
@@ -72,6 +72,9 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefers
     win.setBounds(panelBounds(anchor, screen.getDisplayMatching(anchor).workArea, contentHeight));
     win.webContents.send("mac-panel:visibility", { visible: true });
     win.webContents.send("state:changed", { scope: "accounts" });
+    // Explicit status-item activation must also activate NSApplication when
+    // returning from another app, before asking its window to become key.
+    activate();
     win.show();
     win.focus();
   }

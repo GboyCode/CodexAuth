@@ -31,7 +31,7 @@ async function run() {
   const area = screen.getPrimaryDisplay().workArea;
   const anchor = {x: area.x + 200, y: area.y - 24, width:20, height:24};
   const panel = createMacTrayPanel({BrowserWindow: FixtureWindow, screen,
-    tray: {getBounds: () => anchor}, hardenWindow() {}});
+    tray: {getBounds: () => anchor}, hardenWindow() {}, activate: () => app.focus({steal:true})});
   ipcMain.handle("native-test:fit", (_event, height) => panel.fitHeight(height));
   let external;
   try {
