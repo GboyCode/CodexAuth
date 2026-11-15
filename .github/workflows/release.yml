@@ -120,6 +120,14 @@ jobs:
           path: release/**/icon-verification/*.png
           if-no-files-found: warn
 
+      - name: Upload macOS panel preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-panel-preview
+          path: output/playwright/panel/mac-menu-bar.png
+          if-no-files-found: warn
+
   publish-release:
     name: Publish GitHub Release
     if: always() && needs.release-config.result == 'success' && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')

@@ -363,7 +363,18 @@ async function run() {
     assert.equal(await evaluate("document.querySelector('[data-account-id=current] [data-action=switch]').disabled"), true);
     assert.equal(await evaluate("document.querySelector('#pinBtn').checkVisibility()"), false);
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.widget-head')).webkitAppRegion"), "no-drag");
+    // CI macOS hosts can enable reduced transparency. Exercise both supported
+    // appearances explicitly rather than assuming the host's accessibility mode.
+    win.webContents.debugger.attach("1.3");
+    const media = async reduced => win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-transparency", value: reduced ? "reduce" : "no-preference" },
+        { name: "prefers-contrast", value: "no-preference" }, { name: "forced-colors", value: "none" }],
+    });
+    await media(false); await settle();
     assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.quota-card')).backgroundImage"), "none");
+    await media(true); await settle();
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.quota-card')).backgroundImage"), "none");
+    await media(false); await settle();
     assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
     await click('#refreshBtn');
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'current-quota' && c[1]?.force)"), true);
@@ -389,6 +400,7 @@ async function run() {
     assert.equal(await evaluate("panelFixture.calls.length"), callsBeforeHidden, "hidden menu panel does not poll quota");
     await evaluate("delete document.hidden");
     await capture('mac-menu-bar');
+    win.webContents.debugger.detach();
     assert.deepEqual(errors, [], "renderer errors");
     console.log("Panel validation passed: requested layouts/interactions, shared macOS glass widget, quota cards/details, switch/reauth, manual refresh, anchored controls and no hidden quota polling. Mock APIs only.");
     console.log(`Screenshots: ${output}`);
