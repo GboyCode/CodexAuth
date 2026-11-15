@@ -41,6 +41,10 @@ async function run() {
     const win = panel.getWindow();
     for (const name of ["show", "hide", "focus", "blur"]) win.on(name, () => events.push({name, time:Date.now(), visible:win.isVisible(), focused:win.isFocused()}));
     await waitFor(() => win.isFocused(), "menu window must acquire native focus");
+    await waitFor(() => win.webContents.executeJavaScript("document.activeElement.matches('.widget')"), "opening focuses the panel instead of the version button");
+    win.webContents.sendInputEvent({type:"keyDown", keyCode:"Tab"});
+    win.webContents.sendInputEvent({type:"keyUp", keyCode:"Tab"});
+    await waitFor(() => win.webContents.executeJavaScript("document.activeElement.id === 'checkUpdatesBtn' && document.activeElement.matches(':focus-visible')"), "keyboard Tab still focuses the version button visibly");
     assert.equal(win.hasShadow(), false);
     assert.equal(win.getBounds().width, 320);
     assert.equal(app.dock.isVisible(), false, "accessory app has no running Dock icon");
@@ -65,6 +69,7 @@ async function run() {
     await waitFor(() => win.webContents.executeJavaScript("refreshTimer === null"), "hiding must remove the quota timer");
     await panel.show();
     await waitFor(() => win.isVisible() && win.isFocused(), "panel must reopen and regain focus");
+    await waitFor(() => win.webContents.executeJavaScript("document.activeElement.matches('.widget')"), "reopening resets previous button focus to the panel");
     const main = new FixtureWindow({width:800, height:600, show:false});
     await main.loadFile(path.resolve(__dirname, "../src/ui/index.html"));
     app.focus({steal:true}); main.show(); main.focus();
@@ -80,7 +85,7 @@ async function run() {
     const metrics = app.getAppMetrics();
     assert.equal(await win.webContents.executeJavaScript("panelFixture.calls.length"), quotaCalls, "hidden panel performs no fixture API calls");
     const report = { scope: "isolated menu panel with fixture accounts; not a full-app production benchmark",
-      accessoryDockHidden: true, accessoryMainWindowFocused: true,
+      accessoryDockHidden: true, accessoryMainWindowFocused: true, panelInitialFocus: true, keyboardTabPreserved: true,
       externalApplicationDismissal: true, automaticAccountHeight: true, interruptedHideSafe: true,
       hiddenRefreshTimerRemoved: true, sampleSeconds: 5,
       totalCpuPercent: metrics.reduce((sum, item) => sum + item.cpu.percentCPUUsage, 0),

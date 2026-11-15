@@ -588,10 +588,26 @@ async function reauthAccount(accountId, button) {
 }
 
 function wireEvents() {
-  if (isMacPanel) api.onMacPanelVisibility?.(({ visible }) => {
-    document.body.classList.toggle("panel-closing", !visible);
-    if (visible) queueAccountListOverflowUpdate();
-  });
+  if (isMacPanel) {
+    const panel = document.querySelector(".widget");
+    panel.tabIndex = -1;
+    let focusFrame = null;
+    api.onMacPanelVisibility?.(({ visible }) => {
+      document.body.classList.toggle("panel-closing", !visible);
+      if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
+      focusFrame = null;
+      if (visible) {
+        queueAccountListOverflowUpdate();
+        // Don't let native window activation choose the first button (version).
+        // Keep it in the Tab order; only the initial focus belongs to the panel.
+        panel.focus({ preventScroll: true });
+        focusFrame = window.requestAnimationFrame(() => {
+          focusFrame = null;
+          panel.focus({ preventScroll: true });
+        });
+      }
+    });
+  }
   els.refreshBtn.addEventListener("click", () => refresh(false));
   els.pinBtn.addEventListener("click", async (event) => {
     event.stopPropagation();

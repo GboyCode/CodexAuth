@@ -24,6 +24,7 @@ body.resizing {
 
 /* macOS shares this widget's design, anchored under its menu bar item. */
 body.mac-tray-panel .widget-head { -webkit-app-region: no-drag; }
+body.mac-tray-panel .widget:focus { outline: none; }
 body.mac-tray-panel #pinBtn,
 body.mac-tray-panel .resize-handle,
 body.mac-tray-panel #dockCollapseBtn { display: none; }
