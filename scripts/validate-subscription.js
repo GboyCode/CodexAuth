@@ -85,6 +85,7 @@ assert.equal(display(null).label, "到期 未知");
   await assert.rejects(requestJson(subscriptionUrl("workspace-a"), { method: "POST" }), /地址/);
 
   sandbox.accountSubscription = accountSubscription;
+  sandbox.isMac = false;
   sandbox.waitForIndexMutations = async () => {};
   sandbox.readIndex = async () => ({ accounts: [{ id: "saved-a", displayName: "Test account", identity: parsed }] });
   sandbox.readCurrentAuth = async () => ({ identity: parsed });
