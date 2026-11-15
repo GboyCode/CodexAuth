@@ -19,7 +19,7 @@ exports.default = async function afterPack(context) {
     const legacyPng = path.join(preview, "icns.png");
     const project = context.packager.projectDir;
     execFileSync("/usr/bin/swift", [path.join(project, "scripts", "render-mac-bundle-icon.swift"), path.dirname(contents), finderPng], { stdio: "inherit" });
-    execFileSync("/usr/bin/sips", ["-s", "format", "png", path.join(contents, "Resources", "icon.icns"), "--out", legacyPng], { stdio: "inherit" });
+    execFileSync("/usr/bin/swift", [path.join(project, "scripts", "render-mac-bundle-icon.swift"), path.join(contents, "Resources", "icon.icns"), legacyPng], { stdio: "inherit" });
     execFileSync(require("electron"), [path.join(project, "scripts", "validate-mac-compiled-icon.js"),
       path.join(project, "build", "CodexAuth.icon", "Assets", "codex.png"), finderPng, legacyPng], { stdio: "inherit" });
     console.log("Verified packaged macOS native icon catalog and ICNS fallback.");

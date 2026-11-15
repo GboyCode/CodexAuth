@@ -12,11 +12,13 @@ function pixels(filename) {
 }
 function dark(frame, x, y) {
   const i = (y * frame.width + x) * 4;
-  return frame.data[i + 3] >= 192 && frame.data[i] + frame.data[i + 1] + frame.data[i + 2] < 600;
+  // nativeImage bitmaps use premultiplied alpha. A translucent white tile edge
+  // must not be mistaken for a dark part of the foreground silhouette.
+  return frame.data[i + 3] >= 192 && frame.data[i] + frame.data[i + 1] + frame.data[i + 2] < 600 * frame.data[i + 3] / 255;
 }
 function white(frame, x, y) {
   const i = (y * frame.width + x) * 4;
-  return frame.data[i + 3] >= 192 && [0, 1, 2].every(c => frame.data[i + c] > 210);
+  return frame.data[i + 3] >= 192 && [0, 1, 2].every(c => frame.data[i + c] > 210 * frame.data[i + 3] / 255);
 }
 function bounds(frame) {
   let left = frame.width, right = -1, top = frame.height, bottom = -1;
@@ -30,7 +32,8 @@ function bounds(frame) {
 }
 function compare(master, actual) {
   const a = bounds(master), b = bounds(actual);
-  assert.ok(Math.abs(a.width / a.height - b.width / b.height) < .04, "compiled glyph is clipped or distorted");
+  assert.ok(Math.abs(a.width / a.height - b.width / b.height) < .04,
+    `compiled glyph is clipped or distorted: source ${a.width}x${a.height}, compiled ${b.width}x${b.height}`);
   let intersection = 0, union = 0;
   const face = [{ total: 0, matching: 0 }, { total: 0, matching: 0 }, { total: 0, matching: 0 }];
   for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
@@ -60,5 +63,15 @@ app.whenReady().then(() => {
   const [masterFile, ...compiledFiles] = process.argv.slice(2);
   assert.ok(masterFile && compiledFiles.length);
   const master = pixels(masterFile);
+  // Regression fixtures for the reported missing lobe and missing left eye.
+  const clipped = { ...master, data: Buffer.from(master.data) };
+  const missingEye = { ...master, data: Buffer.from(master.data) };
+  for (let y = 0; y < master.height; y++) for (let x = 0; x < master.width * .4; x++) {
+    const i = (y * master.width + x) * 4;
+    if (x < master.width * .25) clipped.data[i + 3] = 0;
+    if (white(master, x, y)) missingEye.data.fill(64, i, i + 3);
+  }
+  assert.throws(() => compare(master, clipped), /clipped|lost artwork/);
+  assert.throws(() => compare(master, missingEye), /face component 0/);
   for (const file of compiledFiles) console.log(`Compiled icon verified: ${file}, silhouette ${(compare(master, pixels(file)) * 100).toFixed(2)}%, both eyes and mouth intact.`);
 }).then(() => app.quit(), error => { console.error(error); app.exit(1); });

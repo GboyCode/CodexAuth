@@ -3,7 +3,14 @@ import AppKit
 // Ask the same system service Finder uses for the finished app's icon.
 // This exercises Info.plist and compiled resources, not the source SVG.
 guard CommandLine.arguments.count == 3 else { fatalError("Expected app path and output PNG") }
-let icon = NSWorkspace.shared.icon(forFile: CommandLine.arguments[1])
+let input = CommandLine.arguments[1]
+let icon: NSImage
+if input.hasSuffix(".icns") {
+    guard let legacy = NSImage(contentsOfFile: input) else { fatalError("Cannot load ICNS") }
+    icon = legacy
+} else {
+    icon = NSWorkspace.shared.icon(forFile: input)
+}
 let size = 1024
 guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
