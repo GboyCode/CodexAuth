@@ -25,7 +25,7 @@
           <h1>CodexAuth</h1>
         </div>
         <div class="top-actions">
-          <div data-usage-only class="page-tabs" role="tablist" aria-label="页面" data-i18n-aria-label="页面">
+          <div class="page-tabs" role="tablist" aria-label="页面" data-i18n-aria-label="页面">
             <button id="accountsTab" class="page-tab active" type="button" role="tab" aria-selected="true" data-i18n="账号">
               账号
             </button>
@@ -34,7 +34,7 @@
             </button>
           </div>
           <button id="refreshBtn" class="icon-btn" title="刷新" data-i18n-title="刷新" aria-label="刷新" data-i18n-aria-label="刷新">↻</button>
-          <button data-usage-only id="widgetBtn" class="ghost-btn" data-i18n="浮窗">浮窗</button>
+          <button data-windows-only id="widgetBtn" class="ghost-btn" data-i18n="浮窗">浮窗</button>
           <button id="settingsBtn" class="ghost-btn" aria-haspopup="dialog" data-i18n="设置">设置</button>
         </div>
       </section>
@@ -45,7 +45,7 @@
             <p class="label" data-i18n="当前登录">当前登录</p>
             <h2 id="currentIdentity" data-i18n="读取中">读取中</h2>
           </div>
-          <button data-usage-only id="autoRecoverySummary" class="status-link" aria-haspopup="dialog" data-i18n="自动切换：关闭">自动切换：关闭</button>
+          <button data-windows-only id="autoRecoverySummary" class="status-link" aria-haspopup="dialog" data-i18n="自动切换：关闭">自动切换：关闭</button>
         </section>
         <p id="recoveryNotice" class="inline-notice" role="status" hidden></p>
         <section class="account-toolbar">
@@ -64,7 +64,7 @@
         <div class="account-list" id="accountList"></div>
       </section>
 
-      <section data-usage-only id="usagePage" class="page">
+      <section id="usagePage" class="page">
         <section class="dashboard-panel">
           <div class="section-head">
             <div>
@@ -103,7 +103,7 @@
             </article>
           </div>
 
-          <section class="local-usage-section" aria-labelledby="localUsageTitle">
+          <section data-local-usage class="local-usage-section" aria-labelledby="localUsageTitle">
           <div class="section-head">
             <h2 id="localUsageTitle" data-i18n="本地用量">本地用量</h2>
             <div class="section-head-actions">
@@ -208,8 +208,8 @@
             <button id="restartBtn" class="ghost-btn settings-restart" data-i18n="重启 Codex">重启 Codex</button>
           </div>
           <label class="toggle-row"><span data-i18n="切换后重启 Codex">切换后重启 Codex</span><input id="restartAfterSwitch" type="checkbox" checked /></label>
-          <label data-usage-only class="toggle-row"><span data-i18n="额度用尽时自动切换">额度用尽时自动切换</span><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /></label>
-          <div data-usage-only class="countdown-setting">
+          <label data-windows-only class="toggle-row"><span data-i18n="额度用尽时自动切换">额度用尽时自动切换</span><input id="autoSwitchOnLimit" type="checkbox" aria-describedby="autoSwitchHelp" /></label>
+          <div data-windows-only class="countdown-setting">
             <label for="autoSwitchCountdownSeconds" data-i18n="切换倒计时">切换倒计时</label>
             <div class="countdown-controls">
               <div class="countdown-input">
@@ -221,10 +221,10 @@
               <button id="countdownConfirm" class="countdown-confirm" type="button" data-i18n="确定">确定</button>
             </div>
           </div>
-          <p data-usage-only id="countdownHelp" class="small-copy countdown-help" role="status" hidden></p>
-          <label data-usage-only class="toggle-row reset-card-setting"><span><span data-i18n="自动使用重置卡">自动使用重置卡</span><small id="autoResetHelp" class="setting-note" data-i18n="无可用账号时，消耗一张卡">无可用账号时，消耗一张卡</small></span><input id="autoResetOnWeeklyLimit" type="checkbox" /></label>
-          <p data-usage-only id="autoRecoveryStatus" class="small-copy" role="status"></p>
-          <details data-usage-only class="local-diagnostics settings-rules">
+          <p data-windows-only id="countdownHelp" class="small-copy countdown-help" role="status" hidden></p>
+          <label data-windows-only class="toggle-row reset-card-setting"><span><span data-i18n="自动使用重置卡">自动使用重置卡</span><small id="autoResetHelp" class="setting-note" data-i18n="无可用账号时，消耗一张卡">无可用账号时，消耗一张卡</small></span><input id="autoResetOnWeeklyLimit" type="checkbox" /></label>
+          <p data-windows-only id="autoRecoveryStatus" class="small-copy" role="status"></p>
+          <details data-windows-only class="local-diagnostics settings-rules">
             <summary data-i18n="切换规则">切换规则</summary>
             <p id="autoSwitchHelp" class="small-copy" data-i18n="切换后重启 Codex 并继续原任务；倒计时内可取消。">切换后重启 Codex 并继续原任务；倒计时内可取消。</p>
             <p class="small-copy" data-i18n="优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。">优先顺序：Plus → 有五小时限制的 Business → 仅周额度的 Business → 限制不明确的 Business → 其他套餐。同类优先重置更近、剩余额度更多的账号；无记录账号在同类有重置记录的账号之后尝试。</p>
@@ -242,7 +242,7 @@
           <p id="diagnosticsInfo" class="small-copy" role="status" data-i18n="读取中">读取中</p>
           <p id="recoveryInfo" class="small-copy" hidden></p>
         </details>
-        <details data-usage-only class="local-diagnostics settings-section">
+        <details data-windows-only class="local-diagnostics settings-section">
           <summary data-i18n="数据说明">数据说明</summary>
           <p id="quotaModeHint" class="small-copy" data-i18n="当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。">当前账号读取在线额度与本地日志；备用账号仅在手动刷新或自动切换前查询。</p>
           <p class="small-copy" data-i18n="缓存与预估均标注来源和时间。重置后需刷新确认额度。本地用量仅统计本机，不代表账号总用量。">缓存与预估均标注来源和时间。重置后需刷新确认额度。本地用量仅统计本机，不代表账号总用量。</p>

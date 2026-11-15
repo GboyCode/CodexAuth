@@ -30,9 +30,9 @@ function installFixture(appVersion, platform = "win32") {
   window.codexAuth = {
     platform,
     getState: async () => copy(fixture.snapshot),
-    getQuota: async () => { if (fixture.failQuota) throw new Error("quota unavailable"); return { quota: copy(fixture.quota) }; },
-    getDashboard: async () => ({ quota: copy(fixture.quota), usage: copy(fixture.usage), scope: { since: new Date().toISOString() } }),
-    getAllUsage: async () => ({ ...copy(fixture.usage), tokenUsage: { totalTokens: fixture.allTotalTokens } }),
+    getQuota: async (options) => { fixture.calls.push(["current-quota", options]); if (fixture.failQuota) throw new Error("quota unavailable"); return { quota: copy(fixture.quota) }; },
+    getDashboard: async () => { fixture.calls.push(["dashboard"]); return { quota: copy(fixture.quota), usage: copy(fixture.usage), scope: { since: new Date().toISOString() } }; },
+    getAllUsage: async () => { fixture.calls.push(["local-usage"]); return { ...copy(fixture.usage), tokenUsage: { totalTokens: fixture.allTotalTokens } }; },
     getAllAccountsQuota: async () => ({ accounts: copy(fixture.snapshot.accounts) }),
     checkAccountQuota: async (id) => { fixture.calls.push(["quota", id]); return { refreshed: true, reason: "已刷新" }; },
     onStateChanged: (listener) => { fixture.notify = listener; },
@@ -234,12 +234,19 @@ async function run() {
     await evaluate("panelFixture.snapshot.platform = 'darwin'; panelFixture.notify({scope: 'accounts'})"); await settle();
     assert.equal(await evaluate("document.querySelector('#autoSwitchOnLimit').disabled && document.querySelector('#autoResetOnWeeklyLimit').disabled"), true);
     assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').disabled"), true);
-    assert.equal(await evaluate("document.querySelector('#usageTab').checkVisibility()"), false);
+    assert.equal(await evaluate("document.querySelector('#usageTab').checkVisibility()"), true);
     assert.equal(await evaluate("document.querySelector('#widgetBtn').checkVisibility()"), false);
-    assert.equal(await evaluate("document.querySelectorAll('.account-quota-preview, .account-expand-cue, .account-quota-details').length"), 0);
+    assert.equal(await evaluate("document.querySelectorAll('.account-quota-preview').length"), 4);
+    await evaluate("panelFixture.calls = []");
     await click('#usageTab');
-    assert.equal(await evaluate("document.querySelector('#accountsPage').classList.contains('active')"), true);
-    await capture('mac-accounts');
+    assert.equal(await evaluate("document.querySelector('#usagePage').classList.contains('active')"), true);
+    assert.equal(await evaluate("document.querySelector('.local-usage-section').checkVisibility()"), false);
+    assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "剩余 80%");
+    assert.equal(await evaluate("document.querySelector('#allAccountsSection').checkVisibility()"), true);
+    assert.equal(await evaluate("panelFixture.calls.some(c => ['dashboard','local-usage'].includes(c[0]))"), false);
+    await click('#statsRefreshBtn');
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'current-quota' && c[1]?.force === true)"), true);
+    await capture('mac-quota');
     await evaluate("panelFixture.snapshot.platform = 'win32'; panelFixture.notify({scope: 'accounts'})"); await settle();
 
     await click('#usageTab');
@@ -341,6 +348,7 @@ async function run() {
     await settle();
     await evaluate("panelFixture.snapshot.platform = 'darwin'; panelFixture.snapshot.settings.language = 'zh-CN'; panelFixture.notify()"); await settle();
     assert.equal(await evaluate("document.querySelectorAll('.account').length"), 4);
+    assert.match(await evaluate("document.querySelector('[data-account-id=current] .quota').textContent"), /剩余 80%/);
     assert.equal(await evaluate("document.querySelector('[data-account-id=current] button') === null"), true);
     assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
     await click('[data-account-id=backup] button');

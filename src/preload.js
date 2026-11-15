@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld("codexAuth", {
     return () => ipcRenderer.removeListener("recovery-countdown:changed", handler);
   },
   restartCodex: () => ipcRenderer.invoke("codex:restart"),
-  getQuota: () => ipcRenderer.invoke("quota:get"),
+  getQuota: (options) => ipcRenderer.invoke("quota:get", options),
   getDashboard: () => ipcRenderer.invoke("dashboard:get"),
   getAllAccountsQuota: () => ipcRenderer.invoke("dashboard:all-accounts"),
   getAllUsage: () => ipcRenderer.invoke("dashboard:all-usage"),

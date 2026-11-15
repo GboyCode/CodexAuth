@@ -1,12 +1,12 @@
 const t = (...args) => window.CodexI18n.t(...args);
 const api = window.codexAuth;
 document.documentElement.classList.toggle("custom-titlebar", api.platform === "win32");
-document.documentElement.classList.toggle("switch-only", api.platform === "darwin");
+document.documentElement.classList.toggle("mac-platform", api.platform === "darwin");
 const q = window.CodexQuotaUI;
 const DASHBOARD_AUTO_REFRESH_MS = 8000;
 const OVERVIEW_PRIVACY_KEY = "codexauth.overview.hideEmails";
 
-function supportsUsage() {
+function supportsLocalUsage() {
   return (state.snapshot?.platform || api.platform) !== "darwin";
 }
 
@@ -223,9 +223,9 @@ async function withAction(element, busyText, task) {
 function startDashboardAutoRefresh() {
   if (!state.dashboardRefreshTimer) {
     state.dashboardRefreshTimer = window.setInterval(() => {
-      if (state.activePage !== "usage") return;
+      if (state.activePage !== "usage" || (!supportsLocalUsage() && document.hidden)) return;
       loadDashboard(true, { busy: false }).catch((error) => showToast(error.message));
-    }, DASHBOARD_AUTO_REFRESH_MS);
+    }, supportsLocalUsage() ? DASHBOARD_AUTO_REFRESH_MS : 60000);
   }
 }
 
@@ -237,7 +237,7 @@ function stopDashboardAutoRefresh() {
 }
 
 function setActivePage(page) {
-  const isUsage = supportsUsage() && page === "usage";
+  const isUsage = page === "usage";
   state.activePage = isUsage ? "usage" : "accounts";
 
   els.accountsPage.classList.toggle("active", !isUsage);
@@ -352,7 +352,7 @@ function renderStatus(snapshot) {
     els.diagnosticsInfo.textContent = [
       `CodexAuth ${d.version} · Codex ${d.codexVersion ?? t("版本未知")}`,
       t("文件凭据：{0} · 账号同步：{1}", d.fileCredentials?t("正常"):t("需检查"), d.authSynchronized?t("一致"):t("待同步")),
-      ...(supportsUsage() ? [
+      ...(supportsLocalUsage() ? [
         t("{0} 个本地日志 · {1} {2}", d.sessionFiles, d.logDatabase, d.dbReadable?t("可读"):t("暂不可读")),
         t("日志更新：{0} · 用量统计来自本机", d.latestLogAt?formatDate(d.latestLogAt):t("未知")),
       ] : []),
@@ -472,7 +472,6 @@ function createAccountQuotaDetails(account) {
 }
 
 function toggleAccountDetails(accountId) {
-  if (!supportsUsage()) return;
   state.expandedAccountId = state.expandedAccountId === accountId ? null : accountId;
   if (state.snapshot) renderAccounts(state.snapshot);
 }
@@ -514,7 +513,7 @@ function accountCard(account) {
       : q.quotaFreshnessLabel(quota, { compact: true, inline: true });
   switched.title = account.reauthReason || q.quotaFailureDetail(account.onlineQuotaStatus) || q.quotaFreshnessLabel(quota);
   meta.append(identity);
-  if (supportsUsage() || account.needsReauth) meta.append(switched);
+  meta.append(switched);
 
   main.append(line, meta);
 
@@ -547,7 +546,7 @@ function accountCard(account) {
   const actions = document.createElement("div");
   actions.className = "account-actions";
 
-  if (supportsUsage()) actions.append(quotaToggle);
+  actions.append(quotaToggle);
   if (account.needsReauth || !account.isActive) {
     const primary = document.createElement("button");
     primary.className = "account-action primary";
@@ -569,9 +568,9 @@ function accountCard(account) {
   });
   actions.append(more);
   card.append(main);
-  if (supportsUsage()) card.append(quotaSummary);
+  card.append(quotaSummary);
   card.append(actions);
-  if (supportsUsage() && expanded) card.append(createAccountQuotaDetails(account));
+  if (expanded) card.append(createAccountQuotaDetails(account));
   return card;
 }
 
@@ -785,7 +784,6 @@ function overviewQuotaFailure(account) {
 }
 
 async function renderAllAccountsQuota() {
-  if (!supportsUsage()) return;
   try {
     const requestId = ++state.allAccountsRequestId;
     const data = await api.getAllAccountsQuota();
@@ -852,9 +850,7 @@ function render(snapshot) {
   const languageChanged = window.CodexI18n.setLanguage(snapshot?.settings?.language);
   renderAccountLogin(snapshot.accountLogin);
   state.snapshot = snapshot;
-  document.documentElement.classList.toggle("switch-only", !supportsUsage());
-  els.accountDetailsBtn.hidden = !supportsUsage();
-  if (!supportsUsage()) setActivePage("accounts");
+  document.documentElement.classList.toggle("mac-platform", !supportsLocalUsage());
   renderSettings(snapshot);
   renderStatus(snapshot);
   renderAccounts(snapshot);
@@ -878,14 +874,13 @@ async function refresh(silent = false) {
 }
 
 async function readQuota(silent = true) {
-  if (!supportsUsage()) return;
   if (state.quotaLoading) {
     if (!silent) state.quotaRefreshQueued = true;
     return;
   }
   state.quotaLoading = true;
   try {
-    const quotaDashboard = await api.getQuota();
+    const quotaDashboard = await api.getQuota({ force: !silent });
     renderQuotaPanel(quotaDashboard);
     if (!silent) showToast(t("额度已刷新"));
   } finally {
@@ -926,7 +921,12 @@ function readDashboard(silent) {
 }
 
 async function loadDashboard(silent = false, options = {}) {
-  if (!supportsUsage()) return;
+  if (!supportsLocalUsage()) {
+    await readQuota(silent);
+    state.dashboardLoaded = true;
+    await renderAllAccountsQuota();
+    return;
+  }
   const read = async () => {
     const requests = [readDashboard(silent)];
     if (state.usageScope === "all") requests.push(readQuota(true));

@@ -14,6 +14,7 @@ main { min-height: 0; flex: 1; overflow: auto; }
 .account { padding: 10px 0; }
 .account-info { display: grid; gap: 4px; min-width: 0; }
 .name { font-weight: 600; }
+.quota { color: #62626b; font-size: 11px; line-height: 1.5; white-space: normal; }
 .active { color: #24844a; white-space: nowrap; }
 footer p { margin: 0; line-height: 1.5; }
 #notice:not(:empty) { margin-bottom: 6px; color: #ad3c27; }
@@ -23,6 +24,7 @@ footer p { margin: 0; line-height: 1.5; }
   button:hover { background: #45454c; }
   .current { border-color: #505057; }
   .current > span, .identity, footer { color: #b0b0ba; }
+  .quota { color: #b0b0ba; }
   .active { color: #79d693; }
   #notice:not(:empty) { color: #ffa18e; }
 }

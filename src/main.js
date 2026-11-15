@@ -131,6 +131,7 @@ const WIDGET_DOCK_COLLAPSE_RETRY_LIMIT = 8;
 const ATOMIC_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
 const AUTH_BACKUP_RETENTION_COUNT = 60;
 const localDataCache = createLocalDataCache();
+const macQuotaCache = createLocalDataCache(60000);
 const quotaDesktopBridge = createDesktopBridge();
 const desktopQuotaReader = createDesktopQuotaReader({
   getAnchor: () => isWindows ? readLocalThreadAnchor(codexDir()) : null,
@@ -880,7 +881,7 @@ async function localDiagnostics(index, current) {
     authRecognized:!!current?.exists&&!current?.error, authSynchronized:!!matching,
     accountCount:index.accounts.length,logDatabase:isMac ? null : path.basename(logsDbPath()),dbReadable,
     sessionFiles:files.length,latestLogAt:files[0]?.mtimeMs?new Date(files[0].mtimeMs).toISOString():null,
-    recovery:index.recovery??null, mode:isMac ? "account-switch-only" : "local-usage-and-online-standby-quota"};
+    recovery:index.recovery??null, mode:isMac ? "quota-without-local-usage" : "local-usage-and-online-standby-quota"};
 }
 
 async function readLocalResetCredits(scope, records) {
@@ -4488,9 +4489,25 @@ async function resolveQuotaWithMode(scope, files) {
   return publicQuota;
 }
 
-async function getQuota() {
-  if (isMac) return { quota: null, scope: null };
+async function getQuota(options = {}) {
   const scope = await dashboardScope();
+  if (isMac) {
+    if (!scope.hasCurrentAuth || !scope.accountId) return { quota: resolveQuota(scope, null), scope };
+    if (options?.force === true) macQuotaCache.invalidate();
+    return macQuotaCache.cached(macQuotaCache.buildQuotaKey(scope), async () => {
+      // On-demand quota snapshots only: no token aggregation, calibration or
+      // idle log watchers. Prefer the bounded SQLite query; inspect at most
+      // five recent session files when no structured SQLite snapshot exists.
+      let latest = await readLatestSqliteRateLimitQuota({ since: scope.since, accountIdentity: scope.account });
+      if (!latest && Number.isFinite(Date.parse(scope.since))) {
+        const files = (await macQuotaCache.getSessionFiles(sessionsDir(), walkSessionFiles)).slice(0, 5);
+        latest = await readLatestLocalQuota({ since: scope.since, files });
+      }
+      const quota = resolveQuota(scope, latest);
+      if (latest) await saveAccountQuotaSnapshot(scope.accountId, quota, scope.since);
+      return { quota, scope, checkedAt: new Date().toISOString() };
+    });
+  }
   if (!scope.hasCurrentAuth) {
     return { quota: resolveQuota(scope, null), scope, checkedAt: new Date().toISOString() };
   }
@@ -4506,7 +4523,7 @@ async function getQuota() {
 }
 
 async function getDashboard() {
-  if (isMac) return { quota: null, usage: { available: false }, scope: null };
+  if (isMac) return { ...await getQuota(), usage: { available: false } };
   const scope = await dashboardScope();
   if (!scope.hasCurrentAuth) {
     return { quota: resolveQuota(scope, null), usage: { ...emptyLocalUsage(scope.since), available: false }, scope };
@@ -4523,7 +4540,6 @@ async function getDashboard() {
 }
 
 async function getAllAccountsQuotaSummary() {
-  if (isMac) return { accounts: [] };
   await waitForIndexMutations();
   const index = await readIndex();
   let currentIdentityKey = null;
@@ -5292,10 +5308,15 @@ async function checkForUpdates(event, { automatic = false } = {}) {
 }
 
 async function checkAccountQuota(accountId) {
-  if (isMac) return { refreshed: false, available: null, reason: "macOS 仅提供账号切换。" };
   if (typeof accountId !== "string") throw new Error("请选择账号。");
   const scope = await dashboardScope();
   if (scope.hasCurrentAuth && scope.accountId === accountId) {
+    if (isMac) {
+      const result = await getQuota({ force: true });
+      const refreshed = !!result.quota && !["unavailable", "account-cache"].includes(result.quota.source);
+      broadcastStateChanged({ scope: "quota" });
+      return { refreshed, available: null, reason: refreshed ? "额度已刷新" : result.quota?.error };
+    }
     const quota = await desktopQuotaReader.refresh(scope);
     getSubscriptions().check(accountId).catch(() => {});
     return { refreshed: !!quota, available: null, reason: quota ? "在线额度已更新。"
@@ -5364,7 +5385,7 @@ function registerIpc() {
     return result;
   });
   ipcMain.handle("codex:restart", () => restartCodexAppQueued());
-  ipcMain.handle("quota:get", () => getQuota());
+  ipcMain.handle("quota:get", (_event, options) => getQuota(options));
   ipcMain.handle("dashboard:get", () => getDashboard());
   ipcMain.handle("dashboard:all-accounts", () => getAllAccountsQuotaSummary());
   ipcMain.handle("dashboard:all-usage", () =>

@@ -9,7 +9,30 @@ permissions:
   contents: write
 
 jobs:
+  release-config:
+    name: Select release platforms
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.platforms.outputs.windows }}
+      macos: ${{ steps.platforms.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: platforms
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const tag = process.env.GITHUB_REF_NAME;
+          if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error('Invalid release tag');
+          const file = `docs/releases/${tag}.json`;
+          const platforms = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).platforms : ['windows', 'macos'];
+          if (!Array.isArray(platforms) || !platforms.length || platforms.some(p => !['windows', 'macos'].includes(p))) throw new Error('Invalid release platforms');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `windows=${platforms.includes('windows')}\nmacos=${platforms.includes('macos')}\n`);
+          NODE
+
   build-windows:
+    needs: release-config
+    if: needs.release-config.outputs.windows == 'true'
     name: Build Windows installer
     runs-on: windows-latest
 
@@ -45,6 +68,8 @@ jobs:
             release/CodexAuthSwitch-Setup-*.exe.blockmap
 
   build-macos:
+    needs: release-config
+    if: needs.release-config.outputs.macos == 'true'
     name: Build macOS installers
     runs-on: macos-latest
 
@@ -89,7 +114,9 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
+    if: always() && needs.release-config.result == 'success' && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
     needs:
+      - release-config
       - build-windows
       - build-macos
     runs-on: ubuntu-latest

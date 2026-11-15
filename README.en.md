@@ -38,7 +38,7 @@ Codex account switcher, Codex multi account, Codex App account manager, OpenAI C
 - **Widget and privacy display**: main window, tray and quick-switch widget; hide emails in the quota overview and expand credential-storage or compatibility details.
 - **Updates and project links**: checks on startup and prompts when a newer release is available, with manual checks, GitHub and developer WeChat links.
 
-Windows provides quotas, usage statistics, the desktop widget and automatic task recovery. macOS focuses on account management, switching and credential migration. Click the monochrome menu bar icon to open an anchored account panel; click outside or press Escape to dismiss it. macOS does not display or scan usage/quotas and does not create a desktop widget. Native macOS sign-in, Keychain, Tahoe icons and menu bar interactions still require end-to-end testing.
+Windows provides quotas, usage statistics, the desktop widget and automatic task recovery. macOS provides account management, switching, remaining-quota views and credential migration. Click the monochrome menu bar icon to open an anchored account panel; click outside or press Escape to dismiss it. macOS removes only local token usage statistics, keeps current/all-account quota views, and does not create a desktop widget or run idle log watchers/polling. Quota views use a 60-second cache with immediate manual refresh; when SQLite has no quota snapshot, at most five recent session files are read. Native macOS sign-in, Keychain, Tahoe icons and menu bar interactions still require end-to-end testing.
 
 ## Screenshots
 

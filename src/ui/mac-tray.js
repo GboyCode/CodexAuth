@@ -1,5 +1,6 @@
 const api = window.codexAuth;
 const t = (...args) => window.CodexI18n.t(...args);
+const q = window.CodexQuotaUI;
 const accounts = document.querySelector("#accounts");
 const notice = document.querySelector("#notice");
 let snapshot;
@@ -30,6 +31,13 @@ function render() {
     identity.textContent = account.email || account.userId || "";
     identity.title = identity.textContent;
     info.append(name, identity);
+    const quota = document.createElement("span");
+    quota.className = "quota";
+    quota.textContent = ["session", "weekly"].map(kind =>
+      `${q.windowTitle(kind, account.quotaSnapshot?.[kind])} ${q.formatRemainingText(account.quotaSnapshot?.[kind])}`
+    ).join(" · ");
+    quota.title = q.quotaFreshnessLabel(account.quotaSnapshot);
+    info.append(quota);
     row.append(info);
     if (account.isActive && !account.needsReauth) {
       const active = document.createElement("span");
@@ -72,9 +80,15 @@ async function refresh() {
   if (id !== request) return;
   snapshot = result;
   render();
+  await api.getQuota();
+  const updated = await api.getState();
+  if (id !== request) return;
+  snapshot = updated;
+  render();
 }
 const report = error => { notice.textContent = t(error.message); };
 document.querySelector("#manage").addEventListener("click", () => api.showMainWindow().catch(report));
 document.addEventListener("keydown", event => { if (event.key === "Escape") api.hideWidget().catch(report); });
 api.onStateChanged(() => refresh().catch(report));
+setInterval(() => { if (!document.hidden && !busy) refresh().catch(report); }, 60000);
 refresh().catch(report);
