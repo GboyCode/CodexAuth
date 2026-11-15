@@ -295,6 +295,31 @@ function updateAccountListOverflow() {
     "scrollable",
     els.accountList.scrollHeight > els.accountList.clientHeight + 1
   );
+  fitMacPanelToContent();
+}
+
+let lastMacPanelHeight = 0;
+function fitMacPanelToContent() {
+  if (!isMacPanel || document.body.classList.contains("panel-closing")) return;
+  const widget = document.querySelector(".widget");
+  const accounts = document.querySelector(".accounts");
+  const vertical = (element, properties) => {
+    const style = getComputedStyle(element);
+    return properties.reduce((total, property) => total + (parseFloat(style[property]) || 0), 0);
+  };
+  const margins = ["marginTop", "marginBottom"];
+  const edges = ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"];
+  const outer = element => element.offsetHeight + vertical(element, margins);
+  const listStyle = getComputedStyle(els.accountList);
+  const count = Math.max(1, els.accountList.children.length);
+  const rowsHeight = count * parseFloat(listStyle.gridAutoRows) + (count - 1) * (parseFloat(listStyle.rowGap) || 0);
+  const height = Math.ceil(vertical(widget, edges)
+    + outer(document.querySelector(".widget-head")) + outer(document.querySelector(".quota-card"))
+    + outer(document.querySelector(".quick-actions")) + vertical(accounts, [...margins, ...edges])
+    + outer(accounts.querySelector(".section-title")) + vertical(els.accountList, [...margins, ...edges]) + rowsHeight);
+  if (!Number.isFinite(height) || height === lastMacPanelHeight) return;
+  lastMacPanelHeight = height;
+  api.fitMacPanel?.(height).catch(() => { lastMacPanelHeight = 0; });
 }
 
 function queueAccountListOverflowUpdate() {
@@ -346,7 +371,6 @@ async function saveDraggedAccountOrder() {
 }
 
 function renderAccounts(snapshot) {
-  window.CodexLoginItemUI?.render(snapshot);
   // A refresh that started before a drag must not replace or reorder its targets.
   if (accountOrderDrag) return;
   latestSnapshot = snapshot;
@@ -564,6 +588,10 @@ async function reauthAccount(accountId, button) {
 }
 
 function wireEvents() {
+  if (isMacPanel) api.onMacPanelVisibility?.(({ visible }) => {
+    document.body.classList.toggle("panel-closing", !visible);
+    if (visible) queueAccountListOverflowUpdate();
+  });
   els.refreshBtn.addEventListener("click", () => refresh(false));
   els.pinBtn.addEventListener("click", async (event) => {
     event.stopPropagation();

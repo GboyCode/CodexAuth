@@ -7,6 +7,7 @@ const {
   nativeImage,
   safeStorage,
   screen,
+  systemPreferences,
   shell,
   session: electronSession,
   dialog,
@@ -2398,7 +2399,8 @@ function showMainWindow() {
 
 function showWidgetWindow() {
   if (isMac) {
-    macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation });
+    macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation,
+      prefersReducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion });
     macTrayPanel.show().catch(error => console.error("Menu bar panel failed:", error));
     return;
   }
@@ -2420,7 +2422,8 @@ function hideWidgetWindow() {
 
 function toggleWidgetWindow() {
   if (isMac) {
-    macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation });
+    macTrayPanel ??= createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow: hardenWindowNavigation,
+      prefersReducedMotion: () => systemPreferences.getAnimationSettings().prefersReducedMotion });
     Promise.resolve(macTrayPanel.toggle()).catch(error => console.error("Menu bar panel failed:", error));
     return;
   }
@@ -5421,6 +5424,10 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle("window:resize-widget", (_event, accountCount) => resizeWidgetForAccounts(accountCount));
+  ipcMain.handle("window:fit-mac-panel", (event, height) => {
+    if (!isMac || event.sender !== macTrayPanel?.getWindow()?.webContents) return;
+    return macTrayPanel.fitHeight(height);
+  });
   ipcMain.handle("window:get-widget-topmost", () => ({ ok: true, pinned: widgetAlwaysOnTop }));
   ipcMain.handle("window:set-widget-topmost", (_event, pinned) => setWidgetTopmost(pinned));
   ipcMain.handle("window:resize-widget-start", (_event, edge) => startWidgetResize(edge));

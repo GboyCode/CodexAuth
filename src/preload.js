@@ -39,6 +39,12 @@ contextBridge.exposeInMainWorld("codexAuth", {
   hideWidget: () => ipcRenderer.invoke("window:hide-widget"),
   toggleWidget: () => ipcRenderer.invoke("window:toggle-widget"),
   resizeWidget: (accountCount) => ipcRenderer.invoke("window:resize-widget", accountCount),
+  fitMacPanel: (height) => ipcRenderer.invoke("window:fit-mac-panel", height),
+  onMacPanelVisibility: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("mac-panel:visibility", handler);
+    return () => ipcRenderer.removeListener("mac-panel:visibility", handler);
+  },
   getWidgetTopmost: () => ipcRenderer.invoke("window:get-widget-topmost"),
   setWidgetTopmost: (pinned) => ipcRenderer.invoke("window:set-widget-topmost", pinned),
   startWidgetResize: (edge) => ipcRenderer.invoke("window:resize-widget-start", edge),

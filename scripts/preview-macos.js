@@ -1,7 +1,7 @@
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const { installFixture } = require("./validate-panel-interactions");
 
 async function main() {
@@ -12,6 +12,7 @@ async function main() {
     const {ipcRenderer} = require("electron");
     codexAuth.showMainWindow = async () => ipcRenderer.send("preview:main");
     codexAuth.hideWidget = async () => ipcRenderer.send("preview:hide");
+    codexAuth.fitMacPanel = height => ipcRenderer.invoke("preview:fit", height);
     codexAuth.switchAccount = async id => {
       const snapshot = panelFixture.snapshot;
       snapshot.accounts.forEach(account => { account.isActive = account.id === id; });
@@ -32,6 +33,10 @@ async function main() {
   const panel = make("macOS 菜单栏面板预览 · 模拟账号", 320, 560);
   ipcMain.on("preview:main", () => { if (!mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
   ipcMain.on("preview:hide", () => panel.hide());
+  ipcMain.handle("preview:fit", (_event, height) => {
+    if (Number.isFinite(height) && height >= 200) panel.setContentSize(320,
+      Math.min(Math.ceil(height), screen.getDisplayMatching(panel.getBounds()).workArea.height - 60));
+  });
   await mainWindow.loadFile(path.resolve(__dirname, "../src/ui/index.html"));
   await panel.loadFile(path.resolve(__dirname, "../src/ui/widget.html"));
   mainWindow.show();

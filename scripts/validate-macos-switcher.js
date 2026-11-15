@@ -88,7 +88,7 @@ async function run() {
   const workArea = { x: 0, y: 24, width: 1024, height: 744 };
   const panel = createMacTrayPanel({ BrowserWindow: Window,
     screen: { getCursorScreenPoint: () => point, getDisplayMatching: () => ({ workArea }) },
-    tray: { getBounds: () => anchor }, hardenWindow: win => { win.hardened = true; } });
+    tray: { getBounds: () => anchor }, hardenWindow: win => { win.hardened = true; }, prefersReducedMotion: () => true });
   await panel.show();
   assert.equal(window.visible, true);
   assert.equal(window.hardened, true);
@@ -103,6 +103,15 @@ async function run() {
   assert.equal(window.options.webPreferences.sandbox, true);
   assert.equal(window.bounds.x + window.bounds.width, 1024, "panel stays on screen at the right edge");
   assert.equal(window.bounds.y, 30, "panel is anchored beneath the menu bar");
+  panel.fitHeight(465);
+  assert.equal(window.bounds.height, 465);
+  panel.fitHeight(10000);
+  assert.equal(window.bounds.y, 30);
+  assert.equal(window.bounds.y + window.bounds.height, workArea.y + workArea.height - 8);
+  panel.fitHeight(NaN);
+  assert.equal(window.bounds.height, 730, "invalid size is ignored");
+  panel.fitHeight(367);
+  assert.equal(window.bounds.height, 367, "fewer accounts shrink the panel");
   point = { x: 990, y: 10 };
   window.emit("blur");
   assert.equal(window.visible, true, "tray click must be handled by toggle, not blur");

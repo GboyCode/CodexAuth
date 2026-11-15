@@ -37,6 +37,7 @@ function installFixture(appVersion, platform = "win32") {
     checkAccountQuota: async (id) => { fixture.calls.push(["quota", id]); return { refreshed: true, reason: "已刷新" }; },
     onStateChanged: (listener) => { fixture.notify = listener; },
     getVersion: async () => appVersion,
+    fitMacPanel: async height => { fixture.panelHeight = height; },
     checkForUpdates: async () => ({ ok: true, comparison: 0 }),
     updateSettings: async (patch) => {
       fixture.calls.push(["settings", patch]);
@@ -394,12 +395,7 @@ async function run() {
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'reauth' && c[1] === 'reauth')"), true);
     await click('#settingsBtn');
     assert.equal(await evaluate("document.querySelector('#settingsPanel').hidden"), false);
-    await click('#launchAtLogin');
-    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'settings' && c[1].launchAtLogin === true)"), true);
-    await evaluate("panelFixture.failSettings = true");
-    await click('#launchAtLogin');
-    assert.equal(await evaluate("document.querySelector('#launchAtLogin').checked"), true, "failed system update rolls back the switch");
-    await evaluate("panelFixture.failSettings = false");
+    assert.equal(await evaluate("document.querySelector('#settingsPanel input[type=checkbox]')"), null);
     await click('#settingsBtn');
     await click('#mainBtn');
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'main')"), true);
@@ -413,8 +409,43 @@ async function run() {
     assert.equal(await evaluate("panelFixture.calls.length"), callsBeforeHidden, "hidden menu panel does not poll quota");
     assert.equal(await evaluate("refreshTimer"), null, "hidden menu panel removes its refresh timer entirely");
     await evaluate("delete document.hidden");
+    const heights = [];
+    await evaluate("panelFixture.allAccounts = structuredClone(panelFixture.snapshot.accounts)");
+    for (const count of [0, 1, 3, 12]) {
+      await evaluate(`panelFixture.snapshot.accounts = Array.from({length:${count}}, (_, i) => ({...panelFixture.allAccounts[i % 4], id:'sized-'+i})); panelFixture.notify({scope:'accounts'})`);
+      await settle();
+      const desiredHeight = await evaluate("panelFixture.panelHeight");
+      heights.push(desiredHeight);
+      win.setContentSize(320, Math.min(600, desiredHeight)); await settle();
+      if (count === 3) {
+        assert.ok(await evaluate(`(() => {
+          const row = document.querySelector('.account-row:last-child').getBoundingClientRect();
+          return innerHeight - row.bottom < 32;
+        })()`), "three accounts have no empty lower block");
+        await capture('mac-menu-bar-3-accounts');
+      }
+      if (count === 12) assert.equal(await evaluate("document.querySelector('#accountList').scrollHeight > document.querySelector('#accountList').clientHeight"), true);
+    }
+    assert.ok(heights[1] <= heights[2] - 90 && heights[2] < heights[3], "height follows visible row count");
+    await evaluate("panelFixture.snapshot.accounts = panelFixture.allAccounts.slice(0,3); panelFixture.notify({scope:'accounts'})"); await settle();
+    win.setContentSize(320, await evaluate("panelFixture.panelHeight")); await settle();
     await capture('mac-menu-bar');
+    await evaluate("document.body.classList.add('panel-closing')");
+    await evaluate("Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))");
+    assert.equal(await evaluate("getComputedStyle(document.body).opacity"), "0");
+    await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {features:[{name:"prefers-reduced-motion",value:"reduce"}]});
+    assert.equal(await evaluate("getComputedStyle(document.body).transform"), "none");
     win.webContents.debugger.detach();
+    // The login setting remains available only in the main window; normal
+    // status has no explanatory paragraph, while actionable errors stay visible.
+    await win.loadFile(path.resolve(__dirname, "../src/ui/index.html")); await settle();
+    await click('#settingsBtn');
+    assert.equal(await evaluate("document.querySelector('#loginItemStatus').hidden"), true);
+    await click('#launchAtLogin');
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'settings' && c[1].launchAtLogin === true)"), true);
+    await evaluate("panelFixture.failSettings = true"); await click('#launchAtLogin');
+    assert.equal(await evaluate("document.querySelector('#launchAtLogin').checked"), true);
+    assert.equal(await evaluate("document.querySelector('#loginItemStatus').hidden"), false);
     assert.deepEqual(errors, [], "renderer errors");
     console.log("Panel validation passed: requested layouts/interactions, shared macOS glass widget, quota cards/details, switch/reauth, manual refresh, anchored controls and no hidden quota polling. Mock APIs only.");
     console.log(`Screenshots: ${output}`);

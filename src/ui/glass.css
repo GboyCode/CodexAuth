@@ -81,8 +81,16 @@ body.mac-tray-panel .widget-head { gap: 6px; }
 body.mac-tray-panel .head-actions { gap: 5px; }
 body.mac-tray-panel .brand { gap: 7px; }
 body.mac-tray-panel .brand-version { font-size: 14px; }
-body.mac-tray-panel .login-setting { display: flex; margin-top: 12px; gap: 8px; align-items: center; }
-body.mac-tray-panel .login-note { font-size: 11px; line-height: 1.5; color: var(--muted); margin: 6px 0 0; }
+body.mac-tray-panel .account-list { min-height: 0; }
+body.mac-tray-panel {
+  transform-origin: top center;
+  transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+body.mac-tray-panel.panel-closing { opacity: 0; transform: translateY(-4px) scale(.985); pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  body.mac-tray-panel { transition: none; }
+  body.mac-tray-panel.panel-closing { transform: none; }
+}
 
 body:has(.countdown-row) > main {
   border-color: #ffffffd9;

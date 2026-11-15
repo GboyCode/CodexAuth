@@ -1,28 +1,48 @@
 const path = require("node:path");
 
-function panelBounds(anchor, workArea) {
+function panelBounds(anchor, workArea, contentHeight = 400) {
   const width = Math.min(320, workArea.width);
-  const height = Math.min(560, workArea.height);
+  const y = Math.min(workArea.y + workArea.height - 1, Math.max(workArea.y, anchor.y + anchor.height + 6));
+  const height = Math.max(1, Math.min(contentHeight, workArea.y + workArea.height - y - 8));
   return {
     x: Math.round(Math.max(workArea.x, Math.min(anchor.x + anchor.width / 2 - width / 2, workArea.x + workArea.width - width))),
-    y: Math.round(Math.max(workArea.y, Math.min(anchor.y + anchor.height + 6, workArea.y + workArea.height - height))),
+    y: Math.round(y),
     width, height,
   };
 }
 
-function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow }) {
+function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow, prefersReducedMotion = () => false }) {
   let win = null;
   let loaded = null;
   let requested = false;
+  let contentHeight = 400;
+  let hideTimer = null;
+  function fitHeight(height) {
+    if (!Number.isFinite(height) || height < 200 || height > 100000) return;
+    contentHeight = Math.ceil(height);
+    if (!win || win.isDestroyed()) return;
+    const anchor = tray.getBounds();
+    const bounds = panelBounds(anchor, screen.getDisplayMatching(anchor).workArea, contentHeight);
+    win.setBounds(bounds);
+    return bounds;
+  }
   function hide() {
     requested = false;
-    if (win && !win.isDestroyed()) win.hide();
+    if (!win || win.isDestroyed() || hideTimer) return;
+    win.webContents.send("mac-panel:visibility", { visible: false });
+    if (prefersReducedMotion()) { win.hide(); return; }
+    hideTimer = setTimeout(() => {
+      hideTimer = null;
+      if (!requested && win && !win.isDestroyed()) win.hide();
+    }, 140);
+    hideTimer.unref?.();
   }
   async function show() {
     requested = true;
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     if (!win || win.isDestroyed()) {
       win = new BrowserWindow({
-        width: 320, height: 560, show: false, frame: false,
+        width: 320, height: contentHeight, show: false, frame: false,
         movable: false, resizable: false, minimizable: false,
         maximizable: false, fullscreenable: false, skipTaskbar: true,
         // A nonactivating NSPanel may never acquire the key-window focus needed
@@ -49,13 +69,14 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow }) {
     await loaded;
     if (!requested || win.isDestroyed()) return;
     const anchor = tray.getBounds();
-    win.setBounds(panelBounds(anchor, screen.getDisplayMatching(anchor).workArea));
+    win.setBounds(panelBounds(anchor, screen.getDisplayMatching(anchor).workArea, contentHeight));
+    win.webContents.send("mac-panel:visibility", { visible: true });
     win.webContents.send("state:changed", { scope: "accounts" });
     win.show();
     win.focus();
   }
   return {
-    show, hide,
+    show, hide, fitHeight,
     toggle: () => requested ? hide() : show(),
     getWindow: () => win && !win.isDestroyed() ? win : null,
   };

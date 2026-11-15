@@ -3,7 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const { execFileSync, spawn } = require("node:child_process");
-const { app, BrowserWindow, screen } = require("electron");
+const { app, BrowserWindow, screen, ipcMain } = require("electron");
 const { createMacTrayPanel } = require("../src/mac-tray-panel");
 const { installFixture } = require("./validate-panel-interactions");
 const waitFor = async (condition, message) => {
@@ -16,7 +16,10 @@ async function run() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexauth-native-panel-"));
   app.setPath("userData", path.join(root, "profile"));
   const preload = path.join(root, "fixture.cjs");
-  await fs.writeFile(preload, `(${installFixture.toString()})("test", "darwin");`);
+  await fs.writeFile(preload, `(${installFixture.toString()})("test", "darwin");
+    const {ipcRenderer} = require("electron");
+    codexAuth.fitMacPanel = height => ipcRenderer.invoke("native-test:fit", height);
+    codexAuth.onMacPanelVisibility = callback => ipcRenderer.on("mac-panel:visibility", (_event, payload) => callback(payload));`);
   const helper = path.join(root, "focus-fixture");
   execFileSync("/usr/bin/swiftc", [path.join(__dirname, "mac-focus-fixture.swift"), "-o", helper]);
   await app.whenReady();
@@ -29,6 +32,7 @@ async function run() {
   const anchor = {x: area.x + 200, y: area.y - 24, width:20, height:24};
   const panel = createMacTrayPanel({BrowserWindow: FixtureWindow, screen,
     tray: {getBounds: () => anchor}, hardenWindow() {}});
+  ipcMain.handle("native-test:fit", (_event, height) => panel.fitHeight(height));
   let external;
   try {
     await panel.show();
@@ -36,6 +40,22 @@ async function run() {
     await waitFor(() => win.isFocused(), "menu window must acquire native focus");
     assert.equal(win.hasShadow(), false);
     assert.equal(win.getBounds().width, 320);
+    await win.webContents.executeJavaScript("panelFixture.savedAccounts = structuredClone(panelFixture.snapshot.accounts); panelFixture.snapshot.accounts = panelFixture.savedAccounts.slice(0,3); panelFixture.notify({scope:'accounts'})");
+    await waitFor(async () => {
+      const state = await win.webContents.executeJavaScript("({count: document.querySelectorAll('.account-row').length, height:lastMacPanelHeight})");
+      return state.count === 3 && win.getBounds().height === state.height;
+    }, "native height fits three accounts");
+    const threeHeight = win.getBounds().height;
+    await win.webContents.executeJavaScript("panelFixture.snapshot.accounts = panelFixture.savedAccounts.slice(0,1); panelFixture.notify({scope:'accounts'})");
+    await waitFor(() => win.getBounds().height <= threeHeight - 90, "native window shrinks after removing accounts");
+    await win.webContents.executeJavaScript("panelFixture.snapshot.accounts = Array.from({length:30}, (_, i) => ({...panelFixture.savedAccounts[0],id:'many-'+i})); panelFixture.notify({scope:'accounts'})");
+    await waitFor(() => win.getBounds().height > threeHeight, "native window grows for many accounts");
+    assert.ok(win.getBounds().y + win.getBounds().height <= area.y + area.height - 8);
+    await panel.hide();
+    assert.equal(win.isVisible(), true, "window stays visible during its short exit animation");
+    await panel.show();
+    await new Promise(resolve => setTimeout(resolve, 180));
+    assert.equal(win.isVisible(), true, "reopening cancels the pending hide");
     external = spawn(helper, [], {stdio:"ignore"});
     await waitFor(() => !win.isVisible(), "activating another native application must dismiss the panel");
     await waitFor(() => win.webContents.executeJavaScript("refreshTimer === null"), "hiding must remove the quota timer");
@@ -50,7 +70,8 @@ async function run() {
     const metrics = app.getAppMetrics();
     assert.equal(await win.webContents.executeJavaScript("panelFixture.calls.length"), quotaCalls, "hidden panel performs no fixture API calls");
     const report = { scope: "isolated menu panel with fixture accounts; not a full-app production benchmark",
-      externalApplicationDismissal: true, hiddenRefreshTimerRemoved: true, sampleSeconds: 5,
+      externalApplicationDismissal: true, automaticAccountHeight: true, interruptedHideSafe: true,
+      hiddenRefreshTimerRemoved: true, sampleSeconds: 5,
       totalCpuPercent: metrics.reduce((sum, item) => sum + item.cpu.percentCPUUsage, 0),
       summedWorkingSetMB: metrics.reduce((sum, item) => sum + item.memory.workingSetSize, 0) / 1024 };
     await fs.mkdir(path.resolve(__dirname, "../output/playwright/panel"), {recursive:true});
@@ -60,6 +81,7 @@ async function run() {
   } finally {
     external?.kill();
     panel.getWindow()?.destroy();
+    ipcMain.removeHandler("native-test:fit");
     // Unique test profile; Chromium may retain handles until process exit.
   }
 }
