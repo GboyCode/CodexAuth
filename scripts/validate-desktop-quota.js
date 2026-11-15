@@ -132,7 +132,7 @@ async function validateManualDispatch() {
       refresh: async () => { currentCalls++; return fresh ? { checkedAt: stamp() } : null; },
       getStatus: () => ({ error: "Codex 本地接口响应超时，请稍后重试。" }),
     }) } : realRequire(name),
-    process, __dirname: path.dirname(filename), console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval });
+    process: { ...process, platform: "win32" }, __dirname: path.dirname(filename), console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval });
   vm.runInContext(fs.readFileSync(filename, "utf8"), sandbox);
   sandbox.dashboardScope = async () => scope;
   sandbox.broadcastStateChanged = () => {};
@@ -161,7 +161,7 @@ async function validateIntegration() {
   const sandbox = vm.createContext({ require: (name) => name === "electron"
     ? { app: { requestSingleInstanceLock: () => false, quit() {}, on() {}, getPath: () => __dirname } }
     : name === "./quota/desktop-quota" ? { quotaFromDesktopUsage, createDesktopQuotaReader: () => ({ read: () => native }) } : realRequire(name),
-    process, __dirname: path.dirname(filename), console, Buffer, Date: class extends Date { static now() { return clock; } },
+    process: { ...process, platform: "win32" }, __dirname: path.dirname(filename), console, Buffer, Date: class extends Date { static now() { return clock; } },
     setTimeout, clearTimeout, setInterval, clearInterval });
   vm.runInContext(fs.readFileSync(filename, "utf8"), sandbox);
   const old = { ...quotaFromDesktopUsage(usage(33), scope, stamp(-120000)), source: "local" };

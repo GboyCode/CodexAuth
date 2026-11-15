@@ -67,7 +67,7 @@ async function main(){
   // Load the main-process integration with Electron/startup disabled and an
   // isolated CODEX_HOME; no real accounts, app restarts or remote requests.
   const srcPath=path.resolve(__dirname,"../src/main.js"),realRequire=createRequire(srcPath);
-  const sandbox=vm.createContext({require:(name)=>name==="electron"?{app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"test",getPath:()=>root}}:realRequire(name),process:{...process,env:{...process.env,CODEX_HOME:root}},__dirname:path.dirname(srcPath),console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  const sandbox=vm.createContext({require:(name)=>name==="electron"?{app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"test",getPath:()=>root}}:realRequire(name),process:{...process,platform:"win32",env:{...process.env,CODEX_HOME:root}},__dirname:path.dirname(srcPath),console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(await fs.readFile(srcPath,"utf8"),sandbox);
   const limitError={type:"error",error:{type:"usage_limit_reached"}};
   const unknownLimit=sandbox.quotaFromUsageLimitMessage(limitError,base/1000);
@@ -102,7 +102,7 @@ async function main(){
   assert.equal(sandbox.localStoredQuotaSnapshot({schemaVersion:2,source:"local",resetCredits:freshReset}).resetCredits.availableCount,2,"credits survive without session/weekly windows");
   // An account-bound browser response does not need an untagged-log switch boundary.
   const resetSrc=await fs.readFile(srcPath,"utf8");
-  const resetSandbox=vm.createContext({require:(name)=>name==="electron"?{app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"test",getPath:()=>root}}:name==="./quota/browser-reset-cache"?{readBrowserResetCredits:async()=>freshReset}:realRequire(name),process:{...process,env:{...process.env,CODEX_HOME:root}},__dirname:path.dirname(srcPath),console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  const resetSandbox=vm.createContext({require:(name)=>name==="electron"?{app:{requestSingleInstanceLock:()=>false,quit(){},on(){},getVersion:()=>"test",getPath:()=>root}}:name==="./quota/browser-reset-cache"?{readBrowserResetCredits:async()=>freshReset}:realRequire(name),process:{...process,platform:"win32",env:{...process.env,CODEX_HOME:root}},__dirname:path.dirname(srcPath),console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(resetSrc,resetSandbox);
   const resetScope={hasCurrentAuth:true,accountId:"account-test",account:{userId:"account-test",chatgptUserId:"user-test"},since:null};
   assert.equal((await resetSandbox.readLocalResetCredits(resetScope,[])).availableCount,2);
