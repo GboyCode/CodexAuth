@@ -149,9 +149,10 @@ async function main() {
   const trayTemplateSource = path.join(root, "src", "ui", "assets", "codex-trayTemplate.svg");
   const templateSvg = (await fs.readFile(appSource, "utf8"))
     .replace(/<rect x="1\.5"[^>]*\/>/, "")
-    .replace('fill="url(#lobe-icons-codex-_R_0_)"', 'fill="black"');
+    .replace('fill="url(#lobe-icons-codex-_R_0_)"', 'fill="black"')
+    .replace('viewBox="0 0 24 24"', 'viewBox="1 1 22 22"');
   await fs.writeFile(trayTemplateSource, templateSvg);
-  for (const [size, suffix] of [[16, ""], [32, "@2x"]]) {
+  for (const [size, suffix] of [[20, ""], [40, "@2x"]]) {
     const templateImage = await renderSvg(trayTemplateSource, size * 4);
     await fs.writeFile(path.join(path.dirname(trayTemplateSource), `codex-trayTemplate${suffix}.png`),
       templateImage.resize({ width: size, height: size, quality: "best" }).toPNG());

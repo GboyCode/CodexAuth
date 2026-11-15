@@ -29,15 +29,15 @@ async function main() {
     return win;
   };
   const mainWindow = make("macOS 主窗口预览 · 模拟账号", 1040, 720);
-  const panel = make("macOS 菜单栏面板预览 · 模拟账号", 360, 420);
+  const panel = make("macOS 菜单栏面板预览 · 模拟账号", 360, 560);
   ipcMain.on("preview:main", () => { if (!mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
   ipcMain.on("preview:hide", () => panel.hide());
   await mainWindow.loadFile(path.resolve(__dirname, "../src/ui/index.html"));
-  await panel.loadFile(path.resolve(__dirname, "../src/ui/mac-tray.html"));
+  await panel.loadFile(path.resolve(__dirname, "../src/ui/widget.html"));
   mainWindow.show();
   panel.show();
   panel.focus();
-  const state = await panel.webContents.executeJavaScript("({platform: codexAuth.platform, accounts: document.querySelectorAll('.account').length})");
+  const state = await panel.webContents.executeJavaScript("({platform: codexAuth.platform, accounts: document.querySelectorAll('.account-row').length})");
   if (state.platform !== "darwin" || state.accounts !== 4) throw new Error("macOS preview did not initialize");
   console.log(JSON.stringify({ ready: true, ...state, profile: root }));
   app.on("window-all-closed", () => app.quit());

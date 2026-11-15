@@ -2,7 +2,7 @@ const path = require("node:path");
 
 function panelBounds(anchor, workArea) {
   const width = Math.min(360, workArea.width);
-  const height = Math.min(420, workArea.height);
+  const height = Math.min(560, workArea.height);
   return {
     x: Math.round(Math.max(workArea.x, Math.min(anchor.x + anchor.width / 2 - width / 2, workArea.x + workArea.width - width))),
     y: Math.round(Math.max(workArea.y, Math.min(anchor.y + anchor.height + 6, workArea.y + workArea.height - height))),
@@ -22,10 +22,11 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow }) {
     requested = true;
     if (!win || win.isDestroyed()) {
       win = new BrowserWindow({
-        width: 360, height: 420, show: false, frame: false,
+        width: 360, height: 560, show: false, frame: false,
         movable: false, resizable: false, minimizable: false,
         maximizable: false, fullscreenable: false, skipTaskbar: true,
-        type: "panel", alwaysOnTop: true, backgroundColor: "#f5f5f5",
+        type: "panel", alwaysOnTop: true, transparent: true,
+        backgroundColor: "#00000000", vibrancy: "popover", visualEffectState: "active",
         webPreferences: { preload: path.join(__dirname, "preload.js"),
           contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
       });
@@ -39,7 +40,7 @@ function createMacTrayPanel({ BrowserWindow, screen, tray, hardenWindow }) {
           && point.y >= anchor.y && point.y < anchor.y + anchor.height) return;
         hide();
       });
-      loaded = win.loadFile(path.join(__dirname, "ui", "mac-tray.html"));
+      loaded = win.loadFile(path.join(__dirname, "ui", "widget.html"));
     }
     await loaded;
     if (!requested || win.isDestroyed()) return;

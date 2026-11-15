@@ -12,14 +12,14 @@ for (const [source, translated] of Object.entries(english)) {
   assert.deepEqual(slots(translated), slots(source), `Interpolation mismatch: ${source}`);
   assert.ok(translated.trim(), `Empty translation: ${source}`);
 }
-for (const file of ["app.js", "widget.js", "mac-tray.js", "shared-quota.js", "updates.js", "recovery-countdown.js", "../main.js"]) {
+for (const file of ["app.js", "widget.js", "shared-quota.js", "updates.js", "recovery-countdown.js", "../main.js"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   for (const match of source.matchAll(/\bt\(("(?:[^"\\]|\\.)*")/g)) {
     const key = JSON.parse(match[1]);
     assert.ok(Object.hasOwn(english, key), `Missing translation in ${file}: ${key}`);
   }
 }
-for (const file of ["index.html", "widget.html", "mac-tray.html", "message-dialog.html", "recovery-countdown.html"]) {
+for (const file of ["index.html", "widget.html", "message-dialog.html", "recovery-countdown.html"]) {
   const html = fs.readFileSync(path.join(root, file), "utf8");
   for (const match of html.matchAll(/data-i18n(?:-title|-aria-label|-placeholder)?="([^"]*)"/g)) {
     const key = match[1].replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&amp;", "&");

@@ -22,6 +22,14 @@ body.resizing {
   user-select: none;
 }
 
+/* macOS shares this widget's design, anchored under its menu bar item. */
+body.mac-tray-panel .widget-head { -webkit-app-region: no-drag; }
+body.mac-tray-panel #pinBtn,
+body.mac-tray-panel .resize-handle,
+body.mac-tray-panel #dockCollapseBtn { display: none; }
+body.mac-tray-panel .widget { overflow: auto; }
+body.mac-tray-panel .quota-card { flex-shrink: 0; }
+
 [hidden] {
   display: none !important;
 }

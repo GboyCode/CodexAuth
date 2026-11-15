@@ -57,17 +57,23 @@ async function run() {
     }
     assert.ok(right - left > 820 && right - left < 900, "macOS foreground must fill the native tile without clipping");
     assert.equal(macPixels[3], 0, "system draws the background; do not bake a second tile into the SVG");
-    for (const [size, suffix] of [[16, ""], [32, "@2x"]]) {
+    for (const [size, suffix] of [[20, ""], [40, "@2x"]]) {
       const template = nativeImage.createFromBuffer(await fs.readFile(path.resolve(__dirname, `../src/ui/assets/codex-trayTemplate${suffix}.png`)));
       assert.deepEqual(template.getSize(), { width: size, height: size });
       const pixels = template.toBitmap();
-      let opaque = 0;
+      let opaque = 0, left = size, right = -1;
       for (let i = 0; i < pixels.length; i += 4) {
         if (pixels[i + 3] > 0) assert.deepEqual([...pixels.subarray(i, i + 3)], [0, 0, 0], "template contains alpha-only black artwork");
-        if (pixels[i + 3] > 128) opaque++;
+        if (pixels[i + 3] > 128) {
+          opaque++;
+          left = Math.min(left, (i / 4) % size);
+          right = Math.max(right, (i / 4) % size);
+        }
       }
       assert.equal(pixels[3], 0);
-      assert.ok(opaque > size * size * .25 && opaque < size * size * .6, "template preserves the silhouette and transparent face");
+      assert.ok(opaque > size * size * .25 && opaque < size * size * .75, "template preserves the silhouette and transparent face");
+      assert.ok(right - left + 1 >= size * .8 && left >= 1 && right < size - 1,
+        "menu bar glyph fills at least 80% of its canvas without clipping");
     }
     console.log(`Icon rendering passed: full 1024px canvas inside a 128px window, edge/center pixel checks and all app/tray ICO sizes (display scale ${screen.getPrimaryDisplay().scaleFactor}).`);
   } finally {

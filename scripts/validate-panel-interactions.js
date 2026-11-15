@@ -90,6 +90,7 @@ async function run() {
     await fs.writeFile(path.join(output, `${name}.png`), (await win.webContents.capturePage()).toPNG());
   };
   try {
+    if (!process.argv.includes("--mac-only")) {
     await win.loadFile(path.resolve(__dirname, "../src/ui/index.html"));
     await settle();
     assert.equal(await evaluate("document.querySelectorAll('.account-card').length"), 4);
@@ -343,23 +344,53 @@ async function run() {
     assert.equal(await evaluate("document.querySelector('#settingsBtn').textContent"), "Settings");
     await click('#settingsBtn');
     assert.equal(await evaluate("document.querySelector('#autoSwitchCountdownSeconds').value"), "30", "saved countdown is restored on a new renderer");
-    await win.loadFile(path.resolve(__dirname, "../src/ui/mac-tray.html"));
-    win.setContentSize(360, 420);
+    }
+    await fs.writeFile(preload, `(${installFixture.toString()})(${JSON.stringify(require('../package.json').version)}, "darwin");
+      panelFixture.snapshot.settings.language = "zh-CN";
+      window.macIntervals = [];
+      const originalInterval = window.setInterval;
+      window.setInterval = (callback, delay) => { macIntervals.push({callback, delay}); return originalInterval(callback, delay); };
+      for (const method of ["resizeWidget", "getWidgetTopmost", "widgetPointerEnter", "widgetPointerLeave", "startWidgetResize", "getAllUsage"]) {
+        codexAuth[method] = async () => { throw new Error("Unexpected desktop/usage call: " + method); };
+      }`);
+    await win.loadFile(path.resolve(__dirname, "../src/ui/widget.html"));
+    win.setContentSize(360, 560);
     await settle();
-    await evaluate("panelFixture.snapshot.platform = 'darwin'; panelFixture.snapshot.settings.language = 'zh-CN'; panelFixture.notify()"); await settle();
-    assert.equal(await evaluate("document.querySelectorAll('.account').length"), 4);
-    assert.match(await evaluate("document.querySelector('[data-account-id=current] .quota').textContent"), /剩余 80%/);
-    assert.equal(await evaluate("document.querySelector('[data-account-id=current] button') === null"), true);
+    assert.equal(await evaluate("document.body.classList.contains('mac-tray-panel')"), true);
+    assert.equal(await evaluate("document.querySelectorAll('.account-row').length"), 4);
+    assert.equal(await evaluate("document.querySelector('#sessionPercent').textContent"), "剩余 80%");
+    assert.equal(await evaluate("document.querySelector('#weeklyPercent').textContent"), "剩余 60%");
+    assert.equal(await evaluate("document.querySelector('[data-account-id=current] [data-action=switch]').disabled"), true);
+    assert.equal(await evaluate("document.querySelector('#pinBtn').checkVisibility()"), false);
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.widget-head')).webkitAppRegion"), "no-drag");
+    assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.quota-card')).backgroundImage"), "none");
     assert.equal(await evaluate("document.documentElement.scrollWidth > innerWidth"), false);
-    await click('[data-account-id=backup] button');
+    await click('#refreshBtn');
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'current-quota' && c[1]?.force)"), true);
+    await click('[data-account-id=backup]');
+    assert.match(await evaluate("document.querySelector('.account-quota-popover').textContent"), /剩余 80%/);
+    await evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'}))"); await settle();
+    await click('[data-account-id=backup] [data-action=switch]');
     assert.deepEqual(await evaluate("panelFixture.calls.find(c => c[0] === 'switch')"), ['switch', 'backup', {restartCodex: true}]);
-    await click('#manage');
+    await click('[data-account-id=reauth] [data-action=reauth]');
+    assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'reauth' && c[1] === 'reauth')"), true);
+    await click('#settingsBtn');
+    assert.equal(await evaluate("document.querySelector('#settingsPanel').hidden"), false);
+    await click('#settingsBtn');
+    await click('#mainBtn');
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'main')"), true);
-    await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'}))"); await settle();
+    await evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'}))"); await settle();
     assert.equal(await evaluate("panelFixture.calls.some(c => c[0] === 'hide')"), true);
+    assert.equal(await evaluate("macIntervals.some(timer => timer.delay === 60000)"), true);
+    assert.equal(await evaluate("macIntervals.some(timer => timer.delay === 5000)"), false);
+    const callsBeforeHidden = await evaluate("panelFixture.calls.length");
+    await evaluate("Object.defineProperty(document, 'hidden', {configurable:true, value:true}); macIntervals.find(timer => timer.delay === 60000).callback(); panelFixture.notify({scope:'quota'})");
+    await settle();
+    assert.equal(await evaluate("panelFixture.calls.length"), callsBeforeHidden, "hidden menu panel does not poll quota");
+    await evaluate("delete document.hidden");
     await capture('mac-menu-bar');
     assert.deepEqual(errors, [], "renderer errors");
-    console.log("Panel validation passed: 860/900/1040 layouts, long names, quota summaries, unknown data, menus, focus, add/import/export, delete cancellation, settings rollback/dependencies, platform limits, recovery notices and independent usage scope. Mock APIs only.");
+    console.log("Panel validation passed: requested layouts/interactions, shared macOS glass widget, quota cards/details, switch/reauth, manual refresh, anchored controls and no hidden quota polling. Mock APIs only.");
     console.log(`Screenshots: ${output}`);
   } catch (error) {
     console.error(error);

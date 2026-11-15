@@ -1,7 +1,9 @@
 const t = (...args) => window.CodexI18n.t(...args);
 const api = window.codexAuth;
 const q = window.CodexQuotaUI;
-const REFRESH_MS = 5000;
+const isMacPanel = api.platform === "darwin";
+document.body.classList.toggle("mac-tray-panel", isMacPanel);
+const REFRESH_MS = isMacPanel ? 60000 : 5000;
 const OPACITY_KEY = "codex-auth-widget-opacity";
 
 const els = {
@@ -95,7 +97,7 @@ function applyWidgetOpacity(value) {
 
 function loadWidgetOpacity() {
   const saved = window.localStorage.getItem(OPACITY_KEY);
-  applyWidgetOpacity(saved ?? els.opacityRange.value);
+  applyWidgetOpacity(saved ?? (isMacPanel ? 78 : els.opacityRange.value));
 }
 
 function setSettingsOpen(open) {
@@ -351,7 +353,7 @@ function renderAccounts(snapshot) {
   const existingRows = new Map(Array.from(els.accountList.querySelectorAll(".account-row"),
     (row) => [row.dataset.accountId, row]));
   els.accountList.querySelector(".empty")?.remove();
-  api.resizeWidget?.(snapshot.accounts.length).catch(() => {});
+  if (!isMacPanel) api.resizeWidget?.(snapshot.accounts.length).catch(() => {});
   if (!snapshot.accounts.length) {
     destroyAccountPopover();
     els.accountList.replaceChildren();
@@ -501,7 +503,7 @@ async function refresh(silent = true) {
   }
   loading = true;
   try {
-    const [snapshot, dashboard] = await Promise.all([api.getState(), api.getQuota()]);
+    const [snapshot, dashboard] = await Promise.all([api.getState(), api.getQuota(isMacPanel && !silent ? { force: true } : undefined)]);
     render(snapshot, dashboard);
     if (!silent) showToast(t("已刷新本地数据"));
   } catch (error) {
@@ -595,16 +597,20 @@ function wireEvents() {
   });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      const hadOverlay = !els.settingsPanel.hidden || Boolean(accountPopover);
       setSettingsOpen(false);
       destroyAccountPopover();
+      if (isMacPanel && !hadOverlay) api.hideWidget().catch(showToast);
     }
   });
   window.addEventListener("resize", () => {
     if (accountPopover) positionAccountPopover(accountPopover.element, accountPopover.row);
     queueAccountListOverflowUpdate();
   });
-  window.addEventListener("mouseenter", () => api.widgetPointerEnter?.().catch(() => {}));
-  window.addEventListener("mouseleave", () => api.widgetPointerLeave?.().catch(() => {}));
+  if (!isMacPanel) {
+    window.addEventListener("mouseenter", () => api.widgetPointerEnter?.().catch(() => {}));
+    window.addEventListener("mouseleave", () => api.widgetPointerLeave?.().catch(() => {}));
+  }
   els.accountList.addEventListener("scroll", destroyAccountPopover);
   els.accountList.addEventListener("dragover", (event) => {
     if (!accountOrderDrag) return;
@@ -647,8 +653,9 @@ function wireEvents() {
       showToast(error instanceof Error ? error.message : String(error));
     }
   });
-  api.onWidgetDockHint?.(setDockHint);
+  if (!isMacPanel) api.onWidgetDockHint?.(setDockHint);
   api.onStateChanged((payload) => {
+    if (isMacPanel && document.hidden) return;
     if (payload?.scope === "accounts") {
       refresh(true);
       return;
@@ -704,11 +711,12 @@ function wireResizeHandles() {
 }
 
 wireEvents();
-wireResizeHandles();
+if (!isMacPanel) wireResizeHandles();
 loadWidgetOpacity();
-loadPinState();
+if (!isMacPanel) loadPinState();
 refresh(true);
 window.setInterval(() => {
+  if (isMacPanel && document.hidden) return;
   refresh(true);
 }, REFRESH_MS);
 document.addEventListener("visibilitychange", () => {

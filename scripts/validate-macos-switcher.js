@@ -78,7 +78,7 @@ async function run() {
   class Window extends EventEmitter {
     constructor(options) { super(); window = this; windowCount++; this.options = options; this.visible = false; this.webContents = { send() {} }; }
     isDestroyed() { return false; }
-    loadFile(file) { assert.match(file, /mac-tray\.html$/); return Promise.resolve(); }
+    loadFile(file) { assert.match(file, /widget\.html$/); return Promise.resolve(); }
     setBounds(value) { this.bounds = value; }
     show() { this.visible = true; }
     hide() { this.visible = false; }
@@ -93,6 +93,8 @@ async function run() {
   assert.equal(window.hardened, true);
   assert.equal(window.options.movable, false);
   assert.equal(window.options.resizable, false);
+  assert.equal(window.options.transparent, true);
+  assert.equal(window.options.vibrancy, "popover");
   assert.equal(window.options.webPreferences.sandbox, true);
   assert.equal(window.bounds.x + window.bounds.width, 1024, "panel stays on screen at the right edge");
   assert.equal(window.bounds.y, 30, "panel is anchored beneath the menu bar");
