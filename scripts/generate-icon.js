@@ -133,8 +133,8 @@ async function main() {
   const trayIconSource = path.join(root, "src", "ui", "assets", "codex-monochrome-no-bg.svg");
   // Tahoe must receive foreground artwork separately from the system-drawn
   // background/mask. Reusing the legacy rounded PNG produces a nested tile.
-  // Keep the source vector-based; actool rasterizes it at the required sizes
-  // and electron-builder also bundles its ICNS fallback for older macOS.
+  // Keep SVG as the editable master, but flatten it with Chromium at native
+  // resolution. actool's SVG importer misrenders this path/transform artwork.
   const macAssets = path.join(root, "build", "CodexAuth.icon", "Assets");
   const macSvg = (await fs.readFile(trayIconSource, "utf8"))
     .replace('height="1em"', 'height="1024"')
@@ -142,6 +142,8 @@ async function main() {
     .replace('viewBox="0 0 24 24"', 'viewBox="1 1 22 22"');
   await fs.mkdir(macAssets, { recursive: true });
   await fs.writeFile(path.join(macAssets, "codex.svg"), macSvg);
+  const macForeground = await renderSvg(path.join(macAssets, "codex.svg"), 1024);
+  await fs.writeFile(path.join(macAssets, "codex.png"), macForeground.toPNG());
   // Template images use alpha as the mask: the face must be transparent,
   // not white paint, so it remains legible on both menu bar appearances.
   const trayTemplateSource = path.join(root, "src", "ui", "assets", "codex-trayTemplate.svg");

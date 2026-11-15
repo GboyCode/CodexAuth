@@ -112,6 +112,14 @@ jobs:
           if-no-files-found: error
           path: release/*.dmg*
 
+      - name: Upload compiled icon previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-icon-previews
+          path: release/**/icon-verification/*.png
+          if-no-files-found: warn
+
   publish-release:
     name: Publish GitHub Release
     if: always() && needs.release-config.result == 'success' && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
@@ -129,6 +137,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+          pattern: '*-installer*'
           merge-multiple: true
 
       - name: Publish GitHub Release

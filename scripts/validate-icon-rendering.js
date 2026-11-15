@@ -32,7 +32,11 @@ async function run() {
     const manifest = JSON.parse(await fs.readFile(path.join(macDirectory, "icon.json"), "utf8"));
     assert.equal(require("../package.json").build.mac.icon, "build/CodexAuth.icon");
     const macSource = path.join(macDirectory, "Assets", manifest.groups[0].layers[0]["image-name"]);
-    const macImage = await renderSvg(macSource, 1024);
+    assert.equal(path.extname(macSource), ".png", "Apple receives a flattened layer, not the unsupported SVG path");
+    const macImage = nativeImage.createFromBuffer(await fs.readFile(macSource));
+    assert.deepEqual(macImage.getSize(), { width: 1024, height: 1024 });
+    const vectorMaster = await renderSvg(path.join(macDirectory, "Assets", "codex.svg"), 1024);
+    assert.deepEqual(macImage.toBitmap(), vectorMaster.toBitmap(), "native-resolution layer must exactly match the SVG master");
     const macPixels = macImage.toBitmap();
     let left = 1024, right = 0;
     for (let y = 0; y < 1024; y++) for (let x = 0; x < 1024; x++) {
