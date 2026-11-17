@@ -123,6 +123,8 @@ function setPlatform(platform) {
       ),
     );
   $("#platform-help").textContent = message(platform);
+  $("#release-download").href = "https://github.com/GboyCode/CodexAuth/releases/" +
+    (platform === "mac" ? "?q=macos-v" : "latest");
 }
 
 function setTab(name, focus = false) {

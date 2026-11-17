@@ -499,7 +499,7 @@ Checks send no account, credential or usage data and never install automatically
 
 After installation, `.codexauth` encrypted credential files use the CodexAuth app icon. Use Import credentials in the main window to import a file.
 
-[Download the latest release](https://github.com/GboyCode/CodexAuth/releases/latest) · [Full v0.1.15 release notes](docs/releases/v0.1.15.md)
+[Windows downloads](https://github.com/GboyCode/CodexAuth/releases/latest) · [macOS downloads](https://github.com/GboyCode/CodexAuth/releases?q=macos-v) · [Full v0.1.15 release notes](docs/releases/v0.1.15.md)
 
 ## 0.1.13: portable account credentials
 

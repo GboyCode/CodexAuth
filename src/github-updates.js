@@ -1,7 +1,7 @@
 const https = require("node:https");
 
 const RELEASES_URL = "https://github.com/GboyCode/CodexAuth/releases";
-const API_URL = "https://api.github.com/repos/GboyCode/CodexAuth/releases/latest";
+const API_URL = "https://api.github.com/repos/GboyCode/CodexAuth/releases";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 function parseVersion(value) {
@@ -25,7 +25,7 @@ function installerName(version, platform, arch) {
 }
 
 // Fixed public endpoint: no cookies, account identifiers, credentials or caller-supplied URLs.
-function requestLatestRelease() {
+function requestReleaseData(url) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (error, result) => {
@@ -38,7 +38,7 @@ function requestLatestRelease() {
       req.destroy();
       finish(new Error("检查更新超时，请稍后重试。"));
     }, 15000);
-    const req = https.get(API_URL, {
+    const req = https.get(url, {
       headers: { "User-Agent": "CodexAuth-Switch", Accept: "application/vnd.github+json" },
     }, (res) => {
       if (res.statusCode !== 200) {
@@ -72,8 +72,10 @@ function requestLatestRelease() {
 
 function selectRelease(release, currentVersion, platform, arch) {
   if (!release || release.draft !== false || release.prerelease !== false) throw new Error("GitHub 返回的不是正式发布版本。");
-  parseVersion(release.tag_name);
-  const latestVersion = release.tag_name.replace(/^v/, "");
+  const tag = release.tag_name;
+  const versionTag = platform === "darwin" && typeof tag === "string" ? tag.replace(/^macos-v/, "v") : tag;
+  parseVersion(versionTag);
+  const latestVersion = versionTag.replace(/^v/, "");
   const comparison = compareVersions(latestVersion, currentVersion);
   const releaseUrl = `${RELEASES_URL}/tag/${release.tag_name}`;
   const expectedName = installerName(latestVersion, platform, arch);
@@ -88,15 +90,34 @@ function selectRelease(release, currentVersion, platform, arch) {
   };
 }
 
+async function findPlatformUpdate(currentVersion, platform, arch, request) {
+  if (platform === "win32") {
+    const result = selectRelease(await request(`${API_URL}/latest`), currentVersion, platform, arch);
+    if (result.installer) return result;
+  } else if (platform === "darwin" && ["arm64", "x64"].includes(arch)) {
+    const pageSize = 10;
+    for (let page = 1; ; page++) {
+      const releases = await request(`${API_URL}?per_page=${pageSize}&page=${page}`);
+      if (!Array.isArray(releases)) throw new Error("GitHub 返回了无效的更新信息。");
+      for (const release of releases) {
+        if (!/^macos-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release?.tag_name) || release.draft || release.prerelease) continue;
+        const result = selectRelease(release, currentVersion, platform, arch);
+        if (result.installer) return result;
+      }
+      if (releases.length < pageSize) break;
+    }
+  }
+  throw new Error("暂无适用于本机的安装包。");
+}
+
 function createUpdateChecker({ currentVersion, platform = process.platform, arch = process.arch,
-  request = requestLatestRelease, now = Date.now }) {
+  request = requestReleaseData, now = Date.now }) {
   let cached = null, checkedAt = 0, pending = null;
   return {
     check() {
       if (cached && now() - checkedAt < 60000) return Promise.resolve(cached);
       if (pending) return pending;
-      pending = Promise.resolve().then(request).then((release) => {
-        const result = selectRelease(release, currentVersion, platform, arch);
+      pending = findPlatformUpdate(currentVersion, platform, arch, request).then((result) => {
         checkedAt = now();
         cached = { ...result, checkedAt };
         return cached;
@@ -106,4 +127,4 @@ function createUpdateChecker({ currentVersion, platform = process.platform, arch
   };
 }
 
-module.exports = { createUpdateChecker, compareVersions, installerName, selectRelease, requestLatestRelease };
+module.exports = { createUpdateChecker, compareVersions, installerName, selectRelease };

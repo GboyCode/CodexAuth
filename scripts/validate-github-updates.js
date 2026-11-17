@@ -7,7 +7,7 @@ const { EventEmitter } = require("node:events");
 const { createUpdateChecker, compareVersions, selectRelease, installerName } = require("../src/github-updates");
 
 function fixture(tag = "v0.1.15") {
-  const version = tag.slice(1);
+  const version = tag.replace(/^(macos-)?v?/, "");
   return { tag_name: tag, draft: false, prerelease: false,
     assets: [["win32","x64"],["darwin","arm64"],["darwin","x64"]].map(([platform,arch]) => {
       const name = installerName(version, platform, arch);
@@ -32,7 +32,7 @@ async function testTransport(status, body, failure) {
       return req;
     } }) };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../src/github-updates.js"), "utf8"), sandbox);
-  return sandbox.module.exports.requestLatestRelease();
+  return sandbox.module.exports.createUpdateChecker({currentVersion:"0.1.15",platform:"win32",arch:"x64"}).check();
 }
 
 async function main() {
@@ -58,9 +58,29 @@ async function main() {
   await checker.check(); assert.equal(calls,1);
   time+=60001; await checker.check(); assert.equal(calls,2);
   let attempts=0;
-  const retry=createUpdateChecker({currentVersion:"0.1.14",request:async()=>{if(++attempts===1)throw Error("offline");return fixture();}});
+  const retry=createUpdateChecker({currentVersion:"0.1.14",platform:"win32",arch:"x64",request:async()=>{if(++attempts===1)throw Error("offline");return fixture();}});
   await assert.rejects(retry.check(),/offline/); await retry.check(); assert.equal(attempts,2);
-  assert.equal((await testTransport(200,JSON.stringify(fixture()))).tag_name,"v0.1.15");
+  assert.equal((await testTransport(200,JSON.stringify(fixture()))).latestVersion,"0.1.15");
+  const macOnly = fixture("macos-v0.1.97");
+  macOnly.assets = macOnly.assets.slice(1);
+  const legacyMac = fixture("v0.1.96");
+  legacyMac.assets = legacyMac.assets.slice(1);
+  const checkWindows = release => createUpdateChecker({currentVersion:"0.1.88",platform:"win32",arch:"x64",request:async()=>release}).check();
+  await assert.rejects(checkWindows(legacyMac), /安装包/);
+  await assert.rejects(checkWindows(macOnly), /版本号/);
+  assert.equal((await checkWindows(fixture("0.1.89"))).installer.name, "CodexAuthSwitch-Setup-0.1.89.exe");
+  for (const arch of ["x64","arm64"]) {
+    const requests = [];
+    const checker = createUpdateChecker({currentVersion:"0.1.96",platform:"darwin",arch,request:async url=>{
+      requests.push(url);
+      return requests.length === 1 ? Array(10).fill(fixture("9.0.0")) :
+        [{...macOnly, prerelease:true}, {...macOnly, draft:true}, {...macOnly, assets:[]}, macOnly];
+    }});
+    const result = await checker.check();
+    assert.deepEqual(requests.map(url=>url.split("?")[1]),["per_page=10&page=1","per_page=10&page=2"]);
+    assert.equal(result.latestVersion,"0.1.97");
+    assert.equal(result.installer.name,`CodexAuthSwitch-0.1.97-${arch}.dmg`);
+  }
   await assert.rejects(testTransport(403,""),/限制/);
   await assert.rejects(testTransport(404,""),/暂无/);
   await assert.rejects(testTransport(302,""),/HTTP 302/);

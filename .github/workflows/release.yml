@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "macos-v*"
+      - "[0-9]*"
 
 permissions:
   contents: write
@@ -17,17 +18,18 @@ jobs:
       macos: ${{ steps.platforms.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: platforms
         shell: bash
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const tag = process.env.GITHUB_REF_NAME;
-          if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error('Invalid release tag');
-          const file = `docs/releases/${tag}.json`;
-          const platforms = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).platforms : ['windows', 'macos'];
-          if (!Array.isArray(platforms) || !platforms.length || platforms.some(p => !['windows', 'macos'].includes(p))) throw new Error('Invalid release platforms');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `windows=${platforms.includes('windows')}\nmacos=${platforms.includes('macos')}\n`);
+          const match = /^(macos-v)?(\d+\.\d+\.\d+)$/.exec(process.env.GITHUB_REF_NAME);
+          if (!match || match[2] !== require('./package.json').version) throw new Error('Tag and package version must match');
+          const platform = match[1] ? 'macos' : 'windows';
+          require('node:child_process').execFileSync('git', ['merge-base', '--is-ancestor', 'HEAD', 'origin/' + platform]);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `windows=${platform === 'windows'}\nmacos=${platform === 'macos'}\n`);
           NODE
 
   build-windows:
@@ -153,6 +155,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: CodexAuth Switch ${{ github.ref_name }}
+          name: CodexAuth Switch · ${{ needs.release-config.outputs.windows == 'true' && 'Windows' || 'macOS' }} · ${{ github.ref_name }}
+          make_latest: ${{ needs.release-config.outputs.windows }}
           body_path: docs/releases/${{ github.ref_name }}.md
           files: release-assets/**

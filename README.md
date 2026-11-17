@@ -518,7 +518,7 @@ Windows 安装包为 `.codexauth` 加密凭证安装独立的 ICO 文件，并�
 
 安装后，`.codexauth` 加密凭证文件使用 CodexAuth 应用图标。导入仍通过主窗口的“导入凭证文件”完成。
 
-[下载最新版本](https://github.com/GboyCode/CodexAuth/releases/latest) · [v0.1.15 完整更新说明](docs/releases/v0.1.15.md)
+[Windows 下载](https://github.com/GboyCode/CodexAuth/releases/latest) · [macOS 下载](https://github.com/GboyCode/CodexAuth/releases?q=macos-v) · [v0.1.15 完整更新说明](docs/releases/v0.1.15.md)
 
 ## 0.1.13：跨电脑账号迁移
 
