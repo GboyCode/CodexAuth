@@ -3,13 +3,38 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "macos-v*"
+      - "[0-9]*"
 
 permissions:
   contents: write
 
 jobs:
+  release-config:
+    name: Select release platforms
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.platforms.outputs.windows }}
+      macos: ${{ steps.platforms.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: platforms
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const match = /^(macos-v)?(\d+\.\d+\.\d+)$/.exec(process.env.GITHUB_REF_NAME);
+          if (!match || match[2] !== require('./package.json').version) throw new Error('Tag and package version must match');
+          const platform = match[1] ? 'macos' : 'windows';
+          require('node:child_process').execFileSync('git', ['merge-base', '--is-ancestor', 'HEAD', 'origin/' + platform]);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `windows=${platform === 'windows'}\nmacos=${platform === 'macos'}\n`);
+          NODE
+
   build-windows:
+    needs: release-config
+    if: needs.release-config.outputs.windows == 'true'
     name: Build Windows installer
     runs-on: windows-latest
 
@@ -45,6 +70,8 @@ jobs:
             release/CodexAuthSwitch-Setup-*.exe.blockmap
 
   build-macos:
+    needs: release-config
+    if: needs.release-config.outputs.macos == 'true'
     name: Build macOS installers
     runs-on: macos-latest
 
@@ -67,8 +94,16 @@ jobs:
       - name: Validate icon rendering at 100% and 200% scale
         run: npm run icon:validate
 
+      - name: Validate macOS switcher behavior
+        run: npm run macos:validate
+
       - name: Build Intel and Apple Silicon DMGs
-        run: npm run pack:mac
+        # Icon Composer assets need Xcode 26+; electron-builder checks its version.
+        # Resolve the selected Xcode's tool instead of relying on a PATH shim.
+        shell: bash
+        run: |
+          export PATH="$(dirname "$(xcrun --find actool)"):$PATH"
+          npm run pack:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
@@ -79,9 +114,29 @@ jobs:
           if-no-files-found: error
           path: release/*.dmg*
 
+      - name: Upload compiled icon previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-icon-previews
+          path: release/**/icon-verification/*.png
+          if-no-files-found: warn
+
+      - name: Upload macOS panel preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-panel-preview
+          path: |
+            output/playwright/panel/mac-menu-bar.png
+            output/playwright/panel/mac-native-validation.json
+          if-no-files-found: warn
+
   publish-release:
     name: Publish GitHub Release
+    if: always() && needs.release-config.result == 'success' && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
     needs:
+      - release-config
       - build-windows
       - build-macos
     runs-on: ubuntu-latest
@@ -94,11 +149,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+          pattern: '*-installer*'
           merge-multiple: true
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: CodexAuth Switch ${{ github.ref_name }}
+          name: CodexAuth Switch · ${{ needs.release-config.outputs.windows == 'true' && 'Windows' || 'macOS' }} · ${{ github.ref_name }}
+          make_latest: ${{ needs.release-config.outputs.windows }}
           body_path: docs/releases/${{ github.ref_name }}.md
           files: release-assets/**
